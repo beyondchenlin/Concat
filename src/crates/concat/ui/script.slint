@@ -1,0 +1,221 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+import { Theme } from "theme/theme.slint";
+import { Button } from "primitives/modal.slint";
+import { ResizeBox } from "primitives/resize-box.slint";
+import { ThinScrollbar } from "primitives/scrollbar.slint";
+
+export struct ScriptVersionData {
+    identity: string,
+    label: string,
+    selected: bool,
+    viewed: bool,
+}
+
+export global ScriptUi {
+    in-out property <string> text;
+    in-out property <string> status: "打开文案后可创建和保存版本";
+    in-out property <string> error;
+    in-out property <string> selected-label: "尚未选择剪辑版本";
+    in-out property <[ScriptVersionData]> versions;
+    in-out property <[ScriptVersionData]> legacy-documents;
+    in-out property <bool> has-legacy;
+    in-out property <bool> can-copy-legacy;
+    in-out property <string> legacy-notice;
+    in-out property <string> legacy-label;
+    in-out property <string> legacy-text;
+    in-out property <bool> ready;
+    in-out property <bool> busy;
+    in-out property <bool> dirty;
+    in-out property <bool> can-save;
+    in-out property <bool> can-select;
+    callback open-requested();
+    callback edited(text: string);
+    callback save-requested();
+    callback reload-requested();
+    callback discard-requested();
+    callback new-requested();
+    callback view-requested(version: string);
+    callback select-requested();
+    callback legacy-view-requested(identity: string);
+    callback copy-legacy-requested();
+}
+
+export component ScriptWorkspace inherits Rectangle {
+    background: Theme.panel;
+    border-radius: Theme.r-lg;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        HorizontalLayout {
+            Text {
+                text: "文案";
+                color: Theme.fg;
+                font-size: Theme.fs-xl;
+                font-weight: Theme.weight-title;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+            }
+            Button {
+                label: "新建草稿";
+                enabled: ScriptUi.ready && !ScriptUi.busy && !ScriptUi.dirty;
+                clicked => { ScriptUi.new-requested(); }
+            }
+            Button {
+                label: ScriptUi.dirty ? "保留草稿并读取" : "重新读取";
+                enabled: !ScriptUi.busy;
+                clicked => { ScriptUi.reload-requested(); }
+            }
+        }
+        Text {
+            text: ScriptUi.status;
+            color: Theme.fg-muted;
+            font-size: Theme.fs;
+            wrap: word-wrap;
+        }
+        if ScriptUi.error != "": Text {
+            text: ScriptUi.error;
+            color: Theme.danger;
+            font-size: Theme.fs;
+            wrap: word-wrap;
+        }
+        if ScriptUi.has-legacy: Rectangle {
+            min-height: 220px;
+            max-height: 220px;
+            background: Theme.panel;
+            VerticalLayout {
+                spacing: 4px;
+                Text {
+                    text: ScriptUi.legacy-notice;
+                    color: Theme.fg-muted;
+                    font-size: Theme.fs;
+                    wrap: word-wrap;
+                }
+                legacy-list := Flickable {
+                    min-height: 45px;
+                    max-height: 60px;
+                    content-height: legacy-rows.preferred-height;
+                    content-width: self.width;
+                    legacy-rows := VerticalLayout {
+                        width: legacy-list.width;
+                        for old in ScriptUi.legacy-documents: Button {
+                            label: old.label;
+                            enabled: ScriptUi.ready && !ScriptUi.busy;
+                            clicked => { ScriptUi.legacy-view-requested(old.identity); }
+                        }
+                    }
+                }
+                Text {
+                    text: ScriptUi.legacy-label;
+                    color: Theme.fg-muted;
+                    font-size: Theme.fs;
+                    overflow: elide;
+                }
+                legacy-preview := Flickable {
+                    vertical-stretch: 1;
+                    content-width: self.width;
+                    content-height: legacy-words.preferred-height;
+                    legacy-words := Text {
+                        width: legacy-preview.width;
+                        text: ScriptUi.legacy-text;
+                        color: Theme.fg;
+                        font-size: Theme.fs;
+                        wrap: word-wrap;
+                    }
+                }
+                Button {
+                    label: "确认归属，复制旧稿到当前工程";
+                    enabled: ScriptUi.can-copy-legacy;
+                    clicked => { ScriptUi.copy-legacy-requested(); }
+                }
+            }
+        }
+        words-box := ResizeBox {
+            box-height: 220px;
+            min-box: 100px;
+            max-box: 800px;
+            content-height: words.preferred-height;
+            focused: words.has-focus;
+            words := TextInput {
+                y: words-box.pad-y;
+                width: parent.width;
+                height: Math.max(self.preferred-height, words-box.view-height);
+                text <=> ScriptUi.text;
+                enabled: ScriptUi.ready;
+                single-line: false;
+                wrap: word-wrap;
+                color: Theme.fg;
+                font-size: Theme.fs-input;
+                selection-background-color: Theme.accent;
+                selection-foreground-color: Theme.on-accent;
+                accessible-label: "当前工程的文案，可保存为独立版本";
+                edited => { ScriptUi.edited(self.text); }
+                cursor-position-changed(at) => { words-box.reveal(at.y, self.font-size * 1.4); }
+            }
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            Button {
+                label: "放弃本次修改";
+                enabled: ScriptUi.dirty && !ScriptUi.busy;
+                clicked => { ScriptUi.discard-requested(); }
+            }
+            Button {
+                label: ScriptUi.busy ? "处理中" : "保存新版本";
+                primary: true;
+                enabled: ScriptUi.can-save;
+                horizontal-stretch: 1;
+                clicked => { ScriptUi.save-requested(); }
+            }
+        }
+        HorizontalLayout {
+            Text {
+                text: ScriptUi.selected-label;
+                color: Theme.fg-muted;
+                font-size: Theme.fs;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+            Button {
+                label: "用于剪辑";
+                enabled: ScriptUi.can-select;
+                clicked => { ScriptUi.select-requested(); }
+            }
+        }
+        Rectangle {
+            min-height: 70px;
+            vertical-stretch: 1;
+            clip: true;
+            version-scroll := Flickable {
+                width: parent.width;
+                height: parent.height;
+                content-width: self.width;
+                content-height: Math.max(self.height, version-list.preferred-height);
+                version-list := VerticalLayout {
+                    width: version-scroll.width - 8px;
+                    height: self.preferred-height;
+                    spacing: 4px;
+                    alignment: start;
+                    for version in ScriptUi.versions: Button {
+                        label: version.label + (version.selected ? " · 已选定" : "");
+                        primary: version.viewed;
+                        enabled: !ScriptUi.busy && !ScriptUi.dirty;
+                        min-height: 34px;
+                        max-height: 34px;
+                        block: true;
+                        clicked => { ScriptUi.view-requested(version.identity); }
+                    }
+                }
+            }
+            ThinScrollbar {
+                x: parent.width - self.width;
+                height: parent.height;
+                viewport: version-scroll.height;
+                content: version-scroll.content-height;
+                offset: -version-scroll.content-y;
+                scrolled(to) => { version-scroll.content-y = -to; }
+            }
+        }
+    }
+}

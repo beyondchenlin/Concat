@@ -149,6 +149,8 @@ pub struct Shell {
     pub embedded: RefCell<Option<Arc<crate::embedded::EmbeddedRuntime>>>,
     /// Presentation is separate from Studio so stop never borrows an editor.
     pub agent_pane: RefCell<crate::panes::agent::AgentPane>,
+    /// Non-secret model settings, separately owned from the editor and runtime.
+    pub agent_settings: RefCell<crate::panes::agent_settings::AgentSettingsPane>,
     /// The window's state.
     pub studio: RefCell<Studio>,
     /// The live models, handed to Slint once and never replaced.
@@ -640,7 +642,7 @@ fn save_frame_jpeg(
     quality: u8,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut rgb = Vec::with_capacity(frame.width() as usize * frame.height() as usize * 3);
-    for pixel in frame.pixels().chunks_exact(4) {
+    for pixel in frame.pixels().as_chunks::<4>().0 {
         rgb.extend_from_slice(&pixel[..3]);
     }
 

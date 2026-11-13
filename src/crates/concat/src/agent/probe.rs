@@ -3,7 +3,8 @@
 //! This module is excluded from ordinary product builds. The native mode uses
 //! the real protocol/current-window path, with a deterministic trusted client;
 //! the platform mode uses the actual bundled webpage and platform host. Neither
-//! mode configures a provider or submits model work.
+//! mode submits model work. Settings mode exercises explicit local configuration
+//! and product-scoped random credentials without any network authority.
 
 use std::fs;
 use std::path::PathBuf;
@@ -25,6 +26,8 @@ use super::native::{NativeSession, STORAGE_ID};
 use crate::host::Shell;
 use crate::ui::App;
 
+mod settings;
+
 #[derive(Clone)]
 struct Configuration {
     mode: String,
@@ -40,17 +43,19 @@ static CONFIGURATION: OnceLock<Configuration> = OnceLock::new();
 /// portable directory, so a verification run cannot adopt user configuration.
 pub fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.len() != 2 || args[0] != "--mode" || !matches!(args[1].as_str(), "native" | "platform")
+    if args.len() != 2
+        || args[0] != "--mode"
+        || !matches!(args[1].as_str(), "native" | "platform" | "settings")
     {
-        return Err("usage: bk-cat-native-probe --mode native|platform".into());
+        return Err("usage: bk-cat-native-probe --mode native|platform|settings".into());
     }
     let render_environment = render_environment();
-    if args[1] == "platform" {
+    if args[1] != "native" {
         ensure(
             ["CONCAT_GPU", "SLINT_BACKEND", "SLINT_RENDERER"]
                 .iter()
                 .all(|name| std::env::var_os(name).is_none()),
-            "platform probe requires the application's default rendering without environment overrides",
+            "platform/settings probe requires the application's default rendering without environment overrides",
         )?;
     }
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -112,7 +117,7 @@ pub(crate) fn start_if_requested() -> bool {
     let Some(configuration) = CONFIGURATION.get().cloned() else {
         return false;
     };
-    if configuration.mode == "platform" {
+    if configuration.mode != "native" {
         crate::embedded::start_for_window();
     }
     let failure_configuration = configuration.clone();
@@ -122,6 +127,8 @@ pub(crate) fn start_if_requested() -> bool {
             let mut steps = Vec::new();
             let result = if configuration.mode == "native" {
                 native_mode(&configuration, &mut steps)
+            } else if configuration.mode == "settings" {
+                settings::run(&configuration, &mut steps)
             } else {
                 platform_mode(&configuration, &mut steps)
             };
@@ -142,7 +149,9 @@ pub(crate) fn start_if_requested() -> bool {
                 },
                 "scope":{"nativeWindow":true,"currentProject":true,
                     "realInternalProtocol":configuration.mode=="native",
-                    "actualBundledWebpage":configuration.mode=="platform",
+                    "actualBundledWebpage":configuration.mode!="native",
+                    "nativeSettingsCallbacks":configuration.mode=="settings",
+                    "mouseKeyboardAcceptance":false,
                     "modelRequests":false,"androidDevice":false},
             });
             let saved = fs::write(
@@ -359,8 +368,9 @@ fn save_and_ack(
         "expected one actual saved operation",
     )?;
     let notification = &notifications[0];
+    let expected_revision_text = expected_revision.to_string();
     ensure(
-        notification["saved"]["revision"] == expected_revision.to_string(),
+        notification["saved"]["revision"].as_str() == Some(expected_revision_text.as_str()),
         "save credited a different native revision",
     )?;
     let bytes = fs::read(PathBuf::from(path).join("concat.json")).map_err(|e| e.to_string())?;
@@ -433,7 +443,9 @@ fn preview(
                 let bytes = pixels.as_bytes();
                 let hash = format!("{:x}", Sha256::digest(bytes));
                 let visible = bytes
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .filter(|p| p[0] > 32 || p[1] > 32 || p[2] > 32)
                     .count();
                 if visible < 20 || previous.as_ref() == Some(&hash) {

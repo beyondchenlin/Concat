@@ -1,0 +1,55 @@
+command: npm test
+BK_CAT_PI_REFERENCE=/workspace/scratch/84c9af9701bd/bk-cat-verify/.build/pi-reference
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> bk-cat-agent-runtime@0.1.0 test
+> node --test test/*.test.ts
+
+✔ conversation creation cannot install executable callbacks, task ownership, or registry objects (2.467807ms)
+✔ chat submission requires native deduplication identity and cannot forge transcript entries or queued follow-ups (0.808102ms)
+✔ startup only acquires ownership and reads recovery; every scheduling entry stays closed (4.954145ms)
+✔ confirmation opens Pi once but does not resume or call a model (0.744393ms)
+✔ stale approval and discard with interrupted work never open writable Pi (0.457639ms)
+✔ overlapping recovery confirmation has one native grant and one Pi open (0.53799ms)
+✔ stop while acquire is pending revokes the eventual lease before release (0.394507ms)
+✔ stop during Pi open retains ownership until the late engine is closed (0.573577ms)
+✔ a replacement host starts in recovery after the prior owner drains (0.496244ms)
+✔ late results cannot authorize a new action after stop (0.460993ms)
+✔ real-view observer callback from an old generation is not delivered (0.554971ms)
+✔ failed Pi open revokes and releases the owned generation (0.589774ms)
+✔ an observer cleanup failure cannot prevent native revocation, engine cleanup, or ownership drain (0.32501ms)
+✔ a generation without a model budget cannot obtain a network permit (0.207874ms)
+✔ SQLite transaction callback that loses ownership cannot reach commit (0.507829ms)
+✔ late SQLite durability receipt cannot publish through an old generation (0.28337ms)
+✔ MCP transport blocks recovery edits, hidden tools, and cancelled sends before native dispatch (0.538932ms)
+✔ MCP late reply is discarded when native ownership has been revoked (0.215526ms)
+✔ guarded MCP edits take operation identity only from the original tool context, not model JSON (0.299661ms)
+✔ concurrent MCP calls keep distinct trusted invocation identities (0.223676ms)
+✔ native message correlation ignores wrong channels and duplicate/late replies without resending (3.060716ms)
+✔ abort sends a native cancellation but preserves the terminal resource response for cleanup (1.372692ms)
+✔ revocation delivered between acquire reply and subscription cannot be missed (0.40782ms)
+✔ saturated native channel still admits revoke and cleanup; close rejects all outstanding work (14.665794ms)
+✔ native ports bind the trusted invocation beside MCP JSON, and never fall back to browser fetch (0.842616ms)
+✔ only a live acquired owner acknowledges a genuinely received native save notification (0.508185ms)
+✔ desktop transport binds every original-runtime frame to its native component (3.081115ms)
+✔ stale and wrong-channel native replies cannot reach Pi listeners (1.175542ms)
+✔ Android transport uses only the native bridge and the same fenced inbox (1.053874ms)
+✔ absent transport, malformed frames and resource exhaustion fail closed (3.178458ms)
+✔ missing required capabilities refuse both bundles with a fixed native-bound reason (15.977629ms)
+✔ the loader waits for the original runtime before loading bootstrap and invents no success (1.423111ms)
+✔ a real script parse error reports only a fixed code and cannot load bootstrap (2.255022ms)
+✔ missing runtime, resource failure and absent bootstrap announcements fail distinctly (4.629141ms)
+✔ page retirement fences pending loads, queued messages and late script errors (1.546998ms)
+✔ SQLite values preserve signed 64-bit integers and bytes without lossy numeric coercion (3.2474ms)
+✔ SQLite connection queues outside work until its transaction commits; expired transaction handles refuse (4.536531ms)
+✔ SQLite callback failure rolls back; abort still permits rollback and close cleanup (0.689398ms)
+✔ SQLite swallowed statement failure cannot commit and rollback failure remains explicit (1.726373ms)
+✔ SQLite wire absent rows, tagged result values and affected counts conform to the original interface (1.191059ms)
+ℹ tests 40
+ℹ suites 0
+ℹ pass 40
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 273.012886

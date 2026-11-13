@@ -294,7 +294,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
                 if studio.session.is_some() {
                     log::info!("close: app terminating");
                     terminating.set(true);
-                    if let Err(error) = studio.close_project() {
+                    if let Err(error) = studio.save_and_release_on_termination() {
                         log::warn!("close: project could not be saved: {error}");
                     }
                 }
@@ -445,13 +445,16 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         agent: RefCell::new(studio.host.agent.clone()),
         embedded: RefCell::new(None),
         agent_pane: RefCell::new(panes::agent::AgentPane::default()),
+        agent_settings: RefCell::new(panes::agent_settings::AgentSettingsPane::default()),
         studio: RefCell::new(studio),
         models: Models::new(),
     });
     Shell::install(shell.clone());
+    panes::agent_settings::install(&app);
 
     // State comes from the same native owner as protocol admission. A rendered
     // enabled button is never authority: the send callback reads it again.
+    panes::script::install(&app);
     let agent_ui = app.global::<AgentUi>();
     agent_ui.on_send_requested(|draft| {
         Shell::with(|shell, app| {
@@ -2910,7 +2913,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     slint::Timer::single_shot(std::time::Duration::ZERO, || {
         Shell::with(|_, app| platform::apply_ui_scale(app.window()));
         #[cfg(feature = "bk-cat-native-probe")]
-        if agent::probe::start_if_requested() {
+        if agent::script_probe::start_if_requested() || agent::probe::start_if_requested() {
             return;
         }
         #[cfg(any(target_os = "windows", target_os = "android"))]
@@ -2941,7 +2944,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     Shell::with(|shell, _| {
         let mut studio = shell.studio.borrow_mut();
         if studio.session.is_some()
-            && let Err(error) = studio.close_project()
+            && let Err(error) = studio.save_and_release_on_termination()
         {
             log::warn!("close: the activity ended and the project could not be saved: {error}");
         }

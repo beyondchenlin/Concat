@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { Theme } from "theme/theme.slint";
+import { ScriptUi, ScriptWorkspace } from "script.slint";
+import { AgentSettingsUi } from "dialogs/model-settings.slint";
 import { Focus } from "util.slint";
 import { Button } from "primitives/modal.slint";
 import { ResizeBox } from "primitives/resize-box.slint";
@@ -37,8 +39,6 @@ export struct AgentStatusData {
 export global AgentUi {
     in-out property <AgentView> view: AgentView.chat;
     in-out property <string> draft;
-    /// Temporary text only: no saved version or timeline binding is implied.
-    in-out property <string> script-draft;
     in-out property <[AgentMessageData]> messages;
     in-out property <AgentStatusData> status: {
         title: "聊天未就绪",
@@ -113,7 +113,7 @@ export component AgentNavigation inherits Rectangle {
             block: root.phone;
             min-height: root.phone ? 36px : 30px;
             max-height: root.phone ? 36px : 30px;
-            clicked => { AgentUi.view = AgentView.script; Focus.release(); }
+            clicked => { AgentUi.view = AgentView.script; ScriptUi.open-requested(); Focus.release(); }
         }
         Button {
             label: "项目";
@@ -134,6 +134,11 @@ export component AgentNavigation inherits Rectangle {
 
 export component AgentTaskStatus inherits VerticalLayout {
     spacing: 5px;
+    Button {
+        label: "模型设置";
+        enabled: !AgentSettingsUi.busy;
+        clicked => { AgentSettingsUi.open-requested(); }
+    }
     Text {
         text: AgentUi.status.title;
         color: AgentUi.status.error == "" ? Theme.fg : Theme.danger;
@@ -323,54 +328,4 @@ export component AgentChat inherits Rectangle {
     }
 }
 
-export component AgentScript inherits Rectangle {
-    background: Theme.panel;
-    border-radius: Theme.r-lg;
-    VerticalLayout {
-        padding: 14px;
-        spacing: 10px;
-        Text {
-            text: "文案草稿";
-            color: Theme.fg;
-            font-size: Theme.fs-xl;
-            font-weight: Theme.weight-title;
-        }
-        Text {
-            text: "当前文字仅保留在本次打开期间，尚未保存版本，也未绑定剪辑版本。";
-            color: Theme.fg-muted;
-            font-size: Theme.fs-lg;
-            wrap: word-wrap;
-        }
-        draft-box := ResizeBox {
-            // The scroll frame's height participates in this component's
-            // preferred size. Binding it to root.height creates a layout
-            // cycle in the phone's vertically stretched workspace.
-            box-height: 260px;
-            min-box: 120px;
-            max-box: 900px;
-            content-height: words.preferred-height;
-            focused: words.has-focus;
-            words := TextInput {
-                y: draft-box.pad-y;
-                width: parent.width;
-                height: Math.max(self.preferred-height, draft-box.view-height);
-                text <=> AgentUi.script-draft;
-                single-line: false;
-                wrap: word-wrap;
-                color: Theme.fg;
-                font-size: Theme.fs-input;
-                selection-background-color: Theme.accent;
-                selection-foreground-color: Theme.on-accent;
-                accessible-label: "临时文案草稿，尚未保存版本";
-                cursor-position-changed(at) => { draft-box.reveal(at.y, self.font-size * 1.4); }
-                key-pressed(event) => {
-                    if (event.text == Key.Home) { self.set-selection-offsets(0, 0); return accept; }
-                    if (event.text == Key.End) {
-                        self.set-selection-offsets(1000000000, 1000000000); return accept;
-                    }
-                    return reject;
-                }
-            }
-        }
-    }
-}
+export component AgentScript inherits ScriptWorkspace {}

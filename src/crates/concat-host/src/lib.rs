@@ -39,6 +39,7 @@ pub mod models;
 pub mod net;
 pub mod playback;
 pub mod preview;
+pub mod project_identity;
 pub mod projects;
 pub mod proxy;
 pub mod record;

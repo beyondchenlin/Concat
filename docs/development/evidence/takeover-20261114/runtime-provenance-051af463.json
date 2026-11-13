@@ -1,0 +1,39 @@
+{
+  "head": "051af463942cfc0451b32fffede6c478776baf5e",
+  "tree": "75138b83aa60a593a8049f4a1d74879e5d67e0c5",
+  "source_status_before": "",
+  "node": "v24.22.1",
+  "npm": "11.9.0",
+  "reference": "/workspace/scratch/84c9af9701bd/bk-cat-verify/.build/pi-reference",
+  "pi_head": "d36266e06669c6991a7c9509d1da04d18d30378d",
+  "pi_status_before": "",
+  "source_status_after": "",
+  "pi_status_after": "",
+  "typescript": "7.0.2",
+  "esbuild": "0.28.2",
+  "bundle_manifest": {
+    "piCommit": "d36266e06669c6991a7c9509d1da04d18d30378d",
+    "piVersion": "1.5.2",
+    "runtimeVersion": "0.1.0",
+    "protocolVersion": "2025-11-25",
+    "sqliteSchemaVersion": 2,
+    "format": "browser-iife",
+    "target": "es2022",
+    "bytes": 909664,
+    "sha256": "688bbcc8060cbcc7a6f16a24f155e30c1af963bbbfe8c25c7a5ee8d008c1011d",
+    "files": {
+      "index.html": {
+        "bytes": 569,
+        "sha256": "8db44e492885e8e059aaf15b18fd83d5aacd6101a91dbcd1510676aea62fe1cc"
+      },
+      "runtime.js": {
+        "bytes": 909664,
+        "sha256": "688bbcc8060cbcc7a6f16a24f155e30c1af963bbbfe8c25c7a5ee8d008c1011d"
+      },
+      "bootstrap.js": {
+        "bytes": 6245,
+        "sha256": "903959e27a96f6e61bc1675d559f7fcfc56859a27fce5ca0faff4a20ad7cd22a"
+      }
+    }
+  }
+}

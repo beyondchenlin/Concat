@@ -1,0 +1,25 @@
+{
+  "piCommit": "d36266e06669c6991a7c9509d1da04d18d30378d",
+  "piVersion": "1.5.2",
+  "runtimeVersion": "0.1.0",
+  "protocolVersion": "2025-11-25",
+  "sqliteSchemaVersion": 2,
+  "format": "browser-iife",
+  "target": "es2022",
+  "bytes": 909565,
+  "sha256": "7cd3e795c9105f009aa812d4470983ed0a75f5c2bf1737f47ae428b44aca2c4f",
+  "files": {
+    "index.html": {
+      "bytes": 565,
+      "sha256": "78ed5d6a70163fbc6d19a533abc26208eb2f799ca8cf693000ac9864f4d8274f"
+    },
+    "runtime.js": {
+      "bytes": 909565,
+      "sha256": "7cd3e795c9105f009aa812d4470983ed0a75f5c2bf1737f47ae428b44aca2c4f"
+    },
+    "bootstrap.js": {
+      "bytes": 6245,
+      "sha256": "903959e27a96f6e61bc1675d559f7fcfc56859a27fce5ca0faff4a20ad7cd22a"
+    }
+  }
+}

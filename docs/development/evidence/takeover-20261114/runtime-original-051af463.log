@@ -1,0 +1,18 @@
+command: npm run test:original
+BK_CAT_PI_REFERENCE=/workspace/scratch/84c9af9701bd/bk-cat-verify/.build/pi-reference
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> bk-cat-agent-runtime@0.1.0 test:original
+> node --test test/original-components.test.mjs
+
+✔ original pinned McpClient preserves per-call argument identity for the native durable invocation side channel (34.835186ms)
+✔ built browser bootstrap answers native commands and opens no writable store before native confirmation (4.684745ms)
+✔ built pinned original Harness persists real conversation records in SQLite and reopens only after explicit reconciliation (62.792436ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 262.369772

@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "scope": "只读固定平台官方源码，证明当前显示/窗口子命令、活动窗口标题与表面装饰格式；测试输出为据此构造的模拟数据，未冒充设备全转储",
+  "sources": [
+    {
+      "url": "https://github.com/aosp-mirror/platform_frameworks_base/blob/android-15.0.0_r1/services/core/java/com/android/server/wm/WindowSurfaceController.java",
+      "git_blob": "4456a94ef5100e0aff9fb26f7a922eefe125babd",
+      "reason": "窗口表面控制器输出已装饰表面对象"
+    },
+    {
+      "url": "https://github.com/aosp-mirror/platform_frameworks_base/blob/android-15.0.0_r1/core/java/android/view/SurfaceControl.java",
+      "git_blob": "0bdb4ad645f38c1c222a73e529fe5a4475c7eb8e",
+      "reason": "表面字符串含名称及对象尾缀"
+    },
+    {
+      "url": "https://github.com/aosp-mirror/platform_frameworks_base/blob/android-15.0.0_r1/services/core/java/com/android/server/wm/WindowManagerService.java",
+      "git_blob": "b814ccd2babe9020bd5d5df950a0e778e19202aa",
+      "reason": "默认转储含历史异常；当前窗口子命令独立"
+    },
+    {
+      "url": "https://github.com/aosp-mirror/platform_frameworks_base/blob/android-15.0.0_r1/services/core/java/com/android/server/wm/RootWindowContainer.java",
+      "git_blob": "4a564157c46faf05b5b71e77432def6f89a54b5c",
+      "reason": "当前活动窗口以 Window #（窗口条目）列出"
+    },
+    {
+      "url": "https://github.com/aosp-mirror/platform_frameworks_base/blob/android-15.0.0_r1/services/core/java/com/android/server/wm/DisplayContent.java",
+      "git_blob": "ad711cb2af31f0b3c0178f3be0638a3b2fc6931f",
+      "reason": "当前显示子命令包含唯一显示的焦点字段"
+    },
+    {
+      "url": "https://github.com/aosp-mirror/platform_frameworks_base/blob/android-11.0.0_r1/services/core/java/com/android/server/wm/WindowManagerService.java",
+      "git_blob": "ef81c0a5d206ca1b8647eb1adbbd8c9b887131da",
+      "reason": "接口30同样支持当前窗口子命令"
+    },
+    {
+      "url": "https://github.com/aosp-mirror/platform_frameworks_base/blob/android-11.0.0_r1/services/core/java/com/android/server/wm/RootWindowContainer.java",
+      "git_blob": "4700864c03bcc726dcf2b0596641a949461d5f7e",
+      "reason": "接口30窗口列表与显示来源格式"
+    },
+    {
+      "url": "https://github.com/aosp-mirror/platform_frameworks_base/blob/android-11.0.0_r1/services/core/java/com/android/server/wm/DisplayContent.java",
+      "git_blob": "06c0c46563321c6ebb1e5b19444d9a3c6dea5873",
+      "reason": "接口30当前显示焦点格式"
+    }
+  ]
+}

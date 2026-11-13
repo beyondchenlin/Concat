@@ -1204,11 +1204,16 @@ version = "0.2.10"
 dependencies = [
  "base64 0.22.1",
  "fallible-iterator",
+ "getrandom 0.3.4",
  "libc",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
+ "url",
+ "windows 0.62.2",
+ "zeroize",
 ]
 
 [[package]]
@@ -1218,10 +1223,12 @@ dependencies = [
  "android-build",
  "android_logger",
  "concat",
+ "concat-agent",
  "jni 0.22.4",
  "libc",
  "log",
  "slint",
+ "zeroize",
 ]
 
 [[package]]
@@ -1299,6 +1306,7 @@ dependencies = [
  "concat-text",
  "concat-vision",
  "cpal",
+ "getrandom 0.3.4",
  "libc",
  "log",
  "memmap2",

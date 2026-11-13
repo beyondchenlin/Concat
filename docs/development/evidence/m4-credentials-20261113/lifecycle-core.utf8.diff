@@ -1,0 +1,86 @@
+diff --git a/.build/credentials-before-lifecycle/credentials.rs b/src/crates/concat-agent/src/credentials.rs
+index 4c54f64e..86f8db18 100644
+--- a/.build/credentials-before-lifecycle/credentials.rs
++++ b/src/crates/concat-agent/src/credentials.rs
+@@ -32,8 +32,6 @@ pub enum CredentialError {
+     Unavailable,
+     /// Existing bytes cannot be authenticated, decoded or validated.
+     Corrupt,
+-    /// Android already registered its immutable process-wide adapter.
+-    AlreadyInstalled,
+ }
+ 
+ impl fmt::Display for CredentialError {
+@@ -44,7 +42,6 @@ impl fmt::Display for CredentialError {
+             Self::Unsupported => "当前平台尚未接入系统安全凭据存储",
+             Self::Unavailable => "无法访问系统安全凭据存储，未降级为明文文件",
+             Self::Corrupt => "已存凭据无法验证或解密，请重新设置",
+-            Self::AlreadyInstalled => "系统凭据存储适配已安装",
+         })
+     }
+ }
+@@ -160,13 +157,23 @@ pub trait CredentialStore: Send + Sync {
+ #[cfg(target_os = "android")]
+ static PLATFORM_STORE: std::sync::OnceLock<Arc<dyn CredentialStore>> = std::sync::OnceLock::new();
+ 
+-/// Android installs its application-context/KeyStore adapter before the
+-/// native window is created. It cannot replace a store during execution.
++/// Keep the first application-scoped adapter for the entire process.
++/// Returning that exact adapter makes later activity installation idempotent.
++#[cfg(any(target_os = "android", test))]
++fn install_once(
++    slot: &std::sync::OnceLock<Arc<dyn CredentialStore>>,
++    store: Arc<dyn CredentialStore>,
++) -> Arc<dyn CredentialStore> {
++    Arc::clone(slot.get_or_init(|| store))
++}
++
++/// Android installs an application-context/KeyStore adapter before the native
++/// window. Repeated installation returns the existing adapter, never replaces it.
+ #[cfg(target_os = "android")]
+-pub fn install_platform_store(store: Arc<dyn CredentialStore>) -> Result<(), CredentialError> {
+-    PLATFORM_STORE
+-        .set(store)
+-        .map_err(|_| CredentialError::AlreadyInstalled)
++pub fn install_platform_store(
++    store: Arc<dyn CredentialStore>,
++) -> Result<Arc<dyn CredentialStore>, CredentialError> {
++    Ok(install_once(&PLATFORM_STORE, store))
+ }
+ 
+ /// Obtain the secure platform adapter without opening a network channel.
+@@ -187,3 +194,34 @@ pub fn platform_store() -> Result<Arc<dyn CredentialStore>, CredentialError> {
+         Err(CredentialError::Unsupported)
+     }
+ }
++
++#[cfg(test)]
++mod installation_tests {
++    use super::*;
++
++    struct EmptyStore;
++    impl CredentialStore for EmptyStore {
++        fn read(&self, _: &CredentialScope) -> Result<Option<Secret>, CredentialError> {
++            Ok(None)
++        }
++        fn write(&self, _: &CredentialScope, _: &Secret) -> Result<(), CredentialError> {
++            Err(CredentialError::Unavailable)
++        }
++        fn delete(&self, _: &CredentialScope) -> Result<(), CredentialError> {
++            Err(CredentialError::Unavailable)
++        }
++    }
++
++    #[test]
++    fn repeated_application_installation_keeps_the_original_store() {
++        let slot = std::sync::OnceLock::new();
++        let original: Arc<dyn CredentialStore> = Arc::new(EmptyStore);
++        let later_activity: Arc<dyn CredentialStore> = Arc::new(EmptyStore);
++        let first = install_once(&slot, Arc::clone(&original));
++        let second = install_once(&slot, Arc::clone(&later_activity));
++        assert!(Arc::ptr_eq(&first, &original));
++        assert!(Arc::ptr_eq(&second, &original));
++        assert!(!Arc::ptr_eq(&second, &later_activity));
++        assert!(Arc::ptr_eq(slot.get().unwrap(), &original));
++    }
++}

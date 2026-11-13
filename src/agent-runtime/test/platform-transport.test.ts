@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import { browserContext } from "./platform-fixture.ts";
 
 const component = "a".repeat(64);
 const channel = "bk-cat-runtime-v1";
@@ -12,7 +13,7 @@ const source = readFileSync(new URL("../../crates/concat/src/embedded/transport.
 function desktop() {
   const sent: string[] = [];
   let receive: (event: { data: string }) => void = () => {};
-  const context = vm.createContext({
+  const { context } = browserContext({
     chrome: { webview: {
       postMessage(value: string) { sent.push(value); },
       addEventListener(_type: string, listener: typeof receive) { receive = listener; },
@@ -57,7 +58,7 @@ test("stale and wrong-channel native replies cannot reach Pi listeners", () => {
 
 test("Android transport uses only the native bridge and the same fenced inbox", () => {
   const sent: string[] = [];
-  const context = vm.createContext({ BKCatAndroid: { postMessage(value: string) { sent.push(value); } } });
+  const { context } = browserContext({ BKCatAndroid: { postMessage(value: string) { sent.push(value); } } });
   vm.runInContext(source, context);
   context.BKCatNative.postMessage(JSON.stringify({ channel, event: "runtime.loaded" }));
   assert.equal(JSON.parse(sent[0]!).component, component);
@@ -70,7 +71,7 @@ test("Android transport uses only the native bridge and the same fenced inbox", 
 });
 
 test("absent transport, malformed frames and resource exhaustion fail closed", () => {
-  assert.throws(() => vm.runInNewContext(source, {}));
+  assert.throws(() => vm.runInContext(source, browserContext().context), /native runtime transport/);
   const { context, sent } = desktop();
   for (const value of ["null", "[]", '{"channel":"other"}', "x".repeat(2 * 1024 * 1024 + 1)]) {
     assert.throws(() => context.BKCatNative.postMessage(value));

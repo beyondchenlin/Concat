@@ -1,0 +1,33 @@
+javac.exe : 注: E:\BK-CAT\.build\worktrees\continue-android-20261113\src\crates\concat-android\java\ConcatFiles.java使用或覆
+盖了已过时的 API。
+所在位置 E:\BK-CAT\.build\worktrees\continue-android-20261113\src\crates\concat-android\scripts\verify-runtime-java.ps1:31
+字符: 5
++     & $bkJavac -encoding UTF-8 -source 8 -target 8 -Xlint:-options -c ...
++     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (注: E:\BK-CAT\.b...使用或覆盖了已过时的 API。:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+注: 有关详细信息, 请使用 -Xlint:deprecation 重新编译。
+Android API 35 Java compilation passed.
+PASS initial focus waits, starts once and rejects duplicate creation
+PASS pause, stop, saved-state, destruction and close before focus cannot revive
+PASS initial deadline rejects absent and late focus without extending itself
+PASS retired opened component is never restarted by focus recovery
+PASS four bundled resources are admitted
+PASS foreign origins, hidden paths and mutation methods are denied
+PASS messages require the trusted document and bounded data
+PASS same-origin reload permanently retires the old component
+PASS pause before creation cannot resurrect a component
+PASS a delayed callback cannot cross a native component handoff
+Android host policy: 10 cases passed
+
+
+Algorithm : SHA256
+Hash      : A316D7F1A692684F1F23DC3716FCC91B24A99AE837DEDEF895F1987B2FFC843D
+Path      : E:\BK-CAT\.build\worktrees\continue-android-20261113\.build\android-first-focus-java-20261113\dex\classes.d
+            ex
+
+
+
+
+DEX packaging passed. Android native link, APK installation and device execution were NOT run by this script.
