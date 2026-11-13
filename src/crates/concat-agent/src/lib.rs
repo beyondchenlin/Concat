@@ -32,6 +32,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
+/// Durable native edit intent, receipt, disk-save and notification states.
+pub mod operations;
+/// Original Pi session storage through a generation-fenced native SQLite port.
+pub mod sqlite;
+
 /// A permanent file, shared by all embedded host instances using this storage.
 pub const OWNER_FILE_NAME: &str = ".bk-cat-agent-owner.lock";
 
