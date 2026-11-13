@@ -14,6 +14,7 @@ import { Select } from "../primitives/select.slint";
 import { PaneScroll } from "../workspace/pane.slint";
 import { HairlineSplitter } from "../workspace/splitter.slint";
 import { Editor } from "../editor.slint";
+import { AgentSettingsUi } from "model-settings.slint";
 
 // Settings: a fixed-height sheet with a column of pages down the side. The
 // model rows keep two things apart — a downloaded model is a *choice* and so
@@ -913,6 +914,16 @@ export component SettingsDialog inherits Sheet {
 
             if root.data.tab == 0: VerticalLayout {
                 padding-top: 10px;
+
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+                    Button {
+                        label: "模型渠道与系统凭据";
+                        enabled: !AgentSettingsUi.busy;
+                        clicked => { root.closed(); AgentSettingsUi.open-requested(); }
+                    }
+                }
 
                 DialogSection {
                     ruled: false;

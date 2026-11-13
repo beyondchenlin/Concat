@@ -1,0 +1,47 @@
+{
+  "baseCommit": "7872f3a207cf01be596d7f85abcd6132e9e03801",
+  "items": [
+    {
+      "file": "configuration-integration-r2.log",
+      "source": ".build/worktrees/m4-model-settings/.build/m4-configuration-tests-r2.log",
+      "bytes": 18466,
+      "sha256": "f2cfd5172557820496a2f8e93116b5990c1d8ffe265084d83d9715a0ebdb195a",
+      "scope": "configuration integration: 10 passed"
+    },
+    {
+      "file": "core-lock-check.log",
+      "source": ".build/worktrees/m4-model-settings/.build/m4-core-lock-check.log",
+      "bytes": 2166,
+      "sha256": "8388fe730db046f715d269e6193e79f91a284a7c3c5ad704a6ecef4ac1bc7c58",
+      "scope": "unified lockfile check"
+    },
+    {
+      "file": "runtime-resources.log",
+      "source": ".build/worktrees/m4-model-settings/.build/m4-runtime-resources.log",
+      "bytes": 153,
+      "sha256": "52606027e06ed1335e5d6a522f4a34c998197344db41dab9f6c659f6f0b0cd34",
+      "scope": "fixed original runtime resource verification and build"
+    },
+    {
+      "file": "window-tests-r1-failed.log",
+      "source": ".build/m4-window-tests-r1.log",
+      "bytes": 8969,
+      "sha256": "ece7bf928524247b53b2958a8a3737e53e0d58f5a477a3b93be398fbfc47455c",
+      "scope": "failed: missing exported settings global; no tests ran"
+    },
+    {
+      "file": "window-tests-r2.log",
+      "source": ".build/m4-window-tests-r2.log",
+      "bytes": 19468,
+      "sha256": "beb39f20b663b5e705a5bcdd84c5debeaaa8dfa99e2d4613deb5630d7fcc0f92",
+      "scope": "220 passed, 0 failed, 0 ignored; before millisecond precision follow-up"
+    },
+    {
+      "file": "settings-tests-r3.log",
+      "source": ".build/m4-settings-tests-r3.log",
+      "bytes": 2940,
+      "sha256": "107339b962aa8eb422568dfb6a0cb0ec39d71c1dab7c42eed99b5765c8ceae36",
+      "scope": "6 passed, 0 failed, 215 filtered; final settings source"
+    }
+  ]
+}

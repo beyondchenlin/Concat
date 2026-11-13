@@ -1,0 +1,263 @@
+{
+  "worktree": "E:\\BK-CAT\\.build\\worktrees\\m4-model-settings",
+  "branch": "feature/bk-cat-m4-model-settings",
+  "base": "7872f3a207cf01be596d7f85abcd6132e9e03801",
+  "generated_at": "2026-11-13T13:12:00.681Z",
+  "source_files": [
+    "src/crates/concat-agent/src/credentials.rs",
+    "src/crates/concat-agent/src/credentials/windows.rs",
+    "src/crates/concat-agent/tests/credentials.rs",
+    "src/crates/concat-android/java/BKCatCredentials.java",
+    "src/crates/concat-android/java/BKCatCredentialPolicy.java",
+    "src/crates/concat-android/src/credentials.rs",
+    "src/crates/concat-android/tests/BKCatCredentialPolicyTest.java",
+    "src/crates/concat-android/Cargo.toml",
+    "src/crates/concat-android/build.rs",
+    "src/crates/concat-android/src/lib.rs",
+    "src/crates/concat-android/scripts/verify-runtime-java.ps1"
+  ],
+  "entries": [
+    {
+      "path": "src/crates/concat-agent/src/credentials.rs",
+      "bytes": 8439,
+      "sha256": "155021157e7ce7f11097c8789ec4b1084aa17cb2d2613a7c27336bdb115943bc"
+    },
+    {
+      "path": "src/crates/concat-agent/src/credentials/windows.rs",
+      "bytes": 4728,
+      "sha256": "3933a4dbfc6a755265478233830a78bce11d17c944740a59d99f652df4690561"
+    },
+    {
+      "path": "src/crates/concat-agent/tests/credentials.rs",
+      "bytes": 8830,
+      "sha256": "1ddde539aacacd6044e6e07db6da33e5101a4b42a47d8c16a1716f76fbce78ec"
+    },
+    {
+      "path": "src/crates/concat-android/java/BKCatCredentials.java",
+      "bytes": 8656,
+      "sha256": "dcf3a00077bc1c462514c870c53ee8972fd050daeef77c5ef6bcc0ce2c8f07d6"
+    },
+    {
+      "path": "src/crates/concat-android/java/BKCatCredentialPolicy.java",
+      "bytes": 3849,
+      "sha256": "58907a9298fc38163ae39bc29e6ad287a50784a83b292382b9493c0986c94218"
+    },
+    {
+      "path": "src/crates/concat-android/src/credentials.rs",
+      "bytes": 6168,
+      "sha256": "4538fe953452744f7b8d4b69e38efc940aedf9bfd507f9bcace71c458e3d3741"
+    },
+    {
+      "path": "src/crates/concat-android/tests/BKCatCredentialPolicyTest.java",
+      "bytes": 4725,
+      "sha256": "0cf0ddb3b3168b87b06c0c32bdd72d786eb166c90f1fedf6f938b3ee0dbb3e28"
+    },
+    {
+      "path": "src/crates/concat-android/Cargo.toml",
+      "bytes": 3511,
+      "sha256": "56f45e43c3fb2e634d826ebf3550fc9707cead27b05ac2618238c6b65bca31a7"
+    },
+    {
+      "path": "src/crates/concat-android/build.rs",
+      "bytes": 2751,
+      "sha256": "32be5d8d60e0395fa954cdada4a7d0fc44aa360ebf41b86a29376ab267b983dd"
+    },
+    {
+      "path": "src/crates/concat-android/src/lib.rs",
+      "bytes": 24798,
+      "sha256": "21c8576d822599cd548915f9a952f10c71dc7e71bbe4e68f7a7efdc3468a2921"
+    },
+    {
+      "path": "src/crates/concat-android/scripts/verify-runtime-java.ps1",
+      "bytes": 3805,
+      "sha256": "a81c1cbce1d0b766c72119746b2365e9ae0722b223aa5580627c0e12af76da2d"
+    },
+    {
+      "path": ".build/m4-credentials-tests-r1.log",
+      "bytes": 1188,
+      "sha256": "6d6a718f72c52a3f17b1eecc004eb6d4f378ffe3089d14eba03e823e47f9e948"
+    },
+    {
+      "path": ".build/m4-credentials-tests-r2.log",
+      "bytes": 2952,
+      "sha256": "4441daa7e6472d9bb39cc3c6ea307e36dfd934c544678927a5ba43c85aa69af4"
+    },
+    {
+      "path": ".build/m4-windows-vault-r1.log",
+      "bytes": 3506,
+      "sha256": "55a8837ad3794e7b3fe8571908fbb8eb4c05e3d2ec63a16a11d32c3f8100c3b7"
+    },
+    {
+      "path": ".build/m4-core-clippy-r2.log",
+      "bytes": 1030,
+      "sha256": "5ae91ddc4e711230891a4cbc49df0f03f4f33c906c65072dc666ab0a6dea4362"
+    },
+    {
+      "path": ".build/m4-core-tests-r1.log",
+      "bytes": 15276,
+      "sha256": "b1bee977a71b7787323378c515c8ee88954f82c0ba634b11ba598d6f284ed972"
+    },
+    {
+      "path": ".build/m4-core-clippy-r3.log",
+      "bytes": 1030,
+      "sha256": "9fe3d5e3fbad148213777cc0f3c155138528c854e7aa228a48eda5a01198851c"
+    },
+    {
+      "path": ".build/m4-affected-lib-tests-r1.log",
+      "bytes": 3166,
+      "sha256": "75ed6bc37a35c9e7e27b25be6a13658f0235456328a6b97121d255803118e237"
+    },
+    {
+      "path": ".build/android-credentials-java-r1/javac.log",
+      "bytes": 1770,
+      "sha256": "5153834a9064e37acba79db32ab142118059447dcf5e999d03fe4ebeb92fb992"
+    },
+    {
+      "path": ".build/android-credentials-java-r3/javac.log",
+      "bytes": 1194,
+      "sha256": "93bbb89e2761a6676bdd7633ef34a8ac5520bb98162e65142b4943f4b165d942"
+    },
+    {
+      "path": ".build/android-credentials-java-r3/policy-tests.log",
+      "bytes": 788,
+      "sha256": "0d64eaa5c200b113dc7420d6cbc6a21613021cc8cf18f844a67f77f7f8c0b19e"
+    },
+    {
+      "path": ".build/android-credentials-java-r3/credential-policy-tests.log",
+      "bytes": 892,
+      "sha256": "001cbad2e72c13f82699bab36d445216e08f44a8c8eeb98fc5114cc9b8948147"
+    },
+    {
+      "path": ".build/android-credentials-java-r3/dex/classes.dex",
+      "bytes": 35356,
+      "sha256": "ce5794fcc74ecee124edad5c6c2c6edfac2da0cd5cd201ee12fc9ed6bb58f7ca"
+    },
+    {
+      "path": ".build/android-credentials-jni-check/check-r2.log",
+      "bytes": 2320,
+      "sha256": "ccc4d420ece94ce3d87e274a3e2583bd116881059eb38cdc4bbc3c80e083b204"
+    },
+    {
+      "path": ".build/android-credentials-jni-check/check-r3.log",
+      "bytes": 1108,
+      "sha256": "10283fd62b5eb4ce89712430f0357e32cf9fcb71e09724d380c0233e35fa956b"
+    }
+  ],
+  "interpretation": "Source hashes and raw log hashes only. Java/JNI fixture checks are not AndroidKeyStore, Activity reconstruction, APK, or device acceptance.",
+  "archive": [
+    {
+      "source": ".build\\m4-credentials-tests-r1.log",
+      "file": "m4-credentials-tests-r1.log",
+      "bytes": 1188,
+      "sha256": "6d6a718f72c52a3f17b1eecc004eb6d4f378ffe3089d14eba03e823e47f9e948"
+    },
+    {
+      "source": ".build\\m4-credentials-tests-r2.log",
+      "file": "m4-credentials-tests-r2.log",
+      "bytes": 2952,
+      "sha256": "4441daa7e6472d9bb39cc3c6ea307e36dfd934c544678927a5ba43c85aa69af4"
+    },
+    {
+      "source": ".build\\m4-windows-vault-r1.log",
+      "file": "m4-windows-vault-r1.log",
+      "bytes": 3506,
+      "sha256": "55a8837ad3794e7b3fe8571908fbb8eb4c05e3d2ec63a16a11d32c3f8100c3b7"
+    },
+    {
+      "source": ".build\\m4-core-clippy-r2.log",
+      "file": "m4-core-clippy-r2.log",
+      "bytes": 1030,
+      "sha256": "5ae91ddc4e711230891a4cbc49df0f03f4f33c906c65072dc666ab0a6dea4362"
+    },
+    {
+      "source": ".build\\m4-core-tests-r1.log",
+      "file": "m4-core-tests-r1.log",
+      "bytes": 15276,
+      "sha256": "b1bee977a71b7787323378c515c8ee88954f82c0ba634b11ba598d6f284ed972"
+    },
+    {
+      "source": ".build\\m4-core-clippy-r3.log",
+      "file": "m4-core-clippy-r3.log",
+      "bytes": 1030,
+      "sha256": "9fe3d5e3fbad148213777cc0f3c155138528c854e7aa228a48eda5a01198851c"
+    },
+    {
+      "source": ".build\\m4-affected-lib-tests-r1.log",
+      "file": "m4-affected-lib-tests-r1.log",
+      "bytes": 3166,
+      "sha256": "75ed6bc37a35c9e7e27b25be6a13658f0235456328a6b97121d255803118e237"
+    },
+    {
+      "source": ".build\\android-credentials-java-r1\\javac.log",
+      "file": "android-credentials-java-r1__javac.log",
+      "bytes": 1770,
+      "sha256": "5153834a9064e37acba79db32ab142118059447dcf5e999d03fe4ebeb92fb992"
+    },
+    {
+      "source": ".build\\android-credentials-java-r3\\javac.log",
+      "file": "android-credentials-java-r3__javac.log",
+      "bytes": 1194,
+      "sha256": "93bbb89e2761a6676bdd7633ef34a8ac5520bb98162e65142b4943f4b165d942"
+    },
+    {
+      "source": ".build\\android-credentials-java-r3\\policy-tests.log",
+      "file": "android-credentials-java-r3__policy-tests.log",
+      "bytes": 788,
+      "sha256": "0d64eaa5c200b113dc7420d6cbc6a21613021cc8cf18f844a67f77f7f8c0b19e"
+    },
+    {
+      "source": ".build\\android-credentials-java-r3\\credential-policy-tests.log",
+      "file": "android-credentials-java-r3__credential-policy-tests.log",
+      "bytes": 892,
+      "sha256": "001cbad2e72c13f82699bab36d445216e08f44a8c8eeb98fc5114cc9b8948147"
+    },
+    {
+      "source": ".build\\android-credentials-jni-check\\check-r2.log",
+      "file": "android-credentials-jni-check__check-r2.log",
+      "bytes": 2320,
+      "sha256": "ccc4d420ece94ce3d87e274a3e2583bd116881059eb38cdc4bbc3c80e083b204"
+    },
+    {
+      "source": ".build\\android-credentials-jni-check\\check-r3.log",
+      "file": "android-credentials-jni-check__check-r3.log",
+      "bytes": 1108,
+      "sha256": "10283fd62b5eb4ce89712430f0357e32cf9fcb71e09724d380c0233e35fa956b"
+    },
+    {
+      "source": ".build\\m4-credential-evidence\\lifecycle-core.utf8.diff",
+      "file": "lifecycle-core.utf8.diff",
+      "bytes": 3696,
+      "sha256": "f57e762aaa9f694b4395475e28ed82229798adb61a364cf37a9a1be3fab09f39"
+    },
+    {
+      "source": ".build\\m4-credentials-lifecycle-core.diff",
+      "file": "lifecycle-core.powershell-original.diff",
+      "bytes": 7368,
+      "sha256": "e12edc398e5a8920e8c83a55bf788109a6c25981cb585e6618267fb76008d457"
+    },
+    {
+      "source": ".build\\m4-credential-evidence\\lifecycle-jni.utf8.diff",
+      "file": "lifecycle-jni.utf8.diff",
+      "bytes": 6901,
+      "sha256": "1ff59b50c03e047ab4c9ef02d2c37d04e600d7e5425afcb6bea7b84c17dc8e0e"
+    },
+    {
+      "source": ".build\\m4-credentials-lifecycle-jni.diff",
+      "file": "lifecycle-jni.powershell-original.diff",
+      "bytes": 7062,
+      "sha256": "8d962d9292b98447aa6dbcd232489c5444f5f54f1ad205d15c03939e6f5319c7"
+    },
+    {
+      "source": ".build\\m4-credential-evidence\\lifecycle-java.utf8.diff",
+      "file": "lifecycle-java.utf8.diff",
+      "bytes": 3273,
+      "sha256": "b02260b07fc1736c22286b8bc538cef1de9f48f197eca2c7616fca22c989952b"
+    },
+    {
+      "source": ".build\\m4-credentials-lifecycle-java.diff",
+      "file": "lifecycle-java.powershell-original.diff",
+      "bytes": 6674,
+      "sha256": "782b9ffef00bd081227da34e98516bf2f12ae08b9a57d21e2183f85c2569fd09"
+    }
+  ]
+}

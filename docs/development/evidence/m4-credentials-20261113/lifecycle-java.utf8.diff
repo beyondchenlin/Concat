@@ -1,0 +1,63 @@
+diff --git a/.build/credentials-before-lifecycle/BKCatCredentials.java b/src/crates/concat-android/java/BKCatCredentials.java
+index 0918afbb..4a0d5b47 100644
+--- a/.build/credentials-before-lifecycle/BKCatCredentials.java
++++ b/src/crates/concat-android/java/BKCatCredentials.java
+@@ -1,7 +1,6 @@
+ // SPDX-License-Identifier: AGPL-3.0-or-later
+ package app.concat.editor;
+ 
+-import android.app.Activity;
+ import android.content.Context;
+ import android.security.keystore.KeyGenParameterSpec;
+ import android.security.keystore.KeyProperties;
+@@ -39,11 +38,11 @@ public final class BKCatCredentials {
+     private BKCatCredentials() {}
+ 
+     /** First byte is a fixed result category. Secret bytes follow only OK. */
+-    public static synchronized byte[] read(Activity activity, String keyId) {
++    public static synchronized byte[] read(Context context, String keyId) {
+         if (!BKCatCredentialPolicy.validKeyId(keyId)) return result(INVALID);
+         byte[] plaintext = null;
+         try {
+-            File directory = directory(activity);
++            File directory = directory(context);
+             File stored = scopedFile(directory, keyId + ".bin");
+             try (RandomAccessFile guard = new RandomAccessFile(scopedFile(directory, keyId + ".lock"), "rw");
+                  FileLock lock = guard.getChannel().lock()) {
+@@ -77,11 +76,11 @@ public final class BKCatCredentials {
+         }
+     }
+ 
+-    public static synchronized int write(Activity activity, String keyId, byte[] secret) {
++    public static synchronized int write(Context context, String keyId, byte[] secret) {
+         try {
+             if (!BKCatCredentialPolicy.validKeyId(keyId)) return INVALID;
+             BKCatCredentialPolicy.validateSecret(secret);
+-            File directory = directory(activity);
++            File directory = directory(context);
+             File destination = scopedFile(directory, keyId + ".bin");
+             try (RandomAccessFile guard = new RandomAccessFile(scopedFile(directory, keyId + ".lock"), "rw");
+                  FileLock lock = guard.getChannel().lock()) {
+@@ -113,10 +112,10 @@ public final class BKCatCredentials {
+         }
+     }
+ 
+-    public static synchronized int delete(Activity activity, String keyId) {
++    public static synchronized int delete(Context context, String keyId) {
+         if (!BKCatCredentialPolicy.validKeyId(keyId)) return INVALID;
+         try {
+-            File directory = directory(activity);
++            File directory = directory(context);
+             File stored = scopedFile(directory, keyId + ".bin");
+             try (RandomAccessFile guard = new RandomAccessFile(scopedFile(directory, keyId + ".lock"), "rw");
+                  FileLock lock = guard.getChannel().lock()) {
+@@ -138,8 +137,7 @@ public final class BKCatCredentials {
+         return new byte[] { (byte) code };
+     }
+ 
+-    private static File directory(Activity activity) throws IOException {
+-        Context context = activity.getApplicationContext();
++    private static File directory(Context context) throws IOException {
+         File parent = context.getNoBackupFilesDir().getCanonicalFile();
+         File directory = new File(parent, "bk-cat-credentials-v1");
+         Files.createDirectories(directory.toPath());

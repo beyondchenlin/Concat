@@ -445,10 +445,12 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         agent: RefCell::new(studio.host.agent.clone()),
         embedded: RefCell::new(None),
         agent_pane: RefCell::new(panes::agent::AgentPane::default()),
+        agent_settings: RefCell::new(panes::agent_settings::AgentSettingsPane::default()),
         studio: RefCell::new(studio),
         models: Models::new(),
     });
     Shell::install(shell.clone());
+    panes::agent_settings::install(&app);
 
     // State comes from the same native owner as protocol admission. A rendered
     // enabled button is never authority: the send callback reads it again.

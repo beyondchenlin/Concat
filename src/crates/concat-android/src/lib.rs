@@ -116,10 +116,13 @@ mod java {
     const DEX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/classes.dex"));
     const CLASS_NAME: &str = "app.concat.editor.ConcatFiles";
     const RUNTIME_CLASS_NAME: &str = "app.concat.editor.BKCatRuntime";
+    const CREDENTIAL_CLASS_NAME: &str = "app.concat.editor.BKCatCredentials";
 
     /// The fragment classes, loaded once and kept.
     static CLASS: OnceLock<Global<JClass<'static>>> = OnceLock::new();
     static RUNTIME_CLASS: OnceLock<Global<JClass<'static>>> = OnceLock::new();
+    static CREDENTIAL_CLASS: OnceLock<Global<JClass<'static>>> = OnceLock::new();
+    static CREDENTIAL_ACCESS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Runs `with` on this thread, attached to the activity's JavaVM, with
     /// the activity and the fragment class - loaded the first time.
@@ -144,6 +147,22 @@ mod java {
         ) -> jni::errors::Result<T>,
     ) -> jni::errors::Result<T> {
         with_named_class(app, RUNTIME_CLASS_NAME, &RUNTIME_CLASS, with)
+    }
+
+    /// Only the native settings adapter can reach this fixed class. The
+    /// mutex prevents duplicate class loaders and overlapping JVM file locks.
+    pub fn with_credentials_class<T>(
+        app: &AndroidApp,
+        with: impl FnOnce(
+            &mut Env<'_>,
+            &JObject<'_>,
+            &Global<JClass<'static>>,
+        ) -> jni::errors::Result<T>,
+    ) -> jni::errors::Result<T> {
+        let _guard = CREDENTIAL_ACCESS
+            .lock()
+            .map_err(|_| jni::errors::Error::NullPtr("credential access unavailable"))?;
+        with_named_class(app, CREDENTIAL_CLASS_NAME, &CREDENTIAL_CLASS, with)
     }
 
     fn with_named_class<T>(
@@ -208,6 +227,10 @@ mod java {
             )?
             .l()?;
         let class = JClass::cast_local(env, class)?;
+        if class_name == CREDENTIAL_CLASS_NAME {
+            // This utility has no Java-to-native callbacks or page bridge.
+            return env.new_global_ref(class);
+        }
         if class_name == RUNTIME_CLASS_NAME {
             super::runtime::register(env, &class)?;
             return env.new_global_ref(class);
@@ -569,6 +592,8 @@ mod awake {
 }
 
 #[cfg(target_os = "android")]
+mod credentials;
+#[cfg(target_os = "android")]
 mod runtime;
 
 /// Called by the activity's native glue; the name is the contract.
@@ -589,6 +614,9 @@ fn android_main(app: slint::android::AndroidApp) {
     microphone::install(&app);
     links::install(&app);
     awake::install(&app);
+    if credentials::install(&app).is_err() {
+        log::error!("system credential storage is unavailable");
+    }
     if let Err(error) = runtime::install(&app) {
         log::error!("could not install the embedded Android runtime: {error}");
     }

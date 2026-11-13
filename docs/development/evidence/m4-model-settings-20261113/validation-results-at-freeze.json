@@ -1,0 +1,40 @@
+{
+  "basis": "Observed completed tool process results and exact test logs; no pending build outcome inferred",
+  "stages": [
+    {
+      "name": "window-library-r1",
+      "pid": 37632,
+      "exitCode": 101,
+      "ranTests": false
+    },
+    {
+      "name": "window-library-r2",
+      "pid": 37488,
+      "exitCode": 0,
+      "passed": 220,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "final-settings-tests-r3",
+      "pipelinePid": 29868,
+      "stageExitCode": 0,
+      "pipelineStillRunning": true,
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 215
+    },
+    {
+      "name": "settings-example-build-r1",
+      "pipelinePid": 29868,
+      "state": "waiting for shared project build lock",
+      "exitCode": null
+    },
+    {
+      "name": "settings-example-run",
+      "state": "not executed",
+      "exitCode": null
+    }
+  ]
+}

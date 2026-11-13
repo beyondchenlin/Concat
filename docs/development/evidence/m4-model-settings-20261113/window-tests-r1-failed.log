@@ -1,0 +1,144 @@
+   Compiling windows v0.62.2
+   Compiling gpu-allocator v0.28.0
+   Compiling wgpu-hal v30.0.1
+   Compiling wgpu-core-deps-windows-linux-android v30.0.1
+   Compiling wgpu-core v30.0.1
+   Compiling wgpu v30.0.1
+   Compiling concat-core v0.2.10 (E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat-core)
+   Compiling concat-project v0.2.10 (E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat-project)
+   Compiling fontique v0.11.1
+   Compiling concat-effects v0.2.10 (E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat-effects)
+   Compiling concat-media v0.2.10 (E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat-media)
+   Compiling concat-render v0.2.10 (E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat-render)
+   Compiling parley v0.11.1
+   Compiling i-slint-common v1.18.1
+   Compiling concat-vision v0.2.10 (E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat-vision)
+   Compiling i-slint-core v1.18.1
+   Compiling whisper-rs-sys v0.15.0 (E:\BK-CAT\.build\worktrees\m4-model-settings\src\patches\whisper-rs-sys)
+warning: variable does not need to be mutable
+   --> patches\whisper-rs-sys\build.rs:154:13
+    |
+154 |         let mut bindings = bindgen::Builder::default()
+    |             ----^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `whisper-rs-sys` (build script) generated 1 warning
+   Compiling concat-text v0.2.10 (E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat-text)
+   Compiling concat-export v0.2.10 (E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat-export)
+   Compiling i-slint-renderer-skia v1.18.1 (E:\BK-CAT\.build\worktrees\m4-model-settings\src\patches\i-slint-renderer-skia)
+   Compiling accesskit_windows v0.34.0
+   Compiling concat-host v0.2.10 (E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat-host)
+   Compiling skia-safe v0.153.3
+   Compiling accesskit_winit v0.33.2
+   Compiling i-slint-renderer-software v1.18.1
+   Compiling concat-server v0.2.10 (E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat-server)
+   Compiling whisper-rs v0.16.0
+   Compiling i-slint-backend-winit v1.18.1
+   Compiling concat-api v0.2.10 (E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat-api)
+   Compiling tempfile v3.27.0
+   Compiling concat v0.2.10 (E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat)
+   Compiling i-slint-backend-selector v1.18.1
+   Compiling webview2-com-sys v0.39.1
+   Compiling webview2-com v0.39.1
+   Compiling slint v1.18.1
+   Compiling concat-speech v0.2.10 (E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat-speech)
+   Compiling concat-mcp v0.2.10 (E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat-mcp)
+warning: concat@0.2.10: warning: The property 'viewport-height' has been deprecated. Please use 'content-height' instead
+warning: concat@0.2.10:     --> E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat\ui\primitives\modal.slint:248:17
+warning: concat@0.2.10:      |
+warning: concat@0.2.10:  248 |                 viewport-height: Math.max(self.height, content.preferred-height);
+warning: concat@0.2.10:      |                 ^^^^^^^^^^^^^^^
+warning: concat@0.2.10:      |
+warning: concat@0.2.10: warning: The property 'viewport-height' has been deprecated. Please use 'content-height' instead
+warning: concat@0.2.10:     --> E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat\ui\primitives\modal.slint:252:38
+warning: concat@0.2.10:      |
+warning: concat@0.2.10:  252 |                     height: scroller.viewport-height;
+warning: concat@0.2.10:      |                                      ^^^^^^^^^^^^^^^
+warning: concat@0.2.10: warning: Component is neither used nor exported
+warning: concat@0.2.10:     --> E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat\ui\start.slint:1335:1
+warning: concat@0.2.10:      |
+warning: concat@0.2.10: 1335 | / component TextLink inherits Pressable {
+warning: concat@0.2.10: 1336 | |     in property <string> text;
+warning: concat@0.2.10: 1337 | |
+warning: concat@0.2.10: 1338 | |     label: root.text;
+warning: concat@0.2.10: ...    |
+warning: concat@0.2.10: 1363 | | }
+warning: concat@0.2.10:      | |_^
+   Compiling concat-agent v0.2.10 (E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat-agent)
+error[E0432]: unresolved import `crate::ui::AgentSettingsUi`
+  --> crates\concat\src\panes\agent_settings.rs:23:17
+   |
+23 | use crate::ui::{AgentSettingsUi, App, ModelChannelDraftData};
+   |                 ^^^^^^^^^^^^^^^ no `AgentSettingsUi` in `ui`
+
+warning: use of deprecated type alias `ui::ModelChannelDraftData`: `ModelChannelDraftData` is not part of the public API. Re-export it from your main .slint file to make it public.
+  --> crates\concat\src\panes\agent_settings.rs:23:39
+   |
+23 | use crate::ui::{AgentSettingsUi, App, ModelChannelDraftData};
+   |                                       ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated type alias `ui::ModelChannelDraftData`: `ModelChannelDraftData` is not part of the public API. Re-export it from your main .slint file to make it public.
+  --> crates\concat\src\panes\agent_settings.rs:50:26
+   |
+50 | fn draft_from_ui(draft: &ModelChannelDraftData) -> Result<ChannelDraft, String> {
+   |                          ^^^^^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated type alias `ui::ModelChannelDraftData`: `ModelChannelDraftData` is not part of the public API. Re-export it from your main .slint file to make it public.
+  --> crates\concat\src\panes\agent_settings.rs:78:51
+   |
+78 | fn draft_to_ui(channel: Option<&ModelChannel>) -> ModelChannelDraftData {
+   |                                                   ^^^^^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated type alias `ui::ModelChannelDraftData`: `ModelChannelDraftData` is not part of the public API. Re-export it from your main .slint file to make it public.
+  --> crates\concat\src\panes\agent_settings.rs:80:26
+   |
+80 |         Some(channel) => ModelChannelDraftData {
+   |                          ^^^^^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated type alias `ui::ModelChannelDraftData`: `ModelChannelDraftData` is not part of the public API. Re-export it from your main .slint file to make it public.
+  --> crates\concat\src\panes\agent_settings.rs:92:17
+   |
+92 |         None => ModelChannelDraftData {
+   |                 ^^^^^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated type alias `ui::ModelChannelDraftData`: `ModelChannelDraftData` is not part of the public API. Re-export it from your main .slint file to make it public.
+   --> crates\concat\src\panes\agent_settings.rs:106:13
+    |
+106 |     draft: &ModelChannelDraftData,
+    |             ^^^^^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated type alias `ui::ModelChannelDraftData`: `ModelChannelDraftData` is not part of the public API. Re-export it from your main .slint file to make it public.
+   --> crates\concat\src\panes\agent_settings.rs:451:48
+    |
+451 | fn mutate(mutation: Mutation, supplied: Option<ModelChannelDraftData>) {
+    |                                                ^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0432`.
+warning: `concat` (lib test) generated 7 warnings
+warning: concat@0.2.10: warning: The property 'viewport-height' has been deprecated. Please use 'content-height' instead
+warning: concat@0.2.10:     --> E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat\ui\primitives\modal.slint:248:17
+warning: concat@0.2.10:      |
+warning: concat@0.2.10:  248 |                 viewport-height: Math.max(self.height, content.preferred-height);
+warning: concat@0.2.10:      |                 ^^^^^^^^^^^^^^^
+warning: concat@0.2.10:      |
+warning: concat@0.2.10: warning: The property 'viewport-height' has been deprecated. Please use 'content-height' instead
+warning: concat@0.2.10:     --> E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat\ui\primitives\modal.slint:252:38
+warning: concat@0.2.10:      |
+warning: concat@0.2.10:  252 |                     height: scroller.viewport-height;
+warning: concat@0.2.10:      |                                      ^^^^^^^^^^^^^^^
+warning: concat@0.2.10: warning: Component is neither used nor exported
+warning: concat@0.2.10:     --> E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat\ui\start.slint:1335:1
+warning: concat@0.2.10:      |
+warning: concat@0.2.10: 1335 | / component TextLink inherits Pressable {
+warning: concat@0.2.10: 1336 | |     in property <string> text;
+warning: concat@0.2.10: 1337 | |
+warning: concat@0.2.10: 1338 | |     label: root.text;
+warning: concat@0.2.10: ...    |
+warning: concat@0.2.10: 1363 | | }
+warning: concat@0.2.10:      | |_^
+error: could not compile `concat` (lib test) due to 1 previous error; 7 warnings emitted

@@ -1,0 +1,559 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling syn v2.0.119
+   Compiling synstructure v0.13.2
+   Compiling syn v3.0.4
+   Compiling zerofrom-derive v0.1.7
+   Compiling zerofrom v0.1.8
+   Compiling yoke-derive v0.8.2
+   Compiling stable_deref_trait v1.2.1
+   Compiling yoke v0.8.3
+   Compiling zerovec-derive v0.11.6
+   Compiling zerovec v0.11.8
+   Compiling displaydoc v0.2.7
+   Compiling windows-link v0.2.1
+   Compiling tinystr v0.8.4
+   Compiling writeable v0.6.4
+   Compiling version_check v0.9.5
+   Compiling litemap v0.8.3
+   Compiling icu_locale_core v2.3.0
+   Compiling generic-array v0.14.7
+   Compiling zerotrie v0.2.5
+   Compiling potential_utf v0.1.6
+   Compiling utf8_iter v1.0.4
+   Compiling icu_normalizer_data v2.3.0
+   Compiling icu_properties_data v2.3.0
+   Compiling icu_collections v2.3.0
+   Compiling icu_provider v2.3.1
+   Compiling windows-strings v0.5.1
+   Compiling windows-result v0.4.1
+   Compiling windows-interface v0.59.3
+   Compiling windows-implement v0.60.2
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.11
+   Compiling typenum v1.20.1
+   Compiling smallvec v1.15.2
+   Compiling cc v1.4.4
+   Compiling windows-core v0.62.2
+   Compiling serde_core v1.0.229
+   Compiling pkg-config v0.3.34
+   Compiling cfg-if v1.0.4
+   Compiling vcpkg v0.2.15
+   Compiling libsqlite3-sys v0.40.0
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling getrandom v0.4.3
+   Compiling zmij v1.0.23
+   Compiling foldhash v0.2.0
+   Compiling hashbrown v0.17.1
+   Compiling idna_adapter v1.2.2
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling windows-threading v0.2.1
+   Compiling getrandom v0.3.4
+   Compiling percent-encoding v2.3.2
+   Compiling serde_json v1.0.151
+   Compiling serde v1.0.229
+   Compiling form_urlencoded v1.2.2
+   Compiling windows-future v0.3.2
+   Compiling digest v0.10.7
+   Compiling idna v1.1.0
+   Compiling hashlink v0.12.2
+   Compiling windows-numerics v0.3.1
+   Compiling windows-collections v0.3.2
+   Compiling windows-sys v0.61.2
+   Compiling serde_derive v1.0.229
+   Compiling fastrand v2.5.0
+   Compiling bitflags v2.13.1
+   Compiling memchr v2.8.3
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling itoa v1.0.18
+   Compiling fallible-iterator v0.3.0
+   Compiling once_cell v1.21.4
+   Compiling cpufeatures v0.2.17
+   Compiling sha2 v0.10.9
+   Compiling tempfile v3.27.0
+   Compiling rusqlite v0.42.0
+   Compiling windows v0.62.2
+   Compiling url v2.5.8
+   Compiling base64 v0.22.1
+   Compiling zeroize v1.9.0
+   Compiling concat-agent v0.2.10 (E:\BK-CAT\.build\worktrees\m4-model-settings\src\crates\concat-agent)
+warning: missing documentation for a constant
+  --> crates\concat-agent\src\configuration.rs:19:1
+   |
+19 | pub const CONFIGURATION_FILE: &str = "model-channels.json";
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: requested on the command line with `-W missing-docs`
+
+warning: missing documentation for a constant
+  --> crates\concat-agent\src\configuration.rs:20:1
+   |
+20 | pub const CONFIGURATION_SCHEMA: u32 = 1;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> crates\concat-agent\src\configuration.rs:31:5
+   |
+31 |     pub fn generate() -> Result<Self, ConfigurationError> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> crates\concat-agent\src\configuration.rs:39:5
+   |
+39 |     pub fn parse(value: &str) -> Result<Self, ConfigurationError> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> crates\concat-agent\src\configuration.rs:50:5
+   |
+50 |     pub fn as_str(&self) -> &str {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates\concat-agent\src\configuration.rs:74:5
+   |
+74 |     OpenAiCompletions,
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates\concat-agent\src\configuration.rs:76:5
+   |
+76 |     OpenAiResponses,
+   |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates\concat-agent\src\configuration.rs:78:5
+   |
+78 |     AnthropicMessages,
+   |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+  --> crates\concat-agent\src\configuration.rs:82:5
+   |
+82 |     pub fn as_str(self) -> &'static str {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> crates\concat-agent\src\configuration.rs:90:5
+   |
+90 |     pub fn parse(value: &str) -> Result<Self, ConfigurationError> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> crates\concat-agent\src\configuration.rs:101:1
+    |
+101 | pub struct ChannelDraft {
+    | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates\concat-agent\src\configuration.rs:102:5
+    |
+102 |     pub label: String,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates\concat-agent\src\configuration.rs:103:5
+    |
+103 |     pub protocol: ModelProtocol,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates\concat-agent\src\configuration.rs:104:5
+    |
+104 |     pub endpoint: String,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates\concat-agent\src\configuration.rs:105:5
+    |
+105 |     pub model: String,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates\concat-agent\src\configuration.rs:106:5
+    |
+106 |     pub request_timeout_ms: u32,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates\concat-agent\src\configuration.rs:107:5
+    |
+107 |     pub max_output_tokens: u32,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> crates\concat-agent\src\configuration.rs:112:1
+    |
+112 | pub struct ModelChannel {
+    | ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates\concat-agent\src\configuration.rs:113:5
+    |
+113 |     pub id: ChannelId,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates\concat-agent\src\configuration.rs:114:5
+    |
+114 |     pub version: u64,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates\concat-agent\src\configuration.rs:115:5
+    |
+115 |     pub label: String,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates\concat-agent\src\configuration.rs:116:5
+    |
+116 |     pub protocol: ModelProtocol,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates\concat-agent\src\configuration.rs:117:5
+    |
+117 |     pub endpoint: String,
+    |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates\concat-agent\src\configuration.rs:118:5
+    |
+118 |     pub model: String,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates\concat-agent\src\configuration.rs:119:5
+    |
+119 |     pub request_timeout_ms: u32,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct field
+   --> crates\concat-agent\src\configuration.rs:120:5
+    |
+120 |     pub max_output_tokens: u32,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates\concat-agent\src\configuration.rs:130:5
+    |
+130 |     pub fn draft(&self) -> ChannelDraft {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates\concat-agent\src\configuration.rs:171:5
+    |
+171 |     pub fn version(&self) -> u64 {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates\concat-agent\src\configuration.rs:175:5
+    |
+175 |     pub fn channels(&self) -> &[ModelChannel] {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates\concat-agent\src\configuration.rs:179:5
+    |
+179 |     pub fn channel(&self, id: &ChannelId) -> Option<&ModelChannel> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates\concat-agent\src\configuration.rs:183:5
+    |
+183 |     pub fn active(&self) -> Option<&ModelChannel> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+   --> crates\concat-agent\src\configuration.rs:192:1
+    |
+192 | pub enum ConfigurationError {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates\concat-agent\src\configuration.rs:193:5
+    |
+193 |     InvalidIdentity,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates\concat-agent\src\configuration.rs:194:5
+    |
+194 |     InvalidLabel,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates\concat-agent\src\configuration.rs:195:5
+    |
+195 |     UnsupportedProtocol,
+    |     ^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates\concat-agent\src\configuration.rs:196:5
+    |
+196 |     InvalidAddress,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates\concat-agent\src\configuration.rs:197:5
+    |
+197 |     InvalidModel,
+    |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates\concat-agent\src\configuration.rs:198:5
+    |
+198 |     InvalidTimeout,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates\concat-agent\src\configuration.rs:199:5
+    |
+199 |     InvalidOutputLimit,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates\concat-agent\src\configuration.rs:200:5
+    |
+200 |     TooManyChannels,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates\concat-agent\src\configuration.rs:201:5
+    |
+201 |     InvalidDocument,
+    |     ^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates\concat-agent\src\configuration.rs:202:5
+    |
+202 |     UnsupportedSchema,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates\concat-agent\src\configuration.rs:203:5
+    |
+203 |     MissingChannel,
+    |     ^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates\concat-agent\src\configuration.rs:204:5
+    |
+204 |     StaleConfiguration,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates\concat-agent\src\configuration.rs:205:5
+    |
+205 |     VersionExhausted,
+    |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates\concat-agent\src\configuration.rs:206:5
+    |
+206 |     Busy,
+    |     ^^^^
+
+warning: missing documentation for a variant
+   --> crates\concat-agent\src\configuration.rs:207:5
+    |
+207 |     StorageUnavailable,
+    |     ^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates\concat-agent\src\configuration.rs:208:5
+    |
+208 |     CommitUnconfirmed,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates\concat-agent\src\configuration.rs:209:5
+    |
+209 |     RandomUnavailable,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> crates\concat-agent\src\configuration.rs:271:1
+    |
+271 | pub fn validate_draft(mut draft: ChannelDraft) -> Result<ChannelDraft, ConfigurationError> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+   --> crates\concat-agent\src\configuration.rs:326:1
+    |
+326 | pub struct ConfigurationStore {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates\concat-agent\src\configuration.rs:338:5
+    |
+338 |     pub fn load(&self) -> Result<ConfigurationSnapshot, ConfigurationError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates\concat-agent\src\configuration.rs:375:5
+    |
+375 | /     pub fn assert_current(
+376 | |         &self,
+377 | |         expected: &ConfigurationSnapshot,
+378 | |     ) -> Result<(), ConfigurationError> {
+    | |_______________________________________^
+
+warning: missing documentation for a method
+   --> crates\concat-agent\src\configuration.rs:432:5
+    |
+432 | /     pub fn select(
+433 | |         &self,
+434 | |         expected: &ConfigurationSnapshot,
+435 | |         id: Option<&ChannelId>,
+436 | |     ) -> Result<ConfigurationSnapshot, ConfigurationError> {
+    | |__________________________________________________________^
+
+warning: missing documentation for a method
+   --> crates\concat-agent\src\configuration.rs:446:5
+    |
+446 | /     pub fn delete(
+447 | |         &self,
+448 | |         expected: &ConfigurationSnapshot,
+449 | |         id: &ChannelId,
+450 | |     ) -> Result<ConfigurationSnapshot, ConfigurationError> {
+    | |__________________________________________________________^
+
+warning: missing documentation for a constant
+  --> crates\concat-agent\src\credentials.rs:18:1
+   |
+18 | pub const MAX_SECRET_BYTES: usize = 2560;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates\concat-agent\src\credentials.rs:24:5
+   |
+24 |     InvalidScope,
+   |     ^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates\concat-agent\src\credentials.rs:25:5
+   |
+25 |     InvalidSecret,
+   |     ^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates\concat-agent\src\credentials.rs:26:5
+   |
+26 |     Unsupported,
+   |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates\concat-agent\src\credentials.rs:27:5
+   |
+27 |     Unavailable,
+   |     ^^^^^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates\concat-agent\src\credentials.rs:28:5
+   |
+28 |     Corrupt,
+   |     ^^^^^^^
+
+warning: missing documentation for a variant
+  --> crates\concat-agent\src\credentials.rs:29:5
+   |
+29 |     AlreadyInstalled,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> crates\concat-agent\src\credentials.rs:56:5
+   |
+56 |     pub fn new(channel_id: &str, service_origin: &str) -> Result<Self, CredentialError> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an associated function
+  --> crates\concat-agent\src\credentials.rs:95:5
+   |
+95 |     pub fn new(value: String) -> Result<Self, CredentialError> {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for an enum
+   --> crates\concat-agent\src\credentials.rs:121:1
+    |
+121 | pub enum CredentialStatus {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates\concat-agent\src\credentials.rs:122:5
+    |
+122 |     Missing,
+    |     ^^^^^^^
+
+warning: missing documentation for a variant
+   --> crates\concat-agent\src\credentials.rs:123:5
+    |
+123 |     Present,
+    |     ^^^^^^^
+
+warning: missing documentation for a method
+   --> crates\concat-agent\src\credentials.rs:129:5
+    |
+129 |     fn read(&self, scope: &CredentialScope) -> Result<Option<Secret>, CredentialError>;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates\concat-agent\src\credentials.rs:130:5
+    |
+130 |     fn write(&self, scope: &CredentialScope, secret: &Secret) -> Result<(), CredentialError>;
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a method
+   --> crates\concat-agent\src\credentials.rs:134:5
+    |
+134 |     fn status(&self, scope: &CredentialScope) -> Result<CredentialStatus, CredentialError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a function
+   --> crates\concat-agent\src\credentials.rs:155:1
+    |
+155 | pub fn platform_store() -> Result<Arc<dyn CredentialStore>, CredentialError> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: missing documentation for a struct
+  --> crates\concat-agent\src\credentials\windows.rs:18:1
+   |
+18 | pub struct WindowsCredentialStore;
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `concat-agent` (lib) generated 72 warnings
+warning: missing documentation for the crate
+   --> crates\concat-agent\tests\configuration.rs:2:1
+    |
+  2 | / use concat_agent::configuration::{
+  3 | |     CONFIGURATION_FILE, ChannelDraft, ChannelId, ConfigurationError, ConfigurationStore,
+  4 | |     ModelProtocol, canonical_endpoint, validate_draft,
+  5 | | };
+...   |
+349 | | }
+    | |_^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+warning: `concat-agent` (test "configuration") generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 18s
+     Running tests\configuration.rs (E:\BK-CAT\.build\worktrees\m4-model-settings\.build\core-target\debug\deps\configuration-7e82477f76615419.exe)
+
+running 10 tests
+test numeric_and_text_boundaries_are_validated_before_writing ... ok
+test unsafe_or_ambiguous_endpoint_forms_are_rejected_without_echoing_the_value ... ok
+test service_scope_is_canonical_and_includes_scheme_host_port_and_base_path ... ok
+test replacement_keeps_identity_and_invalidates_old_versions ... ok
+test a_same_version_external_change_is_not_mistaken_for_the_reviewed_file ... ok
+test changing_credentials_invalidates_the_reviewed_configuration_without_storing_a_secret ... ok
+test concurrent_stale_editors_cannot_overwrite_the_winning_change ... ok
+test explicit_channels_reopen_with_stable_identity_and_no_implicit_selection_or_grant ... ok
+test deleting_the_selected_channel_does_not_activate_another_channel ... ok
+test unknown_schema_secret_fields_and_damaged_documents_are_never_migrated_or_overwritten ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
