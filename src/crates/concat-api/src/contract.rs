@@ -70,6 +70,7 @@ fn reply_schema(method: &str, generator: &mut SchemaGenerator) -> Option<Value> 
         | "project.get"
         | "project.setVideo"
         | "edit.apply"
+        | "edit.applyGuarded"
         | "edit.undo"
         | "edit.redo"
         | "media.import"

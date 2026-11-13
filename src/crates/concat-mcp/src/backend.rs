@@ -6,9 +6,9 @@
 //!
 //! Both take a [`Request`] and give back its result as JSON, so a tool
 //! cannot tell them apart and the meaning of every request stays the
-//! API's. A third backend - the window's own open project, once the
-//! window can be asked to edit it ("live mode", #337) - is one more
-//! implementation of [`Backend`], with nothing above it changing.
+//! API's. The window's own open project needs no backend of its own: the
+//! window's server runs a request naming it in the window, when the
+//! Automation page lets scripts edit it ("live mode", #337).
 //!
 //! - [`Window`]: a JSON-RPC connection to the server the Automation page
 //!   runs. Found through the listing the window writes
@@ -118,7 +118,9 @@ fn locate() -> Result<(SocketAddr, String), String> {
 }
 
 /// The window's server, over a connection that is reopened once if it
-/// drops - the window restarted its server, say.
+/// drops - the window restarted its server, say. A guarded mutation is
+/// never replayed: a lost reply leaves its outcome unknown until the
+/// caller reads and reconciles the current native project.
 pub struct Window {
     client: Client,
 }
@@ -138,17 +140,22 @@ impl Window {
             client: Client::connect(address, token, PATIENCE)?,
         })
     }
-}
 
-impl Backend for Window {
-    fn call(&mut self, request: Request) -> Result<Value, ApiError> {
+    fn call_with_reconnect(
+        &mut self,
+        request: Request,
+        reconnect: impl FnOnce() -> Result<Window, String>,
+    ) -> Result<Value, ApiError> {
+        if matches!(&request, Request::EditApplyGuarded { .. }) {
+            return self.client.call(&request);
+        }
         match self.client.call(&request) {
             Err(error)
                 if error
                     .message
                     .starts_with("the connection to the Concat server") =>
             {
-                let again = Window::find().map_err(|why| {
+                let again = reconnect().map_err(|why| {
                     ApiError::failed(format!(
                         "{} - and reconnecting failed: {why}",
                         error.message
@@ -159,6 +166,12 @@ impl Backend for Window {
             }
             outcome => outcome,
         }
+    }
+}
+
+impl Backend for Window {
+    fn call(&mut self, request: Request) -> Result<Value, ApiError> {
+        self.call_with_reconnect(request, Window::find)
     }
 
     fn describe(&self) -> Value {
@@ -217,5 +230,68 @@ impl Backend for Headless {
     fn finish(&mut self) {
         self.stopper.cancel_all();
         self.api.finish();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{Shutdown, TcpListener};
+
+    /// The socket peer receives an authenticated guarded edit and drops
+    /// the connection before replying. Its outcome is unknown; the
+    /// adapter must return that first error without even trying discovery
+    /// or reconnecting. No environment variables or real server are used.
+    #[test]
+    fn a_lost_guarded_reply_never_discovers_reconnects_or_replays() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test listener");
+        let address = listener.local_addr().expect("address");
+        let peer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("test connection");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .expect("timeout");
+            let mut reader = BufReader::new(stream.try_clone().expect("reader"));
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("authentication frame");
+            let auth: Value = serde_json::from_str(&line).expect("auth JSON");
+            assert_eq!(auth["method"], "auth");
+            writeln!(
+                stream,
+                "{}",
+                json!({ "jsonrpc": "2.0", "id": auth["id"], "result": {} })
+            )
+            .expect("auth reply");
+            stream.flush().expect("flush");
+            line.clear();
+            reader.read_line(&mut line).expect("edit frame");
+            let request: Value = serde_json::from_str(&line).expect("edit JSON");
+            stream.shutdown(Shutdown::Both).expect("lost reply");
+            request
+        });
+        let mut window = Window::connect(address, "isolated-test-token").expect("connect");
+        let request: Request = serde_json::from_value(json!({
+            "method": "edit.applyGuarded", "path": "/current",
+            "expectedSession": 4, "expectedRevision": 8,
+            "command": { "op": "batch", "commands": [] },
+        }))
+        .expect("typed request");
+        let failure = window
+            .call_with_reconnect(request, || {
+                panic!("a guarded request must not discover or reconnect")
+            })
+            .expect_err("the original lost reply");
+        assert!(
+            failure
+                .message
+                .starts_with("the connection to the Concat server")
+        );
+        assert!(!failure.message.contains("reconnecting"));
+        let received = peer.join().expect("peer completed");
+        assert_eq!(received["method"], "edit.applyGuarded");
+        assert_eq!(received["params"]["expectedSession"], 4);
+        assert_eq!(received["params"]["expectedRevision"], 8);
     }
 }

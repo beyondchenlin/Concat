@@ -25,6 +25,7 @@ pub mod capcut;
 pub mod commands;
 pub mod doc;
 pub mod editor;
+pub mod guard;
 pub mod model;
 pub mod placement;
 pub mod runs;
@@ -37,6 +38,7 @@ pub use commands::{
 };
 pub use doc::{DOCUMENT_VERSION, DocumentSettings, document_version, from_document, to_document};
 pub use editor::{Editor, RetiredFields};
+pub use guard::GuardError;
 pub use model::Project;
 
 #[cfg(test)]

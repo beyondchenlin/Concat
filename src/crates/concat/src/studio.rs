@@ -1506,7 +1506,7 @@ fn package_art(
 /// Whether two project paths name one folder: the same string, or the same
 /// folder once both are resolved, so a path spelled another way is not
 /// mistaken for another project.
-fn same_folder(a: &str, b: &str) -> bool {
+pub(crate) fn same_folder(a: &str, b: &str) -> bool {
     a == b
         || matches!(
             (std::fs::canonicalize(a), std::fs::canonicalize(b)),

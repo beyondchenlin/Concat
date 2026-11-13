@@ -27,6 +27,7 @@ use serde_json::Value;
 
 use crate::commands::{Command, CommandError, IdMint, Outcome, apply};
 use crate::doc::{DocumentSettings, from_document, to_document};
+use crate::guard::{self, GuardError};
 use crate::model::{Clip, Project};
 
 const UNDO_DEPTH: usize = 200;
@@ -67,19 +68,26 @@ impl Editor {
         }
     }
 
+    /// Captures an existing project without its live editing history, adopting
+    /// every id so a host's detached render snapshot cannot reuse an existing
+    /// id. A snapshot must never be merged back over the current editor.
+    pub fn from_project(project: Project) -> Self {
+        let mut mint = IdMint::default();
+        mint.adopt_project(&project);
+        Self {
+            project,
+            mint,
+            undo: VecDeque::new(),
+            redo: Vec::new(),
+        }
+    }
+
     /// Restores a project from a document, adopting every id it uses so the
     /// mint can never re-issue one. Returns None when the document holds
     /// nothing recognisable.
     pub fn from_document(document: &Value) -> Option<Self> {
         let project = from_document(document)?;
-        let mut mint = IdMint::default();
-        mint.adopt_project(&project);
-        Some(Self {
-            project,
-            mint,
-            undo: VecDeque::new(),
-            redo: Vec::new(),
-        })
+        Some(Self::from_project(project))
     }
 
     /// Rewrites the picture links `upgrade` changes - one to a retired
@@ -158,6 +166,22 @@ impl Editor {
         &self.project
     }
 
+    /// Captures this editor for a read-only render or inspection job, without
+    /// copying its editing history. The capture shares immutable project data
+    /// until changed and retains the mint so its ids remain valid.
+    ///
+    /// This is not a second application editing authority: hosts must never
+    /// merge a modified snapshot back into the live session. All user/agent
+    /// edits still go through the current editor and its single history.
+    pub fn snapshot(&self) -> Self {
+        Self {
+            project: self.project.clone(),
+            mint: self.mint.clone(),
+            undo: VecDeque::new(),
+            redo: Vec::new(),
+        }
+    }
+
     /// The project, writable around the undo stack: for tests that need a
     /// state no command makes any more, such as the stacked clips an older
     /// document can hold.
@@ -174,6 +198,49 @@ impl Editor {
     /// no-op - a missing id, a value already in place.
     pub fn apply(&mut self, command: Command) -> Result<Outcome, CommandError> {
         self.apply_within(None, command)
+    }
+
+    /// Commits an automation command or batch only if every intended and
+    /// actual affected track is currently writable. The host must call this
+    /// on the native editing thread, passing the window's current lock set
+    /// after checking executor ownership and the project/session/version.
+    /// There must be no opportunity to change locks between those checks and
+    /// this call. A plan-time lock snapshot is not sufficient.
+    ///
+    /// Unsupported native commands fail closed; see `GUARDED_OPERATIONS`.
+    /// Validation uses a transaction-local project and id-mint copy, never a
+    /// second writable timeline. Failure preserves both histories and the
+    /// mint. Success records the whole batch as one step in this editor's
+    /// existing undo history, together with ordinary manual edits.
+    pub fn apply_guarded(
+        &mut self,
+        command: Command,
+        locked_tracks: &std::collections::HashSet<String>,
+    ) -> Result<Outcome, GuardError> {
+        let before = self.project.clone();
+        let mut staged = self.snapshot();
+        let outcome = guard::apply_staged(
+            &mut staged.project,
+            &mut staged.mint,
+            command,
+            locked_tracks,
+        )?;
+        if !outcome.applied {
+            if staged.project != before {
+                return Err(GuardError::UnsupportedEffect);
+            }
+            return Ok(Outcome::default());
+        }
+        staged.tidy_touched(&before);
+        staged.follow_first_hdr(&before);
+        guard::check_effects(&before, &staged.project, locked_tracks)?;
+        if staged.project == before {
+            return Ok(Outcome::default());
+        }
+        self.project = staged.project;
+        self.mint = staged.mint;
+        self.record_edit(before, None);
+        Ok(outcome)
     }
 
     /// [`Editor::apply`] as one move of a gesture.
@@ -199,6 +266,13 @@ impl Editor {
         }
         self.tidy_touched(&before);
         self.follow_first_hdr(&before);
+        self.record_edit(before, gesture);
+        Ok(outcome)
+    }
+
+    /// Records both manual edits and accepted automation batches in the same
+    /// history. Rejected transaction copies never call this method.
+    fn record_edit(&mut self, before: Project, gesture: Option<&str>) {
         let continues = match (gesture, self.undo.back()) {
             (Some(gesture), Some(last)) => last.gesture.as_deref() == Some(gesture),
             _ => false,
@@ -213,7 +287,6 @@ impl Editor {
             }
         }
         self.redo.clear();
-        Ok(outcome)
     }
 
     /// Runs [`Clip::tidy`] over every clip the command wrote, so the clamps

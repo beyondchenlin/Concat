@@ -1160,6 +1160,7 @@ name = "concat"
 version = "0.2.10"
 dependencies = [
  "block2 0.6.2",
+ "concat-agent",
  "concat-api",
  "concat-core",
  "concat-effects",
@@ -1192,6 +1193,10 @@ dependencies = [
  "wgpu",
  "winresource",
 ]
+
+[[package]]
+name = "concat-agent"
+version = "0.2.10"
 
 [[package]]
 name = "concat-android"

@@ -270,7 +270,7 @@ impl Studio {
         // written is not a close, and the jobs it would have stopped are
         // not ours to throw away.
         if let Some(session) = self.session.as_mut() {
-            let (path, document) = session.prepare_save(None);
+            let (path, document) = session.prepare_save(None)?;
             let ticket = projects::ticket();
             if let Err(error) = projects::save_ordered(&path, &document, ticket) {
                 log::warn!("project: could not be saved, not closing: {error}");

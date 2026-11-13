@@ -31,6 +31,7 @@ mod ui {
     slint::include_modules!();
 }
 
+pub mod agent;
 mod batch_volume;
 mod chips;
 mod dock;
@@ -44,6 +45,7 @@ mod i18n;
 #[cfg(target_os = "ios")]
 mod ios;
 mod keymap;
+mod live;
 mod meters;
 mod motion_tiles;
 mod platform;
@@ -439,6 +441,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
 
     let shell = Rc::new(Shell {
         app: app.as_weak(),
+        agent: studio.host.agent.clone(),
         studio: RefCell::new(studio),
         models: Models::new(),
     });
@@ -2818,6 +2821,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     });
 
     let result = app.run();
+    stop_native_agent();
     drop(reader_sweep);
     log::info!("close: event loop exited (ok={})", result.is_ok());
     // The loop failing is the window never having run at all - on a phone
@@ -2896,6 +2900,7 @@ const EXPORT_PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
 /// frame and removes its files on the way out; one that does not stop
 /// within [`EXPORT_PATIENCE`] does not keep the quit from quitting.
 fn stop_exports() {
+    stop_native_agent();
     let mut held = None;
     Shell::with(|shell, _| {
         let mut studio = shell.studio.borrow_mut();
@@ -3029,6 +3034,8 @@ pub fn draw_in_software() {
 /// `exit`, and macOS said Concat had quit unexpectedly. macOS ends an app
 /// that way itself when it opts into sudden termination.
 fn leave(code: i32) -> ! {
+    // Process exit bypasses destructors. Revoke even on the error/smoke path.
+    stop_native_agent();
     log::logger().flush();
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
@@ -3041,6 +3048,15 @@ fn leave(code: i32) -> ! {
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     std::process::exit(code);
+}
+
+/// Revocation only: never wait on the UI thread for callbacks it must drain.
+fn stop_native_agent() {
+    Shell::with(|shell, _| {
+        if let Some(agent) = &shell.agent {
+            agent.stop();
+        }
+    });
 }
 
 #[cfg(test)]
@@ -3215,13 +3231,13 @@ mod tests {
         )
         .expect("creates the project");
         let mut session = Session::open_info(&info).expect("opens the session");
-        let (old_path, old_document) = session.prepare_save(None);
+        let (old_path, old_document) = session.prepare_save(None).expect("prepares old snapshot");
         let old_ticket = projects::ticket();
         session
             .apply(concat_project::Command::AddTrack { bottom: false })
             .expect("adds the unsaved track");
         let edited = tracks(&session);
-        let (new_path, new_document) = session.prepare_save(None);
+        let (new_path, new_document) = session.prepare_save(None).expect("prepares new snapshot");
         let new_ticket = projects::ticket();
 
         let (release, delayed) = std::sync::mpsc::channel();

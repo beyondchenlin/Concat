@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 /// The server process and its two pipes.
 struct Agent {
     child: Child,
-    input: ChildStdin,
+    input: Option<ChildStdin>,
     lines: mpsc::Receiver<Value>,
     next: i64,
 }
@@ -26,13 +26,20 @@ impl Agent {
     /// The MCP server with a scratch folder for a home, so it reads and
     /// writes nowhere real.
     fn spawn(home: &Path, mode: &str, extra: &[(&str, String)]) -> Agent {
+        // Keep the isolated Windows profile coherent. The GPU driver also
+        // resolves these folders: a nonstandard AppData layout caused its
+        // cache initialization to loop before the first preview frame.
+        let app_data = home.join("AppData");
+        for folder in ["Roaming", "Local", "LocalLow"] {
+            std::fs::create_dir_all(app_data.join(folder)).expect("creates profile folders");
+        }
         let mut command = Command::new(env!("CARGO_BIN_EXE_concat-mcp"));
         command
             .arg(mode)
             .env("HOME", home)
             .env("USERPROFILE", home)
-            .env("APPDATA", home.join("AppData"))
-            .env("LOCALAPPDATA", home.join("LocalAppData"))
+            .env("APPDATA", app_data.join("Roaming"))
+            .env("LOCALAPPDATA", app_data.join("Local"))
             .env("XDG_CONFIG_HOME", home.join(".config"))
             .env("XDG_DATA_HOME", home.join(".local/share"))
             .env_remove("CONCAT_API_ADDRESS")
@@ -60,15 +67,16 @@ impl Agent {
         });
         Agent {
             child,
-            input,
+            input: Some(input),
             lines,
             next: 1,
         }
     }
 
     fn send(&mut self, message: &Value) {
-        writeln!(self.input, "{message}").expect("writes");
-        self.input.flush().expect("flushes");
+        let input = self.input.as_mut().expect("stdin is open");
+        writeln!(input, "{message}").expect("writes");
+        input.flush().expect("flushes");
     }
 
     fn line(&self) -> Value {
@@ -110,7 +118,7 @@ impl Agent {
 
     /// Closes the server's input and waits for it to go.
     fn end(mut self) {
-        drop(self.input);
+        drop(self.input.take());
         for _ in 0..200 {
             if let Ok(Some(status)) = self.child.try_wait() {
                 assert!(status.success(), "{status}");
@@ -118,8 +126,20 @@ impl Agent {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        let _ = self.child.kill();
         panic!("the server did not exit when its input closed");
+    }
+}
+
+impl Drop for Agent {
+    fn drop(&mut self) {
+        drop(self.input.take());
+        if matches!(self.child.try_wait(), Ok(Some(_))) {
+            return;
+        }
+        // A failed assertion or receive timeout must not leave this test's
+        // server alive. Only the child owned by this guard is terminated.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -308,7 +328,7 @@ fn an_agent_edits_previews_and_exports_a_project_headless() {
         }),
     );
     let status = &waited["result"]["structuredContent"];
-    assert_ne!(status["state"], "running", "{waited}");
+    assert_eq!(status["state"], "done", "{waited}");
     assert!(!notes.is_empty(), "progress was reported");
     let mut last = -1.0;
     for note in &notes {
@@ -318,9 +338,10 @@ fn an_agent_edits_previews_and_exports_a_project_headless() {
         assert!(progress > last, "progress rises");
         last = progress;
     }
-    if status["state"] == "done" {
-        assert!(Path::new(&output).exists());
-    }
+    assert!(Path::new(&output).exists());
+    let exported = std::fs::metadata(&output).expect("reads the exported file");
+    assert!(exported.is_file(), "the export is a file");
+    assert!(exported.len() > 0, "the exported video is not empty");
 
     // Writes stay under the home this server was given.
     let (_, outside) = agent.ask(
@@ -385,7 +406,7 @@ fn a_modern_client_discovers_and_is_told_which_versions_are_spoken() {
     assert_eq!(missing["error"]["code"], -32601);
     agent.send(&json!("not an object"));
     assert_eq!(agent.line()["error"]["code"], -32600);
-    writeln!(agent.input, "{{ not json").expect("writes");
+    writeln!(agent.input.as_mut().expect("stdin is open"), "{{ not json").expect("writes");
     assert_eq!(agent.line()["error"]["code"], -32700);
     agent.end();
 }
@@ -441,4 +462,52 @@ fn through_a_running_server_the_agent_shares_its_api() {
     agent.end();
     drop(other);
     server.stop();
+}
+
+/// A real stdio process must not turn a guarded native-window edit into
+/// the headless API's ordinary edit. The project here is an isolated
+/// scratch project; no media or user's project is touched.
+#[test]
+fn guarded_edits_refuse_a_headless_copy_without_changing_it() {
+    let scratch = tempfile::tempdir().expect("scratch");
+    let mut agent = Agent::spawn(scratch.path(), "headless", &[]);
+    let (_, initialized) = agent.ask(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-11-25", "capabilities": {},
+            "clientInfo": { "name": "pi-1.5.2-contract", "version": "1.5.2" },
+        }),
+    );
+    assert_eq!(initialized["result"]["protocolVersion"], "2025-11-25");
+    agent.send(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+    agent.tool(
+        "project_create",
+        json!({ "location": scratch.path().to_string_lossy(), "name": "Guarded" }),
+    );
+    let path = scratch
+        .path()
+        .join("Guarded")
+        .to_string_lossy()
+        .into_owned();
+    let before = agent.tool("project_get", json!({ "path": path }))["structuredContent"].clone();
+    let (_, refused) = agent.ask("tools/call", json!({
+        "name": "edit_apply_guarded", "arguments": {
+            "path": path, "expectedSession": before["sessionId"], "expectedRevision": before["revision"],
+            "command": { "op": "batch", "commands": [
+                { "op": "addTextClip", "start": 0.0, "duration": 1.0, "style": { "content": "One" } },
+                { "op": "addTextClip", "start": 1.0, "duration": 1.0, "style": { "content": "Two" } },
+            ] },
+        },
+    }));
+    assert_eq!(refused["result"]["isError"], true, "{refused}");
+    assert_eq!(
+        refused["result"]["structuredContent"]["error"]["code"], "refused",
+        "{refused}"
+    );
+    let after = agent.tool("project_get", json!({ "path": path }))["structuredContent"].clone();
+    assert_eq!(
+        after, before,
+        "no private timeline or undo entry may be changed"
+    );
+    agent.end();
 }

@@ -44,6 +44,10 @@ const META_SERVER: &str = "io.modelcontextprotocol/serverInfo";
 const MAX_LINE: u64 = 16 * 1024 * 1024;
 /// How many cancellations of requests not yet begun are remembered.
 const EARLY_CANCELS: usize = 1024;
+/// The embedded connection remembers mutation ids for its entire life.
+/// Refusing further mutations at the bound is safer than evicting ids
+/// and accidentally making an old frame executable again.
+const GUARDED_REQUESTS: usize = 4096;
 
 /// JSON-RPC's and MCP's error numbers.
 mod code {
@@ -53,10 +57,13 @@ mod code {
     pub const INVALID_PARAMS: i64 = -32602;
     pub const INTERNAL: i64 = -32603;
     pub const UNSUPPORTED_VERSION: i64 = -32022;
+    pub const NOT_READY: i64 = -32002;
 }
 
 /// What the agent is told about this server, once, when it connects.
 const INSTRUCTIONS: &str = "Concat is a video editor; these tools edit its projects. A project is a folder: open one (project_open) or make one (project_create), then pass its folder as `path` to every other tool. Read timeline_read for the ids of lanes (tracks), clips and media. Times and durations are seconds on the timeline; positions within a clip (keyframes) are fractions from 0 to 1; sizes and offsets of titles and pictures are fractions of the frame. Every edit is one undoable step (edit_undo); edit_apply with a batch command makes several into one. Edits live in memory until project_save. To render, export_start then export_wait. preview_frame shows the frame at a time. A refused edit says why in the window's words and changes nothing.";
+
+const EMBEDDED_INSTRUCTIONS: &str = "These tools access only the project already open in the native editor. Read project_get or timeline_read to obtain its current sessionId and revision. Retain those values and the exact path when submitting a batch through edit_apply_guarded. Native ownership, recovery consent, session, revision, cancellation and track locks are checked independently of this protocol handshake. A refusal or lost response requires reading and reconciliation before a new user-approved plan; never retry an edit automatically. Legacy edits, private project copies, saving, exporting and external calls are not exposed by this connection. One accepted batch shares the native editor's undo history. Protocol initialization never grants permission to resume an interrupted task.";
 
 /// The server's name and version, as `serverInfo`.
 fn server_info() -> Value {
@@ -99,6 +106,10 @@ impl Output {
 struct Cancels {
     running: Option<(String, Arc<AtomicBool>)>,
     early: HashSet<String>,
+    // Kept until the connection ends. The embedded profile refuses all
+    // further guarded writes after overflow instead of forgetting which
+    // of those frames were stopped. Read-only reconciliation remains.
+    overflowed: bool,
 }
 
 /// A request handed from the reader to the worker.
@@ -135,6 +146,7 @@ pub fn serve(
         toolbox,
         output: output.clone(),
         cancels,
+        instructions: INSTRUCTIONS,
     };
     for incoming in queue {
         server.handle(incoming, backend.as_mut());
@@ -242,6 +254,8 @@ fn notification(method: &str, params: &Value, cancels: &Mutex<Cancels>) {
         _ => {
             if cancels.early.len() < EARLY_CANCELS {
                 cancels.early.insert(key);
+            } else if !cancels.early.contains(&key) {
+                cancels.overflowed = true;
             }
         }
     }
@@ -294,16 +308,31 @@ struct Server {
     toolbox: Toolbox,
     output: Output,
     cancels: Arc<Mutex<Cancels>>,
+    instructions: &'static str,
 }
 
 impl Server {
     fn handle(&mut self, incoming: Incoming, backend: &mut dyn Backend) {
+        if let Some(reply) = self.reply(incoming, backend) {
+            self.output.send(&reply);
+        }
+    }
+
+    fn reply(&mut self, incoming: Incoming, backend: &mut dyn Backend) -> Option<Value> {
         let Incoming { id, method, params } = incoming;
         let key = id.to_string();
         let flag = Arc::new(AtomicBool::new(false));
-        if let Ok(mut cancels) = self.cancels.lock() {
+        {
+            let Ok(mut cancels) = self.cancels.lock() else {
+                return Some(failure(
+                    id,
+                    code::INTERNAL,
+                    "cancellation state is unavailable",
+                    None,
+                ));
+            };
             if cancels.early.remove(&key) {
-                return;
+                return None;
             }
             cancels.running = Some((key, Arc::clone(&flag)));
         }
@@ -311,9 +340,7 @@ impl Server {
         if let Ok(mut cancels) = self.cancels.lock() {
             cancels.running = None;
         }
-        if !flag.load(Ordering::Relaxed) {
-            self.output.send(&reply);
-        }
+        (!flag.load(Ordering::Relaxed)).then_some(reply)
     }
 
     fn answer(
@@ -349,6 +376,7 @@ impl Server {
             }
         }
         match method {
+            "ping" => success(id, json!({}), params),
             "initialize" => {
                 let asked = params
                     .get("protocolVersion")
@@ -368,7 +396,7 @@ impl Server {
                         "protocolVersion": version,
                         "capabilities": capabilities(),
                         "serverInfo": server_info(),
-                        "instructions": INSTRUCTIONS,
+                        "instructions": self.instructions,
                     }),
                     params,
                 )
@@ -377,7 +405,7 @@ impl Server {
                 let mut result = json!({
                     "supportedVersions": supported(),
                     "capabilities": capabilities(),
-                    "instructions": INSTRUCTIONS,
+                    "instructions": self.instructions,
                 });
                 let mut meta = Map::new();
                 meta.insert(META_SERVER.to_owned(), server_info());
@@ -474,6 +502,283 @@ impl Server {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    New,
+    AwaitingInitialized,
+    Ready,
+    Closed,
+}
+
+/// A real MCP connection for an in-process, controlled script transport.
+///
+/// The pinned Pi client uses the handshake-era protocol: `initialize`,
+/// `notifications/initialized`, then tools. This session preserves that
+/// lifecycle and its negotiated version instead of treating tool JSON as
+/// a private RPC format. It uses the same definitions and dispatch as the
+/// stdio server, but only the reviewed embedded toolbox is callable.
+///
+/// The supplied backend must independently enforce native ownership and
+/// recovery consent. Construction and initialization do not confirm
+/// recovery, discover a socket, open a headless project, or start Pi.
+///
+/// Call `handle` on a serialized worker, never on the native UI thread:
+/// its backend can synchronously wait for the UI to apply a guarded edit.
+/// Notifications cancel requests not yet started. A synchronous running
+/// call cannot receive another frame on this same object; the host must
+/// route its stop/revoke signal directly to the native owner and pending
+/// UI callbacks. This type does not claim that runtime wiring is present.
+pub struct Session {
+    server: Server,
+    backend: Box<dyn Backend>,
+    phase: Phase,
+    version: Option<&'static str>,
+    guarded_ids: HashSet<String>,
+}
+
+impl Session {
+    /// Creates the restricted native-current-project connection. No
+    /// legacy editing tool is callable even if its name is guessed.
+    pub fn embedded(backend: Box<dyn Backend>) -> Self {
+        Self {
+            server: Server {
+                toolbox: Toolbox::embedded(),
+                // The four embedded tools emit no progress notifications.
+                // Additional asynchronous tools need an explicit outgoing
+                // transport before they can join this reviewed profile.
+                output: Output(Arc::new(Mutex::new(Box::new(std::io::sink())))),
+                cancels: Arc::default(),
+                instructions: EMBEDDED_INSTRUCTIONS,
+            },
+            backend,
+            phase: Phase::New,
+            version: None,
+            guarded_ids: HashSet::new(),
+        }
+    }
+
+    /// The negotiated handshake protocol, after a successful initialize.
+    pub fn protocol_version(&self) -> Option<&'static str> {
+        self.version
+    }
+
+    /// Processes one JSON-RPC object; notifications and cancelled
+    /// requests have no response. The caller owns framing and transport.
+    pub fn handle(&mut self, message: Value) -> Option<Value> {
+        let Some(object) = message.as_object() else {
+            return Some(failure(
+                Value::Null,
+                code::INVALID_REQUEST,
+                "one JSON-RPC object is required",
+                None,
+            ));
+        };
+        if object.get("jsonrpc") != Some(&json!("2.0")) {
+            return Some(failure(
+                Value::Null,
+                code::INVALID_REQUEST,
+                "jsonrpc must be 2.0",
+                None,
+            ));
+        }
+        let Some(method) = object.get("method").and_then(Value::as_str) else {
+            // This server sends no requests. Responses have no work to do.
+            if object.contains_key("result") || object.contains_key("error") {
+                return None;
+            }
+            return Some(failure(
+                Value::Null,
+                code::INVALID_REQUEST,
+                "a request names a method",
+                None,
+            ));
+        };
+        let id = object.get("id");
+        let params = object.get("params").cloned().unwrap_or(Value::Null);
+        if !(params.is_null() || params.is_object()) {
+            return id.map(|id| {
+                failure(
+                    id.clone(),
+                    code::INVALID_PARAMS,
+                    "MCP parameters are an object",
+                    None,
+                )
+            });
+        }
+        let Some(id) = id else {
+            if self.phase == Phase::AwaitingInitialized && method == "notifications/initialized" {
+                self.phase = Phase::Ready;
+            } else if self.phase != Phase::Closed {
+                notification(method, &params, &self.server.cancels);
+            }
+            return None;
+        };
+        if !(id.is_string() || id.is_i64() || id.is_u64())
+            || id.as_str().is_some_and(|id| id.len() > 256)
+        {
+            return Some(failure(
+                Value::Null,
+                code::INVALID_REQUEST,
+                "a request id is an integer or a string of at most 256 bytes",
+                None,
+            ));
+        }
+        if self.phase == Phase::Closed {
+            return Some(failure(
+                id.clone(),
+                code::NOT_READY,
+                "the embedded session is closed",
+                None,
+            ));
+        }
+        if method == "ping" {
+            return Some(success(id, json!({}), &Value::Null));
+        }
+        if method == "initialize" {
+            if self.phase != Phase::New {
+                return Some(failure(
+                    id.clone(),
+                    code::INVALID_REQUEST,
+                    "this connection has already initialized",
+                    None,
+                ));
+            }
+            let Some(asked) = params.get("protocolVersion").and_then(Value::as_str) else {
+                return Some(failure(
+                    id.clone(),
+                    code::INVALID_PARAMS,
+                    "initialize requires protocolVersion",
+                    None,
+                ));
+            };
+            if !params.get("capabilities").is_some_and(Value::is_object)
+                || !params
+                    .pointer("/clientInfo/name")
+                    .is_some_and(Value::is_string)
+                || !params
+                    .pointer("/clientInfo/version")
+                    .is_some_and(Value::is_string)
+                || modern_version(&params).is_some()
+            {
+                return Some(failure(
+                    id.clone(),
+                    code::INVALID_PARAMS,
+                    "initialize requires capabilities and clientInfo, without per-request modern protocol metadata",
+                    None,
+                ));
+            }
+            let version = LEGACY
+                .iter()
+                .find(|version| **version == asked)
+                .copied()
+                .unwrap_or(LEGACY[0]);
+            let reply = self.server.reply(
+                Incoming {
+                    id: id.clone(),
+                    method: method.to_owned(),
+                    params,
+                },
+                self.backend.as_mut(),
+            );
+            if reply
+                .as_ref()
+                .is_some_and(|reply| reply.get("result").is_some())
+            {
+                self.version = Some(version);
+                self.phase = Phase::AwaitingInitialized;
+            }
+            return reply;
+        }
+        if self.phase != Phase::Ready {
+            return Some(failure(
+                id.clone(),
+                code::NOT_READY,
+                "complete initialize and notifications/initialized before using tools",
+                None,
+            ));
+        }
+        if let Some(requested) = modern_version(&params)
+            && Some(requested) != self.version
+        {
+            return Some(failure(
+                id.clone(),
+                code::UNSUPPORTED_VERSION,
+                "the request must use this connection's negotiated version",
+                Some(json!({ "requested": requested, "supported": [self.version] })),
+            ));
+        }
+        if !matches!(method, "tools/list" | "tools/call") {
+            return Some(failure(
+                id.clone(),
+                code::METHOD_NOT_FOUND,
+                &format!("Method not found: {method}"),
+                None,
+            ));
+        }
+        if method == "tools/call"
+            && params.get("name").and_then(Value::as_str) == Some("edit_apply_guarded")
+        {
+            if self
+                .server
+                .cancels
+                .lock()
+                .map(|cancels| cancels.overflowed)
+                .unwrap_or(true)
+            {
+                return Some(failure(
+                    id.clone(),
+                    code::NOT_READY,
+                    "cancellation tracking is unavailable or full; only read-only reconciliation is permitted on this connection",
+                    None,
+                ));
+            }
+            let key = id.to_string();
+            if self.guarded_ids.contains(&key) {
+                return Some(failure(
+                    id.clone(),
+                    code::INVALID_REQUEST,
+                    "this guarded request id has already been received; reconcile the project before a new plan",
+                    None,
+                ));
+            }
+            if self.guarded_ids.len() >= GUARDED_REQUESTS {
+                return Some(failure(
+                    id.clone(),
+                    code::NOT_READY,
+                    "this connection's guarded-request limit is reached; reconcile and establish a new host session",
+                    None,
+                ));
+            }
+            // Reserve before dispatch, including refused and cancelled
+            // calls. No exception or lost response makes a frame reusable.
+            self.guarded_ids.insert(key);
+        }
+        self.server.reply(
+            Incoming {
+                id: id.clone(),
+                method: method.to_owned(),
+                params,
+            },
+            self.backend.as_mut(),
+        )
+    }
+
+    /// Closes once and lets the supplied native backend drain its work.
+    /// Like handle, this belongs on the session's worker thread.
+    pub fn close(&mut self) {
+        if self.phase != Phase::Closed {
+            self.phase = Phase::Closed;
+            self.backend.finish();
+        }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,5 +836,343 @@ mod tests {
         assert_eq!(replies[0]["id"], Value::Null);
         assert_eq!(replies[1]["id"], 1);
         assert!(replies[1]["result"].is_object());
+    }
+
+    #[derive(Default)]
+    struct Recorded {
+        requests: Vec<Value>,
+        finishes: usize,
+    }
+
+    struct Recording(Arc<Mutex<Recorded>>);
+
+    impl Backend for Recording {
+        fn call(&mut self, request: Request) -> Result<Value, ApiError> {
+            self.0
+                .lock()
+                .expect("record")
+                .requests
+                .push(serde_json::to_value(request).expect("request encodes"));
+            Ok(
+                json!({ "sessionId": 7, "revision": 42, "canUndo": true, "canRedo": false,
+                "project": { "activeTimelineId": "t", "timelines": [], "media": [] },
+                "settings": { "name": "Current", "width": 1920, "height": 1080, "rateNum": 30, "rateDen": 1 } }),
+            )
+        }
+
+        fn describe(&self) -> Value {
+            json!({ "mode": "recording-protocol-test" })
+        }
+
+        fn finish(&mut self) {
+            self.0.lock().expect("record").finishes += 1;
+        }
+    }
+
+    fn embedded() -> (Session, Arc<Mutex<Recorded>>) {
+        let recorded = Arc::new(Mutex::new(Recorded::default()));
+        let session = Session::embedded(Box::new(Recording(Arc::clone(&recorded))));
+        (session, recorded)
+    }
+
+    /// Mirrors packages/mcp/src/client.ts at Pi d36266e0: its 1.5.2
+    /// package requests 2025-11-25, checks the offered version, then sends
+    /// notifications/initialized. This is a protocol contract test, not
+    /// execution of the Pi runtime or a model request.
+    fn initialize(session: &mut Session, version: &str) -> Value {
+        session
+            .handle(json!({
+                "jsonrpc": "2.0", "id": "init", "method": "initialize",
+                "params": { "protocolVersion": version, "capabilities": {},
+                    "clientInfo": { "name": "pi-contract-test", "version": "1.5.2" } },
+            }))
+            .expect("initialize replies")
+    }
+
+    fn ready(session: &mut Session) {
+        assert_eq!(
+            initialize(session, "2025-11-25")["result"]["protocolVersion"],
+            "2025-11-25"
+        );
+        assert!(
+            session
+                .handle(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+                .is_none()
+        );
+    }
+
+    fn guarded(id: i64) -> Value {
+        json!({ "jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {
+            "name": "edit_apply_guarded", "arguments": {
+                "path": "/current", "expectedSession": 7, "expectedRevision": 41,
+                "command": { "op": "batch", "commands": [
+                    { "op": "addTextClip", "trackId": "track-1", "start": 0.0, "duration": 1.0, "style": { "content": "One" } },
+                    { "op": "addTextClip", "trackId": "track-1", "start": 1.0, "duration": 1.0, "style": { "content": "Two" } },
+                ] },
+            },
+        } })
+    }
+
+    #[test]
+    fn pinned_pi_handshake_retains_its_version_and_requires_initialized() {
+        let (mut session, recorded) = embedded();
+        let list = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" });
+        assert_eq!(
+            session.handle(list.clone()).expect("reply")["error"]["code"],
+            code::NOT_READY
+        );
+        let reply = initialize(&mut session, "2025-11-25");
+        assert_eq!(reply["result"]["protocolVersion"], "2025-11-25");
+        assert_eq!(
+            reply["result"]["capabilities"],
+            json!({ "tools": { "listChanged": false } })
+        );
+        assert!(
+            reply["result"].get("resultType").is_none(),
+            "legacy result shape"
+        );
+        assert_eq!(session.protocol_version(), Some("2025-11-25"));
+        assert_eq!(
+            session.handle(list.clone()).expect("reply")["error"]["code"],
+            code::NOT_READY
+        );
+        session.handle(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+        let listed = session.handle(list).expect("reply");
+        let mut names: Vec<&str> = listed["result"]["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("name"))
+            .collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            vec![
+                "concat_version",
+                "edit_apply_guarded",
+                "project_get",
+                "timeline_read"
+            ]
+        );
+        assert!(
+            recorded.lock().expect("record").requests.is_empty(),
+            "handshake never opens or resumes a project"
+        );
+    }
+
+    #[test]
+    fn every_supported_legacy_handshake_is_negotiated_without_relabeling() {
+        for version in LEGACY {
+            let (mut session, _) = embedded();
+            assert_eq!(
+                initialize(&mut session, version)["result"]["protocolVersion"],
+                version
+            );
+            assert_eq!(session.protocol_version(), Some(version));
+        }
+        let (mut session, _) = embedded();
+        assert_eq!(
+            initialize(&mut session, "2099-01-01")["result"]["protocolVersion"],
+            LEGACY[0]
+        );
+        // The requesting client must accept the offered version before it
+        // sends its initialized notification. No tool was run meanwhile.
+        assert_eq!(session.phase, Phase::AwaitingInitialized);
+    }
+
+    #[test]
+    fn embedded_tool_dispatch_preserves_guard_fields_and_refuses_duplicate_ids() {
+        let (mut session, recorded) = embedded();
+        ready(&mut session);
+        let request = guarded(10);
+        let reply = session.handle(request.clone()).expect("reply");
+        assert_eq!(reply["result"]["isError"], false);
+        assert_eq!(reply["result"]["structuredContent"]["sessionId"], 7);
+        assert_eq!(reply["result"]["structuredContent"]["revision"], 42);
+        let duplicate = session.handle(request).expect("duplicate refused");
+        assert_eq!(duplicate["error"]["code"], code::INVALID_REQUEST);
+        let recorded = recorded.lock().expect("record");
+        assert_eq!(recorded.requests.len(), 1, "no replay or legacy fallback");
+        let request = &recorded.requests[0];
+        assert_eq!(request["method"], "edit.applyGuarded");
+        assert_eq!(request["path"], "/current");
+        assert_eq!(request["expectedSession"], 7);
+        assert_eq!(request["expectedRevision"], 41);
+        assert_eq!(
+            request["command"]["commands"].as_array().map(Vec::len),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn hidden_legacy_tools_and_unknown_methods_never_reach_the_backend() {
+        let (mut session, recorded) = embedded();
+        ready(&mut session);
+        for (index, name) in [
+            "edit_apply",
+            "title_add",
+            "captions_add",
+            "edit_undo",
+            "project_open",
+            "project_create",
+            "project_save",
+            "export_start",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let reply = session.handle(json!({ "jsonrpc": "2.0", "id": index, "method": "tools/call", "params": { "name": name, "arguments": {} } })).expect("refused");
+            assert_eq!(
+                reply["error"]["code"],
+                code::INVALID_PARAMS,
+                "{name}: {reply}"
+            );
+        }
+        let direct = session
+            .handle(json!({ "jsonrpc": "2.0", "id": 99, "method": "edit.apply", "params": {} }))
+            .expect("refused");
+        assert_eq!(direct["error"]["code"], code::METHOD_NOT_FOUND);
+        assert!(recorded.lock().expect("record").requests.is_empty());
+    }
+
+    #[test]
+    fn guarded_schema_and_typed_dispatch_refuse_missing_or_wrong_versions() {
+        let (mut session, recorded) = embedded();
+        ready(&mut session);
+        let toolbox = Toolbox::embedded();
+        let (_, schema) = toolbox.find("edit_apply_guarded").expect("guarded tool");
+        let valid = guarded(1)["params"]["arguments"].clone();
+        crate::schema::check(schema, &valid, schema, "guarded").expect("valid shape");
+        for (index, wrong) in [
+            {
+                let mut wrong = valid.clone();
+                wrong
+                    .as_object_mut()
+                    .expect("object")
+                    .remove("expectedSession");
+                wrong
+            },
+            {
+                let mut wrong = valid.clone();
+                wrong["expectedRevision"] = json!(-1);
+                wrong
+            },
+            {
+                let mut wrong = valid.clone();
+                wrong["expectedSession"] = json!("7");
+                wrong
+            },
+            {
+                let mut wrong = valid.clone();
+                wrong["expectedRevision"] = json!(0.5);
+                wrong
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(crate::schema::check(schema, &wrong, schema, "guarded").is_err());
+            let reply = session.handle(json!({ "jsonrpc": "2.0", "id": index, "method": "tools/call", "params": { "name": "edit_apply_guarded", "arguments": wrong } })).expect("refused");
+            assert_eq!(reply["result"]["isError"], true);
+            assert_eq!(
+                reply["result"]["structuredContent"]["error"]["code"],
+                "invalid"
+            );
+        }
+        assert!(recorded.lock().expect("record").requests.is_empty());
+    }
+
+    #[test]
+    fn a_cancelled_queued_guarded_frame_cannot_be_replayed() {
+        let (mut session, recorded) = embedded();
+        ready(&mut session);
+        assert!(session.handle(json!({ "jsonrpc": "2.0", "method": "notifications/cancelled", "params": { "requestId": 10, "reason": "stopped" } })).is_none());
+        assert!(session.handle(guarded(10)).is_none());
+        assert_eq!(
+            session.handle(guarded(10)).expect("no replay")["error"]["code"],
+            code::INVALID_REQUEST
+        );
+        assert!(recorded.lock().expect("record").requests.is_empty());
+    }
+
+    #[test]
+    fn cancellation_overflow_refuses_every_later_guarded_write() {
+        let (mut session, recorded) = embedded();
+        ready(&mut session);
+        for id in 0..=EARLY_CANCELS {
+            assert!(session.handle(json!({ "jsonrpc": "2.0", "method": "notifications/cancelled", "params": { "requestId": id } })).is_none());
+        }
+        // The last cancellation could not fit in the set. It must not
+        // disappear and turn that stopped edit back into runnable work.
+        for id in [EARLY_CANCELS as i64, 10_000] {
+            assert_eq!(
+                session.handle(guarded(id)).expect("refused")["error"]["code"],
+                code::NOT_READY
+            );
+        }
+        assert!(recorded.lock().expect("record").requests.is_empty());
+        let read = session.handle(json!({ "jsonrpc": "2.0", "id": "reconcile", "method": "tools/call", "params": { "name": "project_get", "arguments": { "path": "/current" } } })).expect("read remains possible");
+        assert_eq!(read["result"]["isError"], false);
+        let recorded = recorded.lock().expect("record");
+        assert_eq!(recorded.requests.len(), 1);
+        assert_eq!(recorded.requests[0]["method"], "project.get");
+    }
+
+    #[test]
+    fn a_connection_cannot_switch_to_a_different_protocol_after_initialize() {
+        let (mut session, recorded) = embedded();
+        ready(&mut session);
+        let mut request = guarded(1);
+        request["params"]["_meta"] = json!({ "io.modelcontextprotocol/protocolVersion": MODERN, "io.modelcontextprotocol/clientCapabilities": {} });
+        assert_eq!(
+            session.handle(request).expect("refused")["error"]["code"],
+            code::UNSUPPORTED_VERSION
+        );
+        assert_eq!(
+            initialize(&mut session, "2025-06-18")["error"]["code"],
+            code::INVALID_REQUEST
+        );
+        assert!(recorded.lock().expect("record").requests.is_empty());
+    }
+
+    #[test]
+    fn close_finishes_the_backend_once_and_never_reopens_the_session() {
+        let (mut session, recorded) = embedded();
+        ready(&mut session);
+        session.close();
+        session.close();
+        assert_eq!(
+            session.handle(guarded(1)).expect("closed")["error"]["code"],
+            code::NOT_READY
+        );
+        drop(session);
+        let recorded = recorded.lock().expect("record");
+        assert_eq!(recorded.finishes, 1);
+        assert!(recorded.requests.is_empty());
+    }
+
+    #[test]
+    fn stdio_still_accepts_the_fixed_pi_handshake_version() {
+        let input = [
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                "protocolVersion": "2025-11-25", "capabilities": {},
+                "clientInfo": { "name": "pi-contract-test", "version": "1.5.2" },
+            } }),
+            json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }),
+        ]
+        .map(|message| format!("{message}\n"))
+        .join("");
+        let replies = serve_bytes(input.as_bytes());
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies[0]["result"]["protocolVersion"], "2025-11-25");
+        assert!(replies[0]["result"].get("resultType").is_none());
+        assert!(
+            replies[1]["result"]["tools"]
+                .as_array()
+                .expect("tools")
+                .iter()
+                .any(|tool| tool["name"] == "edit_apply_guarded")
+        );
     }
 }

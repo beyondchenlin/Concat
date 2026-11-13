@@ -59,6 +59,9 @@ pub struct Host {
     pub server: Option<concat_server::Server>,
     /// Which project folders are open, here or over the socket.
     pub open_projects: concat_api::OpenProjects,
+    /// The process-local agent endpoint; it starts with recovery required.
+    /// A storage owner in another instance disables only this endpoint.
+    pub agent: Option<Arc<crate::agent::AgentBridge>>,
 }
 
 impl Host {
@@ -69,7 +72,7 @@ impl Host {
     pub fn start(gpu: Option<Gpu>) -> Result<Host, String> {
         let dirs = AppDirs::locate()?;
         let _ = std::fs::create_dir_all(&dirs.config);
-        let host = Host {
+        let mut host = Host {
             titles: Arc::new(concat_host::Titles::new(&dirs)),
             cutouts: Arc::new(concat_host::Cutouts::new(&dirs.data)),
             stabilizers: Arc::new(concat_host::Stabilizers::new()),
@@ -87,11 +90,33 @@ impl Host {
             speech: Arc::new(Speech::new()),
             server: None,
             open_projects: concat_api::OpenProjects::default(),
+            agent: None,
+        };
+        host.agent = match crate::agent::AgentBridge::acquire(
+            &host.dirs,
+            host.open_projects.clone(),
+            host.exporter.clone(),
+        ) {
+            Ok(agent) => Some(Arc::new(agent)),
+            Err(error) => {
+                log::warn!("embedded agent unavailable: {error}");
+                None
+            }
         };
         // Every effect's pipeline, compiled while the window opens rather
         // than at the first frame each effect draws.
         host.monitor.warm_shaders();
         Ok(host)
+    }
+}
+
+impl Drop for Host {
+    fn drop(&mut self) {
+        if let Some(agent) = &self.agent {
+            // Other callbacks may still hold an Arc. Revocation must not wait
+            // for the final Arc to disappear or for a replacement runtime.
+            agent.stop();
+        }
     }
 }
 
@@ -118,6 +143,8 @@ impl PlaybackEvents for Events {
 pub struct Shell {
     /// The window, weakly: a callback that outlives it is a no-op.
     pub app: slint::Weak<App>,
+    /// Kept outside Studio's RefCell so termination can revoke mid-edit.
+    pub agent: Option<Arc<crate::agent::AgentBridge>>,
     /// The window's state.
     pub studio: RefCell<Studio>,
     /// The live models, handed to Slint once and never replaced.
