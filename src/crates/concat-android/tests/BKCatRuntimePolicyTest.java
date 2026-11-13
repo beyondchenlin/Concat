@@ -86,6 +86,93 @@ public final class BKCatRuntimePolicyTest {
         check(!delivered.get(), "queued old callback is refused after native pause");
         check(replacement.canMessage(BKCatRuntimePolicy.DOCUMENT, "{}"), "new host remains independent");
         pass("a delayed callback cannot cross a native component handoff");
+        BKCatRuntimePolicy.InitialCreation pending =
+                new BKCatRuntimePolicy.InitialCreation(100L);
+        check(pending.deadlineMillis() == 10_100L, "fixed absolute initial deadline");
+        check(pending.poll(false, 100L) == BKCatRuntimePolicy.InitialCreation.Decision.WAIT,
+                "missing first focus waits without opening");
+        check(pending.poll(false, 9_999L) == BKCatRuntimePolicy.InitialCreation.Decision.WAIT,
+                "waiting does not create a document");
+        check(pending.poll(true, 10_099L) == BKCatRuntimePolicy.InitialCreation.Decision.OPEN,
+                "first foreground focus before deadline opens once");
+        check(pending.poll(true, 10_100L) == BKCatRuntimePolicy.InitialCreation.Decision.OPENED,
+                "a later callback cannot create a second document");
+        pass("initial focus waits and admits exactly one document before its fixed deadline");
+
+        BKCatRuntimePolicy.InitialCreation foreground =
+                new BKCatRuntimePolicy.InitialCreation(50L);
+        check(foreground.poll(true, 50L) == BKCatRuntimePolicy.InitialCreation.Decision.OPEN,
+                "an already foreground window does not wait");
+        check(foreground.poll(false, 51L) == BKCatRuntimePolicy.InitialCreation.Decision.OPENED,
+                "focus notifications do not recreate an opened component");
+        pass("an initially focused window opens immediately only once");
+
+        for (boolean focusedAtDeadline : new boolean[] {false, true}) {
+            BKCatRuntimePolicy.InitialCreation expired =
+                    new BKCatRuntimePolicy.InitialCreation(200L);
+            check(expired.poll(focusedAtDeadline, 10_200L)
+                            == BKCatRuntimePolicy.InitialCreation.Decision.EXPIRED,
+                    "the absolute deadline wins even if focus is now true");
+            check(expired.poll(true, 10_201L)
+                            == BKCatRuntimePolicy.InitialCreation.Decision.RETIRED,
+                    "focus after timeout cannot revive the old request");
+        }
+        pass("a first focus at or after the deadline is refused permanently");
+
+        // These are the policy inputs used by lifecycle and native-close
+        // handlers, not an assertion that Android callbacks ran in this JVM.
+        for (String retirement : new String[] {"pause", "save", "destroy", "native-close"}) {
+            BKCatRuntimePolicy.InitialCreation cancelled =
+                    new BKCatRuntimePolicy.InitialCreation(0L);
+            check(cancelled.poll(false, 1L)
+                            == BKCatRuntimePolicy.InitialCreation.Decision.WAIT,
+                    "pending before " + retirement);
+            cancelled.retire();
+            check(cancelled.poll(true, 2L)
+                            == BKCatRuntimePolicy.InitialCreation.Decision.RETIRED,
+                    "foreground after " + retirement + " cannot reopen");
+            cancelled.retire();
+            check(cancelled.poll(false, 3L)
+                            == BKCatRuntimePolicy.InitialCreation.Decision.RETIRED,
+                    "retirement stays terminal");
+        }
+        pass("retirement during the initial wait cannot be undone by resumed focus");
+
+        BKCatRuntimePolicy.InitialCreation queuedFocus =
+                new BKCatRuntimePolicy.InitialCreation(0L);
+        CountDownLatch focusQueued = new CountDownLatch(1);
+        CountDownLatch deliverFocus = new CountDownLatch(1);
+        AtomicBoolean openedAfterStop = new AtomicBoolean(false);
+        Thread lateFocus = new Thread(() -> {
+            focusQueued.countDown();
+            try { deliverFocus.await(); } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            }
+            openedAfterStop.set(queuedFocus.poll(true, 1L)
+                    == BKCatRuntimePolicy.InitialCreation.Decision.OPEN);
+        });
+        lateFocus.start();
+        focusQueued.await();
+        queuedFocus.retire();
+        deliverFocus.countDown();
+        lateFocus.join();
+        check(!openedAfterStop.get(), "a queued focus notification loses to completed retirement");
+        pass("a delayed first-focus callback cannot cross a completed stop");
+
+        foreground.retire();
+        check(foreground.poll(true, 100L) == BKCatRuntimePolicy.InitialCreation.Decision.RETIRED,
+                "an opened and retired component stays retired");
+        BKCatRuntimePolicy.InitialCreation explicitReplacement =
+                new BKCatRuntimePolicy.InitialCreation(100L);
+        check(explicitReplacement.poll(true, 100L)
+                        == BKCatRuntimePolicy.InitialCreation.Decision.OPEN,
+                "only a separately constructed component receives new startup state");
+        check(queuedFocus.poll(true, 100L)
+                        == BKCatRuntimePolicy.InitialCreation.Decision.RETIRED,
+                "a replacement cannot reset the previous request");
+        pass("a fresh explicit component is independent of every retired request");
+
         System.out.println("Android host policy: " + cases + " cases passed");
     }
 }

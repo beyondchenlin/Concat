@@ -1,0 +1,18 @@
+[
+  {
+    "line": 2440,
+    "text": "11-13 14:10:45.951  4133  4133 I concat  : concat::embedded: bk-cat-agent: state=stopping"
+  },
+  {
+    "line": 2442,
+    "text": "11-13 14:10:45.951  4133  4133 I concat  : concat::embedded: bk-cat-agent: state=stopping"
+  },
+  {
+    "line": 2443,
+    "text": "11-13 14:10:45.954  4133  4285 I concat  : concat::embedded: bk-cat-agent: state=closed"
+  },
+  {
+    "line": 2457,
+    "text": "11-13 14:10:46.044   520   565 I ActivityTaskManager: Displayed app.concat.editor/android.app.NativeActivity: +1s76ms"
+  }
+]

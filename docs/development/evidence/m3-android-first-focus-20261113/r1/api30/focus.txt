@@ -1,0 +1,4 @@
+    mResumedActivity: ActivityRecord{5fcf4c3 u0 app.concat.editor/android.app.NativeActivity t9}
+  ResumedActivity: ActivityRecord{5fcf4c3 u0 app.concat.editor/android.app.NativeActivity t9}
+  mCurrentFocus=Window{54618e u0 app.concat.editor/android.app.NativeActivity}
+  mFocusedApp=ActivityRecord{5fcf4c3 u0 app.concat.editor/android.app.NativeActivity t9}
