@@ -1,0 +1,117 @@
+{
+  "error": null,
+  "mode": "native",
+  "passed": true,
+  "portable": "E:\\BK-CAT\\.build\\target\\bk-cat-probes\\c646d06ec9d64872be8489bcae06375a\\native\\portable",
+  "project": "E:\\BK-CAT\\.build\\target\\bk-cat-probes\\c646d06ec9d64872be8489bcae06375a\\native\\portable\\projects\\BK CAT isolated integration",
+  "rendering": {
+    "adapterScope": "application adapter diagnostic; not a visual acceptance result",
+    "applicationAdapterDescription": "Microsoft Basic Render Driver · dx12 · software rasteriser",
+    "completeVisualAcceptance": false,
+    "effectiveEnvironment": {
+      "CONCAT_GPU": "software",
+      "SLINT_BACKEND": null,
+      "SLINT_RENDERER": null,
+      "WGPU_BACKEND": null,
+      "WGPU_DX12_COMPILER": null
+    },
+    "environmentAtLaunch": {
+      "CONCAT_GPU": null,
+      "SLINT_BACKEND": null,
+      "SLINT_RENDERER": null,
+      "WGPU_BACKEND": null,
+      "WGPU_DX12_COMPILER": null
+    },
+    "requested": "software",
+    "softwarePreferenceSetByProbe": true
+  },
+  "scope": {
+    "actualBundledWebpage": false,
+    "androidDevice": false,
+    "currentProject": true,
+    "modelRequests": false,
+    "nativeWindow": true,
+    "realInternalProtocol": true
+  },
+  "steps": [
+    {
+      "evidence": {
+        "revision": 0,
+        "session": 1
+      },
+      "name": "native_recovery_and_real_protocol",
+      "passed": true
+    },
+    {
+      "evidence": {
+        "clips": 0
+      },
+      "name": "both_track_lock_timings_reject_the_whole_batch",
+      "passed": true
+    },
+    {
+      "evidence": {
+        "acknowledgingClient": "deterministic native probe, not a webpage",
+        "operationId": "3",
+        "saved": {
+          "bytes": 6211,
+          "file": "concat.json",
+          "revision": "1",
+          "session": "1",
+          "sha256": "f013b83d03c7db3945821106a332feb1cdc5ec3c1fc7a4b39de16b4696306920"
+        }
+      },
+      "name": "two_subtitles_one_batch_and_real_written_receipt",
+      "passed": true
+    },
+    {
+      "evidence": {
+        "first": {
+          "exact": true,
+          "request": 4,
+          "revision": 1,
+          "session": 1,
+          "sha256": "51f537172062d360f1aba6dedfe3a43dfc102752777bc785c04fe2cc4800ec6b",
+          "time": 0.5
+        },
+        "second": {
+          "exact": true,
+          "request": 5,
+          "revision": 1,
+          "session": 1,
+          "sha256": "39146bb3687046d747d49987ea65948ae4c107ffea7f5a4bfb295d5abcb6efa9",
+          "time": 2.5
+        }
+      },
+      "name": "native_preview_contains_two_distinct_rendered_frames",
+      "passed": true
+    },
+    {
+      "evidence": {
+        "redoRevision": 3,
+        "undoRevision": 2
+      },
+      "name": "single_native_undo_and_redo_share_protocol_history",
+      "passed": true
+    },
+    {
+      "evidence": {
+        "notApplied": 3,
+        "notified": 2,
+        "save": {
+          "acknowledgingClient": "deterministic native probe, not a webpage",
+          "operationId": "6",
+          "saved": {
+            "bytes": 6225,
+            "file": "concat.json",
+            "revision": "5",
+            "session": "1",
+            "sha256": "8ba32c4985331d286877495895c76e2830b3eb218bfd5b2974c1813dab2ee64c"
+          }
+        }
+      },
+      "name": "manual_then_protocol_edit_and_stale_plan_refusal",
+      "passed": true
+    }
+  ]
+}

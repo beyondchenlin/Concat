@@ -1,0 +1,22 @@
+[
+  {
+    "mode": "native",
+    "directory": "E:\\BK-CAT\\.build\\target\\bk-cat-probes\\c646d06ec9d64872be8489bcae06375a\\native",
+    "executable_sha256": "c2e4238fc81b7d83304b246db369abdf388b829bf8851fe17378c012e0667653",
+    "exit_code": 0,
+    "signal": null,
+    "timed_out": false,
+    "report_present": true,
+    "passed": true
+  },
+  {
+    "mode": "platform",
+    "directory": "E:\\BK-CAT\\.build\\target\\bk-cat-probes\\c646d06ec9d64872be8489bcae06375a\\platform",
+    "executable_sha256": "c2e4238fc81b7d83304b246db369abdf388b829bf8851fe17378c012e0667653",
+    "exit_code": 0,
+    "signal": null,
+    "timed_out": false,
+    "report_present": true,
+    "passed": true
+  }
+]

@@ -214,5 +214,149 @@
     "normalization": "none",
     "sourceBytes": 2705,
     "sourceSha256": "931098a7060da21b8963bf9a40aea302d3c664731d5aa805ae7326e6de404cae"
+  },
+  {
+    "source": ".build/m3-native-probe-build.log",
+    "archive": "docs/development/evidence/m3b-window-probe-build.txt",
+    "bytes": 2434,
+    "sha256": "3939bfda1d92330277952826dd6779736246cb15461a0a7420d377bb0dac0b5d",
+    "normalization": "none",
+    "sourceBytes": 2434,
+    "sourceSha256": "3939bfda1d92330277952826dd6779736246cb15461a0a7420d377bb0dac0b5d"
+  },
+  {
+    "source": ".build/m3-run-native-probes.mjs",
+    "archive": "docs/development/evidence/m3b-window-probe-runner.mjs",
+    "bytes": 3100,
+    "sha256": "ec68c3ab8768ecd15f48983c02285bae3f4c4d73f565478c6bf5c5e7d36ae970",
+    "normalization": "none",
+    "sourceBytes": 3100,
+    "sourceSha256": "ec68c3ab8768ecd15f48983c02285bae3f4c4d73f565478c6bf5c5e7d36ae970"
+  },
+  {
+    "source": ".build/m3-native-probe-runs-initial.json",
+    "archive": "docs/development/evidence/m3b-window-probe-runs-initial.json",
+    "bytes": 732,
+    "sha256": "f1e95e6fa995058c60bc012759ba02b7dd0d05e644731a2b8795c9daf072bc9e",
+    "normalization": "line-endings-and-trailing-whitespace-only",
+    "sourceBytes": 752,
+    "sourceSha256": "592e6f4f37dfc6a236596c914b54a2894b013c22a8471cf862700d8b13c267d4"
+  },
+  {
+    "source": ".build/m3-native-probe-runs.json",
+    "archive": "docs/development/evidence/m3b-window-probe-runs.json",
+    "bytes": 685,
+    "sha256": "d0d60304581fec8f07df1883e312cee038ccb14b084820176cf7895cc7c56a9f",
+    "normalization": "none",
+    "sourceBytes": 685,
+    "sourceSha256": "d0d60304581fec8f07df1883e312cee038ccb14b084820176cf7895cc7c56a9f"
+  },
+  {
+    "source": ".build/target/bk-cat-probes/c646d06ec9d64872be8489bcae06375a/native/probe-report.json",
+    "archive": "docs/development/evidence/m3b-native-window-report.json",
+    "bytes": 3330,
+    "sha256": "46b5c127a0e02249b514676380110f8dc4319a5f69156159c83c02f32522ce4f",
+    "normalization": "none",
+    "sourceBytes": 3330,
+    "sourceSha256": "46b5c127a0e02249b514676380110f8dc4319a5f69156159c83c02f32522ce4f"
+  },
+  {
+    "source": ".build/target/bk-cat-probes/c646d06ec9d64872be8489bcae06375a/native/stdout.log",
+    "archive": "docs/development/evidence/m3b-native-window-stdout.txt",
+    "bytes": 3629,
+    "sha256": "b40d4c9a25137d984c4c0444243bf5cc5c1a9bbd87b5681668b8a50182407d43",
+    "normalization": "none",
+    "sourceBytes": 3629,
+    "sourceSha256": "b40d4c9a25137d984c4c0444243bf5cc5c1a9bbd87b5681668b8a50182407d43"
+  },
+  {
+    "source": ".build/target/bk-cat-probes/c646d06ec9d64872be8489bcae06375a/native/stderr.log",
+    "archive": "docs/development/evidence/m3b-native-window-stderr.txt",
+    "bytes": 1637,
+    "sha256": "fc49427f7cccf5d45c0b3728f3995cee819704949b433a0a3d846cf2c2fdbbf1",
+    "normalization": "none",
+    "sourceBytes": 1637,
+    "sourceSha256": "fc49427f7cccf5d45c0b3728f3995cee819704949b433a0a3d846cf2c2fdbbf1"
+  },
+  {
+    "source": ".build/target/bk-cat-probes/c646d06ec9d64872be8489bcae06375a/native/native-window.png",
+    "archive": "docs/development/evidence/m3b-native-window.png",
+    "bytes": 219633,
+    "sha256": "30365da1b51f32c9b7240cca222ed09107182533c5b91b8c2f42a99f2159bb38",
+    "normalization": "none",
+    "sourceBytes": 219633,
+    "sourceSha256": "30365da1b51f32c9b7240cca222ed09107182533c5b91b8c2f42a99f2159bb38"
+  },
+  {
+    "source": ".build/target/bk-cat-probes/c646d06ec9d64872be8489bcae06375a/native/preview-first.png",
+    "archive": "docs/development/evidence/m3b-native-preview-first.png",
+    "bytes": 6759,
+    "sha256": "95570a9fae9804ce0e159b7f630621793263d9b49701ce8cc7da7142e1660588",
+    "normalization": "none",
+    "sourceBytes": 6759,
+    "sourceSha256": "95570a9fae9804ce0e159b7f630621793263d9b49701ce8cc7da7142e1660588"
+  },
+  {
+    "source": ".build/target/bk-cat-probes/c646d06ec9d64872be8489bcae06375a/native/preview-second.png",
+    "archive": "docs/development/evidence/m3b-native-preview-second.png",
+    "bytes": 7698,
+    "sha256": "5e4f3ad9224e5f01895d2efceaefeba662d963609c94327dff4b3c182110bcb8",
+    "normalization": "none",
+    "sourceBytes": 7698,
+    "sourceSha256": "5e4f3ad9224e5f01895d2efceaefeba662d963609c94327dff4b3c182110bcb8"
+  },
+  {
+    "source": ".build/target/bk-cat-probes/c646d06ec9d64872be8489bcae06375a/platform/probe-report.json",
+    "archive": "docs/development/evidence/m3b-platform-window-report.json",
+    "bytes": 2164,
+    "sha256": "91b9a087ac354eec3f1ababf9add940151acaabcce73675c6cf3ba49d20908ac",
+    "normalization": "none",
+    "sourceBytes": 2164,
+    "sourceSha256": "91b9a087ac354eec3f1ababf9add940151acaabcce73675c6cf3ba49d20908ac"
+  },
+  {
+    "source": ".build/target/bk-cat-probes/c646d06ec9d64872be8489bcae06375a/platform/stdout.log",
+    "archive": "docs/development/evidence/m3b-platform-window-stdout.txt",
+    "bytes": 2164,
+    "sha256": "50c97b3cd572634844beb1502ecec79bb16c2186ad3a572a5366fd72eaafc1b7",
+    "normalization": "none",
+    "sourceBytes": 2164,
+    "sourceSha256": "50c97b3cd572634844beb1502ecec79bb16c2186ad3a572a5366fd72eaafc1b7"
+  },
+  {
+    "source": ".build/target/bk-cat-probes/c646d06ec9d64872be8489bcae06375a/platform/stderr.log",
+    "archive": "docs/development/evidence/m3b-platform-window-stderr.txt",
+    "bytes": 2383,
+    "sha256": "dfdffb7e3a16649be342950fcd6cfa4efecdea39f7b90cee4b6674a47f133636",
+    "normalization": "none",
+    "sourceBytes": 2383,
+    "sourceSha256": "dfdffb7e3a16649be342950fcd6cfa4efecdea39f7b90cee4b6674a47f133636"
+  },
+  {
+    "source": ".build/target/bk-cat-probes/c646d06ec9d64872be8489bcae06375a/platform/platform-ready-window.png",
+    "archive": "docs/development/evidence/m3b-platform-window.png",
+    "bytes": 189681,
+    "sha256": "817df4aa115c1de56b9c9892b841c9cce223bcd7ff168d4d070c6ac01b56f464",
+    "normalization": "none",
+    "sourceBytes": 189681,
+    "sourceSha256": "817df4aa115c1de56b9c9892b841c9cce223bcd7ff168d4d070c6ac01b56f464"
+  },
+  {
+    "source": ".build/target/bk-cat-probes/c646d06ec9d64872be8489bcae06375a/native/portable/projects/BK CAT isolated integration/concat.json",
+    "archive": "docs/development/evidence/m3b-editable-two-subtitles.json",
+    "bytes": 6225,
+    "sha256": "8ba32c4985331d286877495895c76e2830b3eb218bfd5b2974c1813dab2ee64c",
+    "normalization": "none",
+    "sourceBytes": 6225,
+    "sourceSha256": "8ba32c4985331d286877495895c76e2830b3eb218bfd5b2974c1813dab2ee64c"
+  },
+  {
+    "source": ".build/m3b-format-repair.log",
+    "archive": "docs/development/evidence/m3b-fixed-toolchain-format-repair.txt",
+    "bytes": 2148,
+    "sha256": "f3e6cc4e1fd6f848c9013cc52328e6c23333fecbb063299125d663429a658dda",
+    "normalization": "none",
+    "sourceBytes": 2148,
+    "sourceSha256": "f3e6cc4e1fd6f848c9013cc52328e6c23333fecbb063299125d663429a658dda"
   }
 ]
