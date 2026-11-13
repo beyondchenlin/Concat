@@ -34,9 +34,9 @@ jobs:
       - name: Format the storage crate
         working-directory: src
         run: cargo fmt --check -p concat-agent
-      - name: Real storage and subprocess interruption tests
+      - name: All native agent storage, ownership and configuration tests
         working-directory: src
-        run: cargo test --locked -p concat-agent --lib --test scripts -- --test-threads=2
+        run: cargo test --locked -p concat-agent -- --test-threads=2
       - name: Strict checks for every storage target
         working-directory: src
         run: cargo clippy --locked -p concat-agent --all-targets -- -D warnings

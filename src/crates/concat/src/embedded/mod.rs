@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use concat_api::AppDirs;
 use serde_json::{Value, json};
@@ -27,6 +28,43 @@ pub const RUNTIME_ORIGIN: &str = "https://bk-cat.invalid";
 pub const RUNTIME_URL: &str = "https://bk-cat.invalid/index.html";
 const CHANNEL: &str = "bk-cat-runtime-v1";
 const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
+// Covers queued platform creation/focus and loading the controlled scripts. This is
+// independent of the device smoke's unchanged 60-second production observation.
+const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
+const LOAD_TIMEOUT_MESSAGE: &str = "聊天运行组件未在限定时间内完成加载。请通过系统提供的更新渠道更新网页组件，重启应用后重试；手动剪辑仍可使用。";
+
+fn load_failure_message(code: &str) -> Option<&'static str> {
+    match code {
+        "web-platform" => Some(
+            "系统网页组件缺少智能体所需的基础运行能力。请更新系统网页组件并重启应用；手动剪辑仍可使用。",
+        ),
+        "weak-references" => Some(
+            "系统网页组件缺少智能体所需的弱引用或内存回收通知能力。请更新系统网页组件并重启应用；手动剪辑仍可使用。",
+        ),
+        "secure-random" => Some(
+            "系统网页组件缺少安全随机标识能力。请更新系统网页组件并重启应用；手动剪辑仍可使用。",
+        ),
+        "cancellation" => Some(
+            "系统网页组件缺少可靠的任务取消能力。请更新系统网页组件并重启应用；手动剪辑仍可使用。",
+        ),
+        "collection-methods" => Some(
+            "系统网页组件缺少智能体所需的数据访问能力。请更新系统网页组件并重启应用；手动剪辑仍可使用。",
+        ),
+        "promise-resolvers" => Some(
+            "系统网页组件缺少智能体所需的异步任务能力。请更新系统网页组件并重启应用；手动剪辑仍可使用。",
+        ),
+        "structured-clone" => Some(
+            "系统网页组件缺少智能体所需的数据复制能力。请更新系统网页组件并重启应用；手动剪辑仍可使用。",
+        ),
+        "script-resource" => Some(
+            "聊天运行资源加载失败，智能体已停止。请重新启动应用；问题持续时请重新安装当前版本，手动剪辑仍可使用。",
+        ),
+        "script-execution" | "runtime-missing" | "bootstrap-missing" => Some(
+            "聊天运行脚本未能启动，智能体已停止。请更新系统网页组件并重启应用；手动剪辑仍可使用。",
+        ),
+        _ => None,
+    }
+}
 
 /// An invisible platform runtime. These calls must never wait on a UI thread.
 pub trait PlatformHost: Send + Sync {
@@ -163,7 +201,14 @@ impl EmbeddedRuntime {
             RuntimeCallbacks,
         ) -> Result<Box<dyn PlatformHost>, String>,
     ) -> Result<Arc<Self>, String> {
-        Self::start_with_spawner(bridge, component, resources, factory, spawn_mailbox)
+        Self::start_with_spawner(
+            bridge,
+            component,
+            resources,
+            factory,
+            spawn_mailbox,
+            LOAD_TIMEOUT,
+        )
     }
 
     fn start_with_spawner(
@@ -175,6 +220,7 @@ impl EmbeddedRuntime {
             RuntimeCallbacks,
         ) -> Result<Box<dyn PlatformHost>, String>,
         spawn: impl FnOnce(MailboxJob) -> std::io::Result<()>,
+        load_timeout: Duration,
     ) -> Result<Arc<Self>, String> {
         let (incoming, receiver) = mpsc::sync_channel(256);
         // First establish the cleanup worker. If thread creation fails, no
@@ -188,7 +234,17 @@ impl EmbeddedRuntime {
             let Ok(weak) = ready.recv() else {
                 return;
             };
-            while let Ok(work) = receiver.recv() {
+            let loading_deadline = Instant::now() + load_timeout;
+            let mut awaiting_load = true;
+            loop {
+                let received = if awaiting_load {
+                    receiver
+                        .recv_timeout(loading_deadline.saturating_duration_since(Instant::now()))
+                } else {
+                    receiver
+                        .recv()
+                        .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+                };
                 let Some(runtime) = weak.upgrade() else {
                     break;
                 };
@@ -209,6 +265,23 @@ impl EmbeddedRuntime {
                     break;
                 }
                 if runtime.revoked.load(Ordering::Acquire) {
+                    // Stop waiting for load, but keep the owner until the real
+                    // platform destruction callback wakes this worker.
+                    awaiting_load = false;
+                    continue;
+                }
+                let work = match received {
+                    Ok(work) => work,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        awaiting_load = false;
+                        runtime.fail(LOAD_TIMEOUT_MESSAGE);
+                        continue;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                };
+                if awaiting_load && Instant::now() >= loading_deadline {
+                    awaiting_load = false;
+                    runtime.fail(LOAD_TIMEOUT_MESSAGE);
                     continue;
                 }
                 match work {
@@ -229,6 +302,9 @@ impl EmbeddedRuntime {
                         }
                     }
                     Work::Closed => {}
+                }
+                if runtime.view().loaded {
+                    awaiting_load = false;
                 }
             }
         }))
@@ -340,6 +416,14 @@ impl EmbeddedRuntime {
     fn handle(&self, envelope: Value) {
         if let Some(event) = envelope.get("event").and_then(Value::as_str) {
             match event {
+                "runtime.loadFailed" => {
+                    let message = envelope["code"]
+                        .as_str()
+                        .and_then(load_failure_message)
+                        .unwrap_or("运行组件报告了未审核的启动错误，智能体已停止。");
+                    self.fail(message);
+                    return;
+                }
                 "runtime.loaded" => {
                     let first = self.view.lock().is_ok_and(|mut view| {
                         if view.loaded {
@@ -590,11 +674,13 @@ impl EmbeddedRuntime {
         // Native execution loses authority synchronously, before any page or
         // database cleanup. A late JavaScript callback cannot keep it alive.
         self.bridge.stop();
-        self.revoked.store(true, Ordering::Release);
+        let first = !self.revoked.swap(true, Ordering::AcqRel);
         log::info!("bk-cat-agent: state=stopping");
         if let Ok(mut view) = self.view.lock() {
             view.phase = "stopping".into();
-            if !reason.is_empty() {
+            // The platform's generic closed acknowledgement must not overwrite
+            // the actionable startup error that caused native retirement.
+            if !reason.is_empty() && (first || view.error.is_empty()) {
                 view.error = reason.to_owned();
             }
         }
@@ -787,6 +873,214 @@ pub(crate) fn show_ui_error(result: Result<(), String>) {
 mod tests {
     use super::*;
 
+    struct StartupHost {
+        closes: Arc<AtomicU64>,
+        posted: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl PlatformHost for StartupHost {
+        fn post_message(&self, message: &str) -> Result<(), String> {
+            self.posted.lock().unwrap().push(message.to_owned());
+            Ok(())
+        }
+
+        fn close(&self) {
+            // Deliberately do not acknowledge destruction. The test separately
+            // proves ownership survives this request until the real callback.
+            self.closes.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    struct StartupFixture {
+        root: std::path::PathBuf,
+        dirs: AppDirs,
+        bridge: Arc<AgentBridge>,
+        runtime: Arc<EmbeddedRuntime>,
+        callbacks: RuntimeCallbacks,
+        closes: Arc<AtomicU64>,
+        posted: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl StartupFixture {
+        fn new(timeout: Duration) -> Self {
+            let root = std::env::temp_dir()
+                .join(format!("bk-cat-startup-{}", random_capability().unwrap()));
+            std::fs::create_dir(&root).unwrap();
+            let dirs = AppDirs::under(&root);
+            let bridge = Arc::new(
+                AgentBridge::acquire(
+                    &dirs,
+                    concat_api::OpenProjects::default(),
+                    concat_host::export::Exporter::new(),
+                )
+                .unwrap(),
+            );
+            let closes = Arc::new(AtomicU64::new(0));
+            let posted = Arc::new(Mutex::new(Vec::new()));
+            let mut callbacks = None;
+            let runtime = EmbeddedRuntime::start_with_spawner(
+                Arc::clone(&bridge),
+                random_capability().unwrap(),
+                Arc::new(RuntimeResources::for_failed_factory()),
+                |_, value| {
+                    callbacks = Some(value);
+                    Ok(Box::new(StartupHost {
+                        closes: Arc::clone(&closes),
+                        posted: Arc::clone(&posted),
+                    }))
+                },
+                spawn_mailbox,
+                timeout,
+            )
+            .unwrap();
+            Self {
+                root,
+                dirs,
+                bridge,
+                runtime,
+                callbacks: callbacks.unwrap(),
+                closes,
+                posted,
+            }
+        }
+
+        fn message(&self, mut envelope: Value) {
+            envelope["channel"] = json!(CHANNEL);
+            envelope["component"] = json!(self.runtime.component());
+            (self.callbacks.message)(envelope.to_string());
+        }
+
+        fn wait_for(&self, predicate: impl Fn(&RuntimeView) -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !predicate(&self.runtime.view()) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(
+                predicate(&self.runtime.view()),
+                "runtime did not reach the expected state"
+            );
+        }
+
+        fn finish(self) {
+            if !self.runtime.view().closed {
+                (self.callbacks.closed)("Native host closed".into());
+            }
+            self.wait_for(|view| view.closed);
+            assert_eq!(
+                self.bridge.status().unwrap().phase,
+                concat_agent::Phase::Released
+            );
+            drop(self.runtime);
+            drop(self.bridge);
+            std::fs::remove_dir_all(self.root).unwrap();
+        }
+    }
+
+    #[test]
+    fn silent_runtime_load_times_out_without_releasing_before_platform_destruction() {
+        let fixture = StartupFixture::new(Duration::from_millis(30));
+        fixture
+            .wait_for(|view| !view.error.is_empty() && fixture.closes.load(Ordering::Acquire) == 1);
+        assert_eq!(fixture.runtime.view().error, LOAD_TIMEOUT_MESSAGE);
+        assert!(!fixture.runtime.view().loaded);
+        assert!(!fixture.runtime.view().closed);
+        assert_eq!(fixture.closes.load(Ordering::Acquire), 1);
+        assert_eq!(
+            fixture.bridge.status().unwrap().phase,
+            concat_agent::Phase::Draining
+        );
+        assert!(
+            AgentBridge::acquire(
+                &fixture.dirs,
+                concat_api::OpenProjects::default(),
+                concat_host::export::Exporter::new(),
+            )
+            .is_err(),
+            "a close request alone cannot transfer the real storage lock"
+        );
+        fixture.message(json!({"event":"runtime.loaded"}));
+        assert!(
+            !fixture.runtime.view().loaded,
+            "late loaded cannot resurrect a retired owner"
+        );
+        assert!(
+            fixture.posted.lock().unwrap().is_empty(),
+            "no runtime.start or model call was sent"
+        );
+        (fixture.callbacks.closed)("Native host closed".into());
+        fixture.wait_for(|view| view.closed);
+        assert_eq!(
+            fixture.runtime.view().error,
+            LOAD_TIMEOUT_MESSAGE,
+            "generic teardown preserves the actionable error"
+        );
+        let replacement = AgentBridge::acquire(
+            &fixture.dirs,
+            concat_api::OpenProjects::default(),
+            concat_host::export::Exporter::new(),
+        )
+        .expect("actual platform destruction drains and releases ownership");
+        drop(replacement);
+        fixture.finish();
+    }
+
+    #[test]
+    fn startup_failure_codes_publish_chinese_errors_without_untrusted_diagnostics() {
+        for code in ["weak-references", "script-execution", "credential-secret"] {
+            let fixture = StartupFixture::new(Duration::from_secs(30));
+            fixture.message(json!({"event":"runtime.loadFailed","code":code,
+                "message":"credential-secret","filename":"private-project-path"}));
+            fixture.wait_for(|view| {
+                !view.error.is_empty() && fixture.closes.load(Ordering::Acquire) == 1
+            });
+            let error = fixture.runtime.view().error;
+            assert!(!error.contains("credential-secret"));
+            assert!(!error.contains("private-project-path"));
+            assert!(error.contains("网页组件") || error.contains("未审核"));
+            assert_eq!(fixture.closes.load(Ordering::Acquire), 1);
+            assert!(fixture.posted.lock().unwrap().is_empty());
+            (fixture.callbacks.closed)("Native host closed".into());
+            fixture.wait_for(|view| view.closed);
+            assert_eq!(fixture.runtime.view().error, error);
+            fixture.finish();
+        }
+    }
+
+    #[test]
+    fn actual_loaded_event_cancels_only_the_loading_deadline_without_approving_recovery() {
+        let fixture = StartupFixture::new(Duration::from_millis(500));
+        fixture.message(json!({"event":"runtime.loaded"}));
+        fixture.wait_for(|view| view.loaded);
+        std::thread::sleep(Duration::from_millis(550));
+        assert_eq!(fixture.closes.load(Ordering::Acquire), 0);
+        assert!(fixture.runtime.view().error.is_empty());
+        assert_eq!(
+            fixture.bridge.status().unwrap().phase,
+            concat_agent::Phase::RecoveryRequired
+        );
+        let posted = fixture.posted.lock().unwrap();
+        assert_eq!(posted.len(), 1);
+        let frame: Value = serde_json::from_str(&posted[0]).unwrap();
+        assert_eq!(frame["payload"]["method"], "runtime.start");
+        drop(posted);
+        fixture.runtime.stop();
+        fixture.finish();
+    }
+
+    #[test]
+    fn lifecycle_retirement_wins_over_pending_load_and_late_failure() {
+        let fixture = StartupFixture::new(Duration::from_millis(30));
+        fixture.runtime.stop();
+        fixture.message(json!({"event":"runtime.loadFailed","code":"script-execution"}));
+        fixture.message(json!({"event":"runtime.loaded"}));
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(fixture.closes.load(Ordering::Acquire), 1);
+        assert!(fixture.runtime.view().error.is_empty());
+        assert!(!fixture.runtime.view().loaded);
+        assert!(fixture.posted.lock().unwrap().is_empty());
+        fixture.finish();
+    }
+
     #[test]
     fn origin_token_and_envelope_shape_are_checked_before_native_dispatch() {
         let valid = json!({"channel":CHANNEL,"component":"native-token","id":"js:1",
@@ -834,6 +1128,7 @@ mod tests {
                     "injected mailbox thread creation failure",
                 ))
             },
+            LOAD_TIMEOUT,
         )
         .err()
         .expect("thread creation must fail before native component declaration");
@@ -869,6 +1164,7 @@ mod tests {
                     let _ = exited.send(());
                 }))
             },
+            LOAD_TIMEOUT,
         )
         .err()
         .expect("invalid component must fail without retaining its claim");
