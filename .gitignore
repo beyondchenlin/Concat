@@ -61,3 +61,6 @@ desktop.ini
 
 # Audits are working notes for whoever runs them, not part of the source
 audit/
+
+# Project-local build cache and isolated test data.
+/.build/
