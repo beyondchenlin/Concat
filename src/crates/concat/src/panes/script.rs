@@ -504,7 +504,6 @@ impl Studio {
         let native = match NativeSnapshot::capture(session) {
             Ok(native) => native,
             Err(error) => {
-                self.dirty = true;
                 self.script.error = format!("无法保存工程身份，文案没有打开：{error}");
                 return;
             }

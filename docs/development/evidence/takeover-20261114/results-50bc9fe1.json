@@ -1,0 +1,118 @@
+{
+  "head": "50bc9fe1e42f710e7c892058c74e7df4d3dfe90c",
+  "merge_candidate": "b02bb70f8b74661a2a1c5f588db1dcf162133340",
+  "tree": "7f6c8b074084d24f5f0846f7e7ed676b54656d25",
+  "checkout_note": "Published in pull request 11, then fetched into the independent verification checkout; head and merge candidate have the identical tree.",
+  "toolchains": {
+    "rust": "1.93.1",
+    "node": "22.19.0",
+    "npm": "10.9.3",
+    "original_pi": "d36266e06669c6991a7c9509d1da04d18d30378d"
+  },
+  "verification": [
+    {
+      "scope": "native project identity",
+      "command": "cargo test --locked -p concat-host --test project_identity -j 1 -- --test-threads=2",
+      "passed": 11,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 0,
+      "run_id": 43528521833,
+      "job_id": 132240282975,
+      "log": "native-project-identity-50bc9fe1.log"
+    },
+    {
+      "scope": "complete native host library",
+      "command": "cargo test --locked -p concat-host --lib -j 1 -- --test-threads=2",
+      "passed": 154,
+      "failed": 0,
+      "ignored": 4,
+      "filtered": 0,
+      "run_id": 43528521833,
+      "job_id": 132240282975,
+      "log": "native-host-regression-50bc9fe1.log",
+      "ignored_tests": [
+        {
+          "name": "capcut::tests::the_drafts_on_this_machine_import",
+          "reason": "needs CapCut's drafts on this machine"
+        },
+        {
+          "name": "cards::tests::draw_every_card",
+          "reason": "needs a GPU and writes the cards to a folder of your choosing"
+        },
+        {
+          "name": "enhance::tests::enhance_stage_timing",
+          "reason": "a probe"
+        },
+        {
+          "name": "playback::tests::split_timing",
+          "reason": "a probe"
+        }
+      ]
+    },
+    {
+      "scope": "complete native agent crate",
+      "command": "cargo test --locked -p concat-agent -- --test-threads=2",
+      "passed": 98,
+      "failed": 0,
+      "ignored_helpers": 4,
+      "filtered": 0,
+      "strict_all_targets": "passed",
+      "run_id": 43528522102,
+      "job_id": 132240138122,
+      "note": "The four ignored helper entry points are invoked by their parent tests. They are different from the four ignored host tests."
+    },
+    {
+      "scope": "fixed original runtime",
+      "commands": [
+        "prepare-agent-runtime",
+        "npm run typecheck",
+        "npm test",
+        "npm run test:original"
+      ],
+      "build": "passed",
+      "typecheck": "passed",
+      "script_tests": {
+        "passed": 40,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "original_database_tests": {
+        "passed": 3,
+        "failed": 0,
+        "cancelled": 0,
+        "skipped": 0
+      },
+      "run_id": 43528522102,
+      "job_id": 132240137990
+    },
+    {
+      "scope": "format locales and model catalog",
+      "conclusion": "success",
+      "run_id": 43528521833,
+      "job_id": 132240283326
+    }
+  ],
+  "compile_failure": {
+    "code": "E0616",
+    "file": "src/crates/concat/src/panes/script.rs",
+    "line": 507,
+    "reason": "Cross-module access to the private Studio.dirty field in snapshot preparation's error branch.",
+    "jobs": [
+      132240282975,
+      132240303271,
+      132240303420
+    ],
+    "log": "compile-failures-50bc9fe1.json",
+    "fix": "Delete only the direct dirty assignment; snapshot preparation neither writes nor acknowledges a native save, so existing native dirty state is retained."
+  },
+  "limits": [
+    "Bounded log excerpts preserve original timestamps and output, but are not complete job logs.",
+    "The host tests ran on Linux; Windows directory identity and junction behavior require Windows results.",
+    "Window tests and the full Studio termination test did not execute in this candidate because window compilation failed.",
+    "Android packages failed to compile; dependent emulator jobs were skipped.",
+    "No real model request, physical device acceptance, user-computer synchronization, merge or release occurred.",
+    "Repeated and overlapping test groups are not added into independent coverage or product acceptance counts."
+  ]
+}
