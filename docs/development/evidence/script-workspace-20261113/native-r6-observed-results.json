@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "recorded_at": "2026-11-13T15:49:27Z",
+  "kind": "connector_observation_summary_not_original_runner_log",
+  "repository": "beyondchenlin/Concat",
+  "branch": "feature/bk-cat-script-versions-20261113",
+  "base_commit": "98d1c3bea05bb9534e11a62ae0d8d58873bda962",
+  "worktree": "E:\\BK-CAT\\.build\\worktrees\\continue-script-versions-20261113",
+  "runner": "E:\\BK-CAT\\.build\\continue-script-final-r6.ps1",
+  "toolchain": "1.98.1",
+  "source_scope": {
+    "production_script_storage_changed_since_base": false,
+    "production_script_pane_and_termination_changed_since_base": false,
+    "working_tree_compatibility_paths": [
+      "src/crates/concat/src/agent/probe.rs",
+      "src/crates/concat/src/host.rs",
+      "src/crates/concat/examples/bk_cat_native_probe.rs",
+      "src/crates/concat/src/studio.rs"
+    ],
+    "source_manifest_on_device": "E:\\BK-CAT\\.build\\continue-script-final-source-r6-before.json",
+    "full_source_manifest_retrieved": false,
+    "later_barrier_test_change_included": false
+  },
+  "observed_completed": [
+    {
+      "name": "format",
+      "exit_code": 0
+    },
+    {
+      "name": "window_all_targets_strict",
+      "command": "cargo clippy --no-deps --locked --offline -p concat --all-targets --features bk-cat-native-probe --config profile.dev.package.concat.debug=0 -j1 -- -D warnings",
+      "exit_code": 0
+    },
+    {
+      "name": "window_library_tests",
+      "command": "cargo test --locked --offline -p concat --lib --features bk-cat-native-probe --config profile.test.package.concat.debug=0 -j1 -- --test-threads=2",
+      "exit_code": 0,
+      "passed": 226,
+      "failed": 0,
+      "ignored": 0,
+      "filtered_out": 0,
+      "test_elapsed_seconds": 2.19,
+      "script_pane_subset": 11,
+      "termination_real_file_subset": 7
+    }
+  ],
+  "not_obtained": [
+    "native example final build exit code",
+    "native script scenario report",
+    "native script workspace screenshot",
+    "final runner exit code"
+  ],
+  "access_blocker": {
+    "observed_at": "2026-11-13T15:34:24Z",
+    "service": "Remote Desktop Commander",
+    "message": "You've reached this month's Desktop Commander usage, so tool calls are paused. Your device remains connected and paired — do not retry or reconnect.",
+    "retried": false,
+    "reconnected": false
+  },
+  "limits": [
+    "This records results actually observed before the service stopped; it is not a reconstructed original log.",
+    "The original device worktree and logs remain untouched.",
+    "The 226 tests do not establish real native-window scenario execution or whole-application restart.",
+    "The later test-only barrier patch needs its own execution.",
+    "The repository-pinned 1.93.1 workflow is recorded separately."
+  ]
+}

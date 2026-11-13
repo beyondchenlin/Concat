@@ -77,6 +77,7 @@ impl Studio {
                     log::info!("{swept} stale proxies swept from {}", project_dir.display());
                 }
                 self.session = Some(session);
+                self.script = Default::default();
                 // The relink dialog belongs to the project that opened it;
                 // this project's own check follows below.
                 self.relink = Default::default();
@@ -262,6 +263,30 @@ impl Studio {
     /// [`Studio::close_project`] without the notice: the project saved, then
     /// let go, or left open when the save fails.
     fn save_and_release(&mut self) -> Result<(), String> {
+        self.script.before_close()?;
+        self.save_and_release_project()
+    }
+
+    /// Finish an irrevocable native termination while the current project is
+    /// still available. Local document work is drained without waiting for UI
+    /// callbacks, then the timeline save is attempted even if that failed.
+    /// Explicit quit-without-saving continues to use `release_project`.
+    pub fn save_and_release_on_termination(&mut self) -> Result<(), String> {
+        let script = self.script.finish_on_termination();
+        // Do not use `?` above: document storage failure must never skip the
+        // existing timeline save or replace its independent failure reason.
+        let project = self.save_and_release_project();
+        match (script, project) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) => Err(format!("文案结束保存失败：{error}")),
+            (Ok(()), Err(error)) => Err(format!("时间线结束保存失败：{error}")),
+            (Err(script), Err(project)) => Err(format!(
+                "文案结束保存失败：{script}；时间线结束保存失败：{project}"
+            )),
+        }
+    }
+
+    fn save_and_release_project(&mut self) -> Result<(), String> {
         log::info!("project: closing {}", self.project_name);
         // Words still being typed land in the save, not on the floor.
         self.flush_commit();
@@ -317,6 +342,7 @@ impl Studio {
             self.host.open_projects.release(session.path());
         }
         self.session = None;
+        self.script = Default::default();
         // Whatever a worker still brings back for this project is dropped
         // at delivery; the sheets that were waiting on one stop waiting.
         crate::host::next_project_epoch();

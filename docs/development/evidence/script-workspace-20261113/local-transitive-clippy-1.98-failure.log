@@ -1,0 +1,29 @@
+    Blocking waiting for file lock on build directory
+    Checking concat-core v0.2.10 (E:\BK-CAT\.build\worktrees\continue-script-versions-20261113\src\crates\concat-core)
+error: using `chunks_exact_mut` with a constant chunk size
+   --> crates\concat-core\src\frame.rs:130:29
+    |
+130 |         for pixel in pixels.chunks_exact_mut(BYTES_PER_PIXEL) {
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `as_chunks` instead: `as_chunks_mut::<BYTES_PER_PIXEL>().0`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#chunks_exact_to_as_chunks
+    = note: `-D clippy::chunks-exact-to-as-chunks` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::chunks_exact_to_as_chunks)]`
+
+error: using `chunks_exact_mut` with a constant chunk size
+   --> crates\concat-core\src\frame.rs:298:34
+    |
+298 |         for pixel in self.pixels.chunks_exact_mut(BYTES_PER_PIXEL) {
+    |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: consider using `as_chunks` instead: `as_chunks_mut::<BYTES_PER_PIXEL>().0`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#chunks_exact_to_as_chunks
+
+error: using `chunks_exact` with a constant chunk size
+   --> crates\concat-core\src\shader.rs:162:27
+    |
+162 |         for triple in rgb.chunks_exact(3) {
+    |                           ^^^^^^^^^^^^^^^ help: consider using `as_chunks` instead: `as_chunks::<3>().0`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#chunks_exact_to_as_chunks
+
+error: could not compile `concat-core` (lib) due to 3 previous errors

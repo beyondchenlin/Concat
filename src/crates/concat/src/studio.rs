@@ -1013,6 +1013,8 @@ pub struct Studio {
 
     // ── the edit ──
     pub session: Option<Session>,
+    /// Independent versioned writing state; never a second timeline.
+    pub script: crate::panes::script::ScriptPane,
     /// A clone of the project a gesture is mutating. `project()` reads it
     /// while it exists; a command replaces it.
     pub echo: Option<Project>,
@@ -2717,6 +2719,7 @@ impl Studio {
             prefs,
             library: Default::default(),
             session: None,
+            script: Default::default(),
             echo: None,
             empty: Project::new(),
             dirty: false,
@@ -3344,7 +3347,13 @@ mod tests {
     #[test]
     fn a_picked_colour_is_the_mean_about_the_point() {
         let mut frame = concat_core::frame::Frame::black(10, 10);
-        for (at, pixel) in frame.pixels_mut().chunks_exact_mut(4).enumerate() {
+        for (at, pixel) in frame
+            .pixels_mut()
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
             let shade = if at % 2 == 0 { 0 } else { 255 };
             pixel.copy_from_slice(&[0, shade, 64, 255]);
         }

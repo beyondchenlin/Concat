@@ -359,8 +359,9 @@ fn save_and_ack(
         "expected one actual saved operation",
     )?;
     let notification = &notifications[0];
+    let expected_revision_text = expected_revision.to_string();
     ensure(
-        notification["saved"]["revision"] == expected_revision.to_string(),
+        notification["saved"]["revision"].as_str() == Some(expected_revision_text.as_str()),
         "save credited a different native revision",
     )?;
     let bytes = fs::read(PathBuf::from(path).join("concat.json")).map_err(|e| e.to_string())?;
@@ -433,7 +434,9 @@ fn preview(
                 let bytes = pixels.as_bytes();
                 let hash = format!("{:x}", Sha256::digest(bytes));
                 let visible = bytes
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .filter(|p| p[0] > 32 || p[1] > 32 || p[2] > 32)
                     .count();
                 if visible < 20 || previous.as_ref() == Some(&hash) {

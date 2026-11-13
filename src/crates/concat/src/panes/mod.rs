@@ -23,6 +23,7 @@ pub mod monitor;
 pub mod pace;
 pub mod project;
 pub mod relink;
+pub mod script;
 pub mod settings;
 pub mod sounds;
 pub mod speech;
