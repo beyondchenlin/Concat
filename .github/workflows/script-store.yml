@@ -4,6 +4,9 @@ on:
   pull_request:
     paths:
       - "src/crates/concat-agent/**"
+      - "src/agent-runtime/**"
+      - "src/crates/concat/src/embedded/transport.js"
+      - ".github/actions/prepare-agent-runtime/**"
       - "src/Cargo.toml"
       - "src/Cargo.lock"
       - "src/rust-toolchain.toml"
@@ -40,3 +43,20 @@ jobs:
       - name: Strict checks for every storage target
         working-directory: src
         run: cargo clippy --locked -p concat-agent --all-targets -- -D warnings
+
+  agent-runtime:
+    name: Fixed original runtime and native transport checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: ./.github/actions/prepare-agent-runtime
+      - name: Strict types against the fixed original source
+        working-directory: src/agent-runtime
+        run: npm run typecheck
+      - name: Ownership, transport and runtime readiness tests
+        working-directory: src/agent-runtime
+        run: npm test
+      - name: Built original components and real conversation persistence
+        working-directory: src/agent-runtime
+        run: npm run test:original

@@ -8,6 +8,7 @@
 //! Generated text is persisted as a candidate and can only change a draft after
 //! an explicit acceptance against its exact saved and local-edit revisions.
 
+use std::collections::HashMap;
 use std::fmt;
 #[cfg(unix)]
 use std::fs::File;
@@ -199,6 +200,15 @@ pub struct ScriptSnapshot {
     pub selected: Option<VersionBinding>,
 }
 
+/// A legacy path-keyed document awaiting an explicit human ownership decision.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LegacyScriptInfo {
+    /// Original location key, retained unchanged for inspection and recovery.
+    pub project_id: String,
+    /// Last saved version; the actual text is read only on explicit inspection.
+    pub latest_version: u64,
+}
+
 /// Request context captured before model generation, with no scheduling rights.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GenerationTicket {
@@ -371,6 +381,104 @@ impl ScriptStore {
         let snapshot = read_snapshot(&transaction, project_id)?;
         transaction.commit()?;
         Ok(snapshot)
+    }
+
+    /// List old location keys without assigning any of them to the open project.
+    /// Persisted native identities use the reserved `bkcat-project:` namespace.
+    pub fn legacy_documents(&self) -> Result<Vec<LegacyScriptInfo>, ScriptError> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT project_id, head_version FROM script_documents WHERE project_id NOT GLOB 'bkcat-project:*' ORDER BY project_id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(LegacyScriptInfo {
+                project_id: row.get(0)?,
+                latest_version: sql_u64(row, 1)?,
+            })
+        })?;
+        let mut documents = Vec::new();
+        for row in rows {
+            let value = row?;
+            if validate_id(&value.project_id).is_err() || value.latest_version == 0 {
+                return Err(ScriptError::InvalidStorage);
+            }
+            documents.push(value);
+        }
+        Ok(documents)
+    }
+
+    /// Explicitly copy an inspected legacy document into an empty native
+    /// identity. All immutable history/candidates are copied in one transaction.
+    /// Source rows stay intact, target candidate/document identities are fresh,
+    /// and the target has no selected cutting version until the user chooses.
+    pub fn copy_legacy_document(
+        &self,
+        source: &ScriptSnapshot,
+        target_project_id: &str,
+    ) -> Result<ScriptSnapshot, ScriptError> {
+        self.writable()?;
+        validate_id(target_project_id)?;
+        if source.project_id.starts_with("bkcat-project:")
+            || !target_project_id.starts_with("bkcat-project:")
+        {
+            return Err(ScriptError::InvalidInput);
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let source = matching_snapshot(&transaction, source)?;
+        if read_snapshot(&transaction, target_project_id)?.is_some() {
+            return Err(ScriptError::AlreadyExists);
+        }
+        let document_id: String =
+            transaction.query_row("SELECT lower(hex(randomblob(16)))", [], |row| row.get(0))?;
+        transaction.execute(
+            "INSERT INTO script_documents(project_id, document_id, revision, head_version) VALUES (?1, ?2, ?3, ?4)",
+            params![target_project_id, document_id, as_i64(source.revision)?, as_i64(source.latest.version)?],
+        )?;
+        let mut candidate_ids = HashMap::new();
+        {
+            let mut statement = transaction.prepare(
+                "SELECT candidate_id, base_revision, edit_revision, source_sha256, content, sha256 FROM script_candidates WHERE document_id=?1 ORDER BY rowid",
+            )?;
+            let mut rows = statement.query([&source.document_id])?;
+            while let Some(row) = rows.next()? {
+                let candidate = read_candidate_row(row, &source)?;
+                let candidate_id: String =
+                    transaction
+                        .query_row("SELECT lower(hex(randomblob(16)))", [], |row| row.get(0))?;
+                transaction.execute(
+                    "INSERT INTO script_candidates(candidate_id, document_id, base_revision, edit_revision, source_sha256, content, sha256) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![candidate_id, document_id, as_i64(candidate.ticket.revision)?, as_i64(candidate.ticket.edit_revision)?, candidate.ticket.sha256, candidate.content, candidate.sha256],
+                )?;
+                candidate_ids.insert(candidate.candidate_id, candidate_id);
+            }
+        }
+        {
+            let mut statement = transaction.prepare(
+                "SELECT version, content, sha256, candidate_id FROM script_versions WHERE document_id=?1 ORDER BY version",
+            )?;
+            let rows = statement.query_map([&source.document_id], read_version_row)?;
+            for row in rows {
+                let version = checked_version(row?)?;
+                let candidate_id = version
+                    .candidate_id
+                    .as_ref()
+                    .map(|id| {
+                        candidate_ids
+                            .get(id)
+                            .cloned()
+                            .ok_or(ScriptError::InvalidStorage)
+                    })
+                    .transpose()?;
+                transaction.execute(
+                    "INSERT INTO script_versions(document_id, version, content, sha256, candidate_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![document_id, as_i64(version.version)?, version.content, version.sha256, candidate_id],
+                )?;
+            }
+        }
+        let copied = required_snapshot(&transaction, target_project_id)?;
+        transaction.commit()?;
+        Ok(copied)
     }
 
     /// Create the project's first immutable manual version; it is not selected.

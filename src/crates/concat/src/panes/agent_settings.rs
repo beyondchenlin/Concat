@@ -487,11 +487,11 @@ fn mutate(mutation: Mutation, supplied: Option<ModelChannelDraftData>) {
             return;
         };
         let selected = pane.selected.clone();
-        if let Some(supplied) = supplied {
-            if let Err(error) = check_saved_draft(&expected, selected.as_ref(), &supplied) {
-                fail_ui(error);
-                return;
-            }
+        if let Some(supplied) = supplied
+            && let Err(error) = check_saved_draft(&expected, selected.as_ref(), &supplied)
+        {
+            fail_ui(error);
+            return;
         }
         if !matches!(&mutation, Mutation::Save(_)) && selected.is_none() {
             fail_ui("请先选择已保存的渠道。".into());

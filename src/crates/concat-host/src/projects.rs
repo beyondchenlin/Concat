@@ -19,6 +19,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+mod save_identity;
+pub use save_identity::SaveAuthority;
+pub(crate) use save_identity::read_for_session;
+
 const MANIFEST: &str = "concat.json";
 /// The manifest's earlier names, newest first. Projects created before a
 /// rename keep theirs forever: the manifest is read and written under the
@@ -171,7 +175,10 @@ pub fn create(
             rate_den,
             canvas,
         },
-        rest: serde_json::Map::new(),
+        rest: serde_json::Map::from_iter([(
+            crate::project_identity::FIELD.to_owned(),
+            crate::project_identity::new()?.into(),
+        )]),
     };
 
     let encoded = serde_json::to_vec_pretty(&document)
@@ -245,10 +252,10 @@ fn writes() -> &'static Mutex<HashMap<PathBuf, Arc<Writes>>> {
 /// One key per project folder: the real path where the filesystem will say
 /// it, so `/var` and `/private/var`, a trailing slash, a symlinked parent
 /// and a different case on a case-insensitive volume all name one project.
-/// The path as it was given when it cannot be resolved, which still names
-/// the folder it was given.
-fn project_key(root: &Path) -> PathBuf {
-    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
+/// A missing final directory uses its resolved parent and missing tail, so
+/// creating it does not change which write mutex protects it.
+fn project_key(root: &Path) -> Result<PathBuf, String> {
+    save_identity::target_key(root)
 }
 
 /// The write state for one project folder.
@@ -268,8 +275,8 @@ fn write_state(key: &Path) -> Arc<Writes> {
 ///
 /// The document is passed through as opaque JSON rather than being mirrored
 /// into Rust types: the engine (`concat-project`) owns the canonical model and
-/// produced this document, and the host has no decisions to make about its
-/// contents beyond writing it safely.
+/// produced this document. The host checks that the destination remains the
+/// same native project and preserves unknown document fields unchanged.
 ///
 /// The write is ordered like [`save_ordered`], with its ticket minted here: a
 /// caller that captured the document and writes it at once - the API, a
@@ -302,11 +309,30 @@ pub fn save_ordered(
     document: &serde_json::Value,
     ticket: Ticket,
 ) -> Result<Saved, String> {
-    let root = PathBuf::from(path);
-    std::fs::create_dir_all(&root)
-        .map_err(|error| format!("could not create {}: {error}", root.display()))?;
+    save_ordered_inner(path, document, ticket, None)
+}
 
-    let state = write_state(&project_key(&root));
+/// Save a native session snapshot, allowing only its exact, still-unconsumed
+/// first binding when that session originally opened a legacy/empty project.
+/// Ordinary identified saves need no first-binding allowance; the default
+/// [`save_ordered`] never infers one from a path or a missing metadata field.
+pub fn save_ordered_with_authority(
+    path: &str,
+    document: &serde_json::Value,
+    ticket: Ticket,
+    authority: &SaveAuthority,
+) -> Result<Saved, String> {
+    save_ordered_inner(path, document, ticket, Some(authority))
+}
+
+fn save_ordered_inner(
+    path: &str,
+    document: &serde_json::Value,
+    ticket: Ticket,
+    authority: Option<&SaveAuthority>,
+) -> Result<Saved, String> {
+    let root = project_key(Path::new(path))?;
+    let state = write_state(&root);
     // Held across the write: the check below and the write it decides are
     // one step, so two saves cannot both decide to write and have the older
     // one land second.
@@ -314,13 +340,19 @@ pub fn save_ordered(
         .writing
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Validate before even reporting Superseded: a delayed snapshot for a
+    // replaced project is a refusal, never a successful save receipt.
+    let manifest = save_identity::validate(&root, document, authority)?;
     if ticket.0 < state.written.load(Ordering::Acquire) {
         return Ok(Saved::Superseded);
     }
 
     let encoded = serde_json::to_vec_pretty(document)
         .map_err(|error| format!("could not encode the project: {error}"))?;
-    write_manifest(&root, &encoded)?;
+    write_manifest(&root, &manifest, &encoded)?;
+    if let Some(authority) = authority {
+        authority.persisted();
+    }
     state.written.store(ticket.0, Ordering::Release);
     Ok(Saved::Written)
 }
@@ -433,11 +465,10 @@ static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
 /// flushed to the disk, then renamed over the manifest, because a save
 /// interrupted halfway is worse than no save at all - a truncated manifest
 /// loses the project, while a failed rename leaves the previous one intact.
-fn write_manifest(root: &Path, encoded: &[u8]) -> Result<(), String> {
-    let manifest = manifest_path(root);
+fn write_manifest(root: &Path, manifest: &Path, encoded: &[u8]) -> Result<(), String> {
     let mut temporary = Temporary::open(root)?;
     temporary.write(encoded)?;
-    temporary.commit(&manifest)
+    temporary.commit(manifest)
 }
 
 /// True when a document carries no edit state at all - the settings-only
@@ -803,7 +834,11 @@ mod tests {
 
     /// A whole document, as a save writes one.
     fn document(marker: &str) -> serde_json::Value {
-        serde_json::json!({ "marker": marker, "tracks": [] })
+        serde_json::json!({
+            "concat": "0.2.0", "name": marker, "marker": marker,
+            "video": {"width": 1920, "height": 1080, "rateNum": 30, "rateDen": 1},
+            "tracks": [{"id": "T1"}], "clips": []
+        })
     }
 
     /// How many temporary files a folder holds: none, after any save.

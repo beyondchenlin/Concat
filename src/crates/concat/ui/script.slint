@@ -18,6 +18,12 @@ export global ScriptUi {
     in-out property <string> error;
     in-out property <string> selected-label: "尚未选择剪辑版本";
     in-out property <[ScriptVersionData]> versions;
+    in-out property <[ScriptVersionData]> legacy-documents;
+    in-out property <bool> has-legacy;
+    in-out property <bool> can-copy-legacy;
+    in-out property <string> legacy-notice;
+    in-out property <string> legacy-label;
+    in-out property <string> legacy-text;
     in-out property <bool> ready;
     in-out property <bool> busy;
     in-out property <bool> dirty;
@@ -31,6 +37,8 @@ export global ScriptUi {
     callback new-requested();
     callback view-requested(version: string);
     callback select-requested();
+    callback legacy-view-requested(identity: string);
+    callback copy-legacy-requested();
 }
 
 export component ScriptWorkspace inherits Rectangle {
@@ -70,6 +78,57 @@ export component ScriptWorkspace inherits Rectangle {
             color: Theme.danger;
             font-size: Theme.fs;
             wrap: word-wrap;
+        }
+        if ScriptUi.has-legacy: Rectangle {
+            min-height: 220px;
+            max-height: 220px;
+            background: Theme.panel;
+            VerticalLayout {
+                spacing: 4px;
+                Text {
+                    text: ScriptUi.legacy-notice;
+                    color: Theme.fg-muted;
+                    font-size: Theme.fs;
+                    wrap: word-wrap;
+                }
+                legacy-list := Flickable {
+                    min-height: 45px;
+                    max-height: 60px;
+                    content-height: legacy-rows.preferred-height;
+                    content-width: self.width;
+                    legacy-rows := VerticalLayout {
+                        width: legacy-list.width;
+                        for old in ScriptUi.legacy-documents: Button {
+                            label: old.label;
+                            enabled: ScriptUi.ready && !ScriptUi.busy;
+                            clicked => { ScriptUi.legacy-view-requested(old.identity); }
+                        }
+                    }
+                }
+                Text {
+                    text: ScriptUi.legacy-label;
+                    color: Theme.fg-muted;
+                    font-size: Theme.fs;
+                    elide: elide-right;
+                }
+                legacy-preview := Flickable {
+                    vertical-stretch: 1;
+                    content-width: self.width;
+                    content-height: legacy-words.preferred-height;
+                    legacy-words := Text {
+                        width: legacy-preview.width;
+                        text: ScriptUi.legacy-text;
+                        color: Theme.fg;
+                        font-size: Theme.fs;
+                        wrap: word-wrap;
+                    }
+                }
+                Button {
+                    label: "确认归属，复制旧稿到当前工程";
+                    enabled: ScriptUi.can-copy-legacy;
+                    clicked => { ScriptUi.copy-legacy-requested(); }
+                }
+            }
         }
         words-box := ResizeBox {
             box-height: 220px;

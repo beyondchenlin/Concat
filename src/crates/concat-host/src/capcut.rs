@@ -178,9 +178,15 @@ pub fn import(folder: &Path, location: &str) -> Result<Import, String> {
         settings.rate_den,
         settings.canvas,
     )?;
+    // The imported edit supplies content, while this new native project owns
+    // its identity. Preserve the identity already written by `create` before
+    // replacing the settings-only manifest with the complete import.
+    let identity = crate::project_identity::read_persisted(Path::new(&project.path))?
+        .ok_or("the newly created project has no persistent identity")?;
     let mut settings = imported.settings.clone();
     settings.name = name;
-    let document = concat_project::to_document(&settings, &imported.project);
+    let mut document = concat_project::to_document(&settings, &imported.project);
+    document[crate::project_identity::FIELD] = identity.into();
     projects::save(&project.path, &document)?;
     log::info!(
         "capcut: imported {} as {} ({} timeline(s), {} media)",
@@ -226,6 +232,11 @@ mod tests {
                     let document = projects::read_document(&opened.path)
                         .expect("reads")
                         .expect("a document");
+                    let identity = crate::project_identity::from_document(&document)
+                        .expect("valid identity metadata")
+                        .expect("the import preserves its new native identity");
+                    let session = crate::Session::open_info(&opened).expect("opens a session");
+                    assert_eq!(session.project_identity(), identity);
                     let project =
                         concat_project::from_document(&document).expect("the document loads");
                     eprintln!(
@@ -241,6 +252,67 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&location);
+    }
+
+    #[test]
+    fn importing_twice_persists_distinct_identities_before_a_session_opens() {
+        let scratch = tempfile::tempdir().expect("a scratch folder");
+        let draft = scratch.path().join("draft");
+        std::fs::create_dir(&draft).expect("a draft folder");
+        let source_identity = "bkcat-project:11111111111111111111111111111111";
+        let source = serde_json::to_vec(&serde_json::json!({
+            "bkCatProjectId": source_identity,
+            "fps": 30.0,
+            "canvas_config": {"width": 1080, "height": 1920},
+            "materials": {"texts": [{"id": "title", "content": "Imported title"}]},
+            "tracks": [{"type": "text", "segments": [{
+                "material_id": "title",
+                "target_timerange": {"start": 0, "duration": 2_000_000}
+            }]}]
+        }))
+        .expect("encodes the draft");
+        let meta = br#"{"draft_name":"Imported"}"#;
+        std::fs::write(draft.join("draft_info.json"), &source).expect("writes the draft");
+        std::fs::write(draft.join("draft_meta_info.json"), meta).expect("writes the name");
+        let location = scratch.path().join("projects");
+        let location = location.to_string_lossy();
+
+        let first = import(&draft, &location).expect("imports the first project");
+        let first_identity =
+            crate::project_identity::read_persisted(Path::new(&first.project.path))
+                .expect("reads the first native identity")
+                .expect("identity is durable before a session opens");
+        assert!(crate::project_identity::valid(&first_identity));
+        assert_ne!(first_identity, source_identity);
+
+        let second = import(&draft, &location).expect("imports a separate project");
+        let second_identity =
+            crate::project_identity::read_persisted(Path::new(&second.project.path))
+                .expect("reads the second native identity")
+                .expect("the second import is already identified");
+        assert!(crate::project_identity::valid(&second_identity));
+        assert_ne!(second.project.path, first.project.path);
+        assert_ne!(second_identity, first_identity);
+        assert_ne!(second_identity, source_identity);
+
+        let mut session = crate::Session::open_info(&first.project).expect("opens the import");
+        assert_eq!(session.project_identity(), first_identity);
+        assert_eq!(session.project().active().clips.len(), 1);
+        session.save(None).expect("saves the imported edit");
+        drop(session);
+        let reopened = crate::Session::open_info(&first.project).expect("reopens the import");
+        assert_eq!(reopened.project_identity(), first_identity);
+        assert_eq!(reopened.project().active().clips.len(), 1);
+
+        assert_eq!(
+            std::fs::read(draft.join("draft_info.json")).unwrap(),
+            source
+        );
+        assert_eq!(
+            std::fs::read(draft.join("draft_meta_info.json")).unwrap(),
+            meta
+        );
+        assert_eq!(std::fs::read_dir(draft).unwrap().count(), 2);
     }
 
     #[test]

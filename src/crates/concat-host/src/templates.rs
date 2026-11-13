@@ -109,6 +109,8 @@ pub fn save(
     let Some(mut project) = concat_project::from_document(document) else {
         return Err("the open project is not a document this build can read".to_owned());
     };
+    // A reusable design does not carry the original project's script identity.
+    project.extra.remove(crate::project_identity::FIELD);
 
     // Placeholder media loses its path - it was the creator's own footage,
     // standing in. Everything else is part of the design and ships in the
@@ -304,6 +306,12 @@ pub fn instantiate(
         [0, 0, 0, 255],
     )?;
     let root = PathBuf::from(&project.path);
+    let identity = crate::project_identity::read_persisted(&root)?
+        .ok_or("the newly created project has no persistent identity")?;
+    // Also handle a bundle produced by an older build that kept this metadata.
+    if let Some(object) = document.as_object_mut() {
+        object.remove(crate::project_identity::FIELD);
+    }
 
     // The bundle's assets move into the project so it stands alone; the
     // document's relative paths become project-local absolute ones.
@@ -351,7 +359,9 @@ pub fn instantiate(
         rate_den: info.rate_den,
         canvas: editor.project().active().video.canvas,
     };
-    projects::save(&project.path, &editor.to_document(&settings))?;
+    let mut document = editor.to_document(&settings);
+    document[crate::project_identity::FIELD] = identity.into();
+    projects::save(&project.path, &document)?;
 
     // After the save, so the cached poster reads as fresh.
     if bundle.join(POSTER).is_file() {
@@ -481,6 +491,8 @@ mod tests {
         std::fs::write(&music, b"not really an mp3").expect("writes");
 
         let mut document = template_document();
+        let original_identity = crate::project_identity::new().unwrap();
+        document[crate::project_identity::FIELD] = original_identity.clone().into();
         {
             let media = document["media"].as_array_mut().expect("media");
             // m1 stays a placeholder; m2 becomes ordinary bundled media.
@@ -526,6 +538,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(bundle.join(MANIFEST)).expect("manifest"))
                 .expect("parses");
         let media = packed["media"].as_array().expect("media");
+        assert!(packed.get(crate::project_identity::FIELD).is_none());
         assert_eq!(media[0]["path"], "", "the placeholder's path is blanked");
         let bundled = media[1]["path"].as_str().expect("path");
         assert!(
@@ -538,6 +551,16 @@ mod tests {
         );
 
         assert_eq!(list(&config).len(), 1, "the library sees it");
+
+        // An old/imported bundle that retained a source ID still creates a
+        // distinct project rather than sharing the source's independent data.
+        let mut older_bundle = packed.clone();
+        older_bundle[crate::project_identity::FIELD] = original_identity.clone().into();
+        std::fs::write(
+            bundle.join(MANIFEST),
+            serde_json::to_vec(&older_bundle).unwrap(),
+        )
+        .unwrap();
 
         // And it instantiates: the asset lands in the project, absolute.
         let location = scratch.join("projects");
@@ -553,6 +576,10 @@ mod tests {
         let opened = projects::read_document(&made.path)
             .expect("reads back")
             .expect("a document");
+        let new_identity = crate::project_identity::from_document(&opened)
+            .unwrap()
+            .unwrap();
+        assert_ne!(new_identity, original_identity);
         let media = opened["media"].as_array().expect("media");
         let sound = media[1]["path"].as_str().expect("path");
         assert!(

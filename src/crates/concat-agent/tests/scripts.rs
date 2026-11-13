@@ -519,3 +519,110 @@ fn simultaneous_first_open_publishes_one_complete_database_for_both_projects() {
         );
     }
 }
+
+const NATIVE_PROJECT: &str = "bkcat-project:0123456789abcdef0123456789abcdef";
+
+#[test]
+fn explicit_legacy_copy_keeps_history_candidates_and_source_without_selecting() {
+    let root = Directory::new();
+    let store = ScriptStore::open(root.path()).unwrap();
+    let original = store.create(r"E:\\旧工程", "原稿\r\n\r\n保留中文").unwrap();
+    let selected = store.select(&original, 1).unwrap();
+    let mut draft = ScriptDraft::from_snapshot(selected);
+    let candidate = store
+        .record_candidate(&draft.generation_ticket(), "确认过的改写\n第二段")
+        .unwrap();
+    store
+        .apply_candidate(&mut draft, &candidate.candidate_id)
+        .unwrap();
+    let source = store.save(&mut draft).unwrap();
+    let source_versions = store.versions(&source.project_id).unwrap();
+    let source_candidates = store.candidates(&source.project_id).unwrap();
+
+    assert!(store.load(NATIVE_PROJECT).unwrap().is_none());
+    assert_eq!(
+        store.legacy_documents().unwrap()[0].project_id,
+        source.project_id
+    );
+    let copied = store.copy_legacy_document(&source, NATIVE_PROJECT).unwrap();
+    assert_ne!(copied.document_id, source.document_id);
+    assert!(copied.selected.is_none());
+    assert_eq!(
+        copied.latest.content.as_bytes(),
+        source.latest.content.as_bytes()
+    );
+    let versions = store.versions(NATIVE_PROJECT).unwrap();
+    assert_eq!(versions.len(), 2);
+    assert_eq!(versions[0], source_versions[0]);
+    assert_eq!(versions[1].sha256, source_versions[1].sha256);
+    assert_ne!(versions[1].candidate_id, source_versions[1].candidate_id);
+    let candidates = store.candidates(NATIVE_PROJECT).unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].content, candidate.content);
+    assert_eq!(candidates[0].ticket.project_id, NATIVE_PROJECT);
+    assert_eq!(candidates[0].ticket.document_id, copied.document_id);
+    assert_eq!(
+        Some(&candidates[0].candidate_id),
+        versions[1].candidate_id.as_ref()
+    );
+    assert_eq!(
+        store.load(&source.project_id).unwrap(),
+        Some(source.clone())
+    );
+    assert_eq!(store.versions(&source.project_id).unwrap(), source_versions);
+    assert_eq!(
+        store.candidates(&source.project_id).unwrap(),
+        source_candidates
+    );
+    assert!(matches!(
+        store.copy_legacy_document(&source, NATIVE_PROJECT),
+        Err(ScriptError::AlreadyExists)
+    ));
+    drop(store);
+    let reopened = ScriptStore::open_read_only(root.path()).unwrap();
+    assert_eq!(reopened.load(NATIVE_PROJECT).unwrap(), Some(copied));
+    assert_eq!(reopened.load(&source.project_id).unwrap(), Some(source));
+}
+
+#[test]
+fn a_stale_legacy_preview_cannot_authorize_a_different_later_document() {
+    let root = Directory::new();
+    let store = ScriptStore::open(root.path()).unwrap();
+    let original = store.create("/legacy/project", "已经查看的旧稿").unwrap();
+    let mut other = ScriptDraft::from_snapshot(original.clone());
+    other.set_text("查看后被修改的文案".into()).unwrap();
+    store.save(&mut other).unwrap();
+    assert!(matches!(
+        store.copy_legacy_document(&original, NATIVE_PROJECT),
+        Err(ScriptError::StaleSnapshot)
+    ));
+    assert!(store.load(NATIVE_PROJECT).unwrap().is_none());
+    assert_eq!(store.versions("/legacy/project").unwrap().len(), 2);
+}
+
+#[test]
+fn legacy_copy_failure_rolls_back_target_and_preserves_all_original_rows() {
+    let root = Directory::new();
+    let store = ScriptStore::open(root.path()).unwrap();
+    let source = store.create("/legacy/project", "完整旧稿").unwrap();
+    let database = Connection::open(root.database()).unwrap();
+    database.execute_batch("CREATE TRIGGER fail_legacy_copy BEFORE INSERT ON script_versions BEGIN SELECT RAISE(ABORT, 'injected copy failure'); END;").unwrap();
+    assert!(matches!(
+        store.copy_legacy_document(&source, NATIVE_PROJECT),
+        Err(ScriptError::Database(_))
+    ));
+    assert!(store.load(NATIVE_PROJECT).unwrap().is_none());
+    assert_eq!(store.load("/legacy/project").unwrap(), Some(source.clone()));
+    let count: i64 = database
+        .query_row("SELECT count(*) FROM script_documents", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 1);
+    database
+        .execute_batch("DROP TRIGGER fail_legacy_copy")
+        .unwrap();
+    drop(database);
+    store.copy_legacy_document(&source, NATIVE_PROJECT).unwrap();
+    assert_eq!(store.versions(NATIVE_PROJECT).unwrap().len(), 1);
+}

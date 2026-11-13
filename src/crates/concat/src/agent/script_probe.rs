@@ -554,16 +554,14 @@ fn disk_evidence(
     configuration: &Configuration,
     pixels: (Vec<u8>, u32, u32),
 ) -> Result<Value, String> {
-    let project_id = fs::canonicalize(&configuration.first.path)
-        .map_err(|error| error.to_string())?
-        .to_str()
-        .ok_or("non-Unicode stable project identity")?
-        .to_owned();
-    let second_id = fs::canonicalize(&configuration.second.path)
-        .map_err(|error| error.to_string())?
-        .to_str()
-        .ok_or("non-Unicode second project identity")?
-        .to_owned();
+    let project_id = concat_host::project_identity::read_persisted(std::path::Path::new(
+        &configuration.first.path,
+    ))?
+    .ok_or("first native project identity was not persisted")?;
+    let second_id = concat_host::project_identity::read_persisted(std::path::Path::new(
+        &configuration.second.path,
+    ))?
+    .ok_or("second native project identity was not persisted")?;
     let store = ScriptStore::open_read_only(
         &configuration
             .dirs

@@ -31,6 +31,10 @@ fn next_session_id() -> Result<u64, String> {
 pub struct Session {
     /// Identity of this open, never reused within a native process.
     session_id: u64,
+    /// Travels with the saved manifest and never belongs to undo snapshots.
+    project_identity: String,
+    /// Native-only save permission, shared with every captured snapshot.
+    save_authority: projects::SaveAuthority,
     /// Advances for manual edits, agent edits, undo, redo, names and view changes.
     revision: u64,
     /// The project folder, for saving.
@@ -96,8 +100,22 @@ impl Session {
     /// every timeline's own frame with it, and those win, because that is
     /// where an edited frame was saved.
     pub fn open(path: &str, settings: DocumentSettings) -> Result<Session, String> {
-        let editor = match projects::read_document(path) {
-            Ok(Some(document)) => match Editor::from_document(&document) {
+        let (document, source) = projects::read_for_session(path)?;
+        let project_identity = document
+            .as_ref()
+            .map(crate::project_identity::from_document)
+            .transpose()?
+            .flatten();
+        // Identity belongs to the native host, never to an undoable Project
+        // snapshot or model-supplied extra fields. Put it back only on save.
+        let document = document.map(|mut document| {
+            if let Some(object) = document.as_object_mut() {
+                object.remove(crate::project_identity::FIELD);
+            }
+            document
+        });
+        let editor = match document {
+            Some(document) => match Editor::from_document(&document) {
                 Some(editor) => editor,
                 // The settings-only manifest `create` writes: a project
                 // closed before its first edit reopens empty, it is not
@@ -117,11 +135,7 @@ impl Session {
                 }
             },
             // No document yet - a project created moments ago.
-            Ok(None) => Editor::with_video(settings.video()),
-            // Unreadable or not JSON: a save cut short, a disk in trouble.
-            // The one thing open must not do is answer with an empty
-            // project, since the next save would replace what was edited.
-            Err(error) => return Err(error),
+            None => Editor::with_video(settings.video()),
         };
         // A link to a retired effect opens as a link to the one that stands
         // in for it, its knobs carried over (`[[replaces]]`).
@@ -142,8 +156,17 @@ impl Session {
         // Fields an earlier version wrote and this one does not read, off
         // the clips, with the clips named for the window to say so.
         let retired = editor.drop_retired_fields();
+        let already_identified = project_identity.is_some();
+        let project_identity = match project_identity {
+            Some(identity) => identity,
+            None => crate::project_identity::new()?,
+        };
+        let save_authority =
+            projects::SaveAuthority::opened(project_identity.clone(), source, already_identified);
         Ok(Session {
             session_id: next_session_id()?,
+            project_identity,
+            save_authority,
             revision: 0,
             path: path.to_owned(),
             settings,
@@ -189,6 +212,8 @@ impl Session {
     pub fn snapshot(&self) -> Session {
         Session {
             session_id: self.session_id,
+            project_identity: self.project_identity.clone(),
+            save_authority: self.save_authority.clone(),
             revision: self.revision,
             path: self.path.clone(),
             settings: self.settings.clone(),
@@ -201,6 +226,18 @@ impl Session {
     /// The project folder.
     pub fn path(&self) -> &str {
         &self.path
+    }
+
+    /// Persistent native identity. A caller must persist the native document
+    /// before associating independent data with a newly opened legacy project.
+    pub fn project_identity(&self) -> &str {
+        &self.project_identity
+    }
+
+    /// Capture with the native document before dispatching a background save.
+    /// All clones share the one-time legacy initialization state.
+    pub fn save_authority(&self) -> projects::SaveAuthority {
+        self.save_authority.clone()
     }
 
     /// Identity of the current open, including when a path is reopened.
@@ -393,18 +430,26 @@ impl Session {
                 self.revision = next;
             }
         }
-        Ok((self.path.clone(), self.editor.to_document(&self.settings)))
+        Ok((self.path.clone(), self.document()))
     }
 
     /// Writes the session's document to its project folder.
     pub fn save(&mut self, name: Option<&str>) -> Result<(), String> {
         let (path, document) = self.prepare_save(name)?;
-        projects::save(&path, &document)
+        projects::save_ordered_with_authority(
+            &path,
+            &document,
+            projects::ticket(),
+            &self.save_authority,
+        )
+        .map(|_| ())
     }
 
     /// The document as it would be saved.
     pub fn document(&self) -> serde_json::Value {
-        self.editor.to_document(&self.settings)
+        let mut document = self.editor.to_document(&self.settings);
+        document[crate::project_identity::FIELD] = self.project_identity.clone().into();
+        document
     }
 
     /// The active timeline flattened for rendering. This is what export and
@@ -711,6 +756,59 @@ mod tests {
             .expect("writes");
         assert!(Session::open(&scratch.to_string_lossy(), settings()).is_err());
         let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn persistent_identity_survives_save_reopen_snapshot_undo_and_folder_move() {
+        let root = tempfile::tempdir().unwrap();
+        let original = root.path().join("original");
+        std::fs::create_dir(&original).unwrap();
+        let mut session = Session::open(original.to_str().unwrap(), settings()).unwrap();
+        let identity = session.project_identity().to_owned();
+        assert!(crate::project_identity::valid(&identity));
+        assert_eq!(
+            crate::project_identity::read_persisted(&original).unwrap(),
+            None
+        );
+        let before = session.document();
+        session.apply(Command::AddTrack { bottom: false }).unwrap();
+        session.undo();
+        assert_eq!(session.document(), before);
+        assert_eq!(session.snapshot().project_identity(), identity);
+        session.save(None).unwrap();
+        assert_eq!(
+            crate::project_identity::read_persisted(&original).unwrap(),
+            Some(identity.clone())
+        );
+        drop(session);
+        let moved = root.path().join("moved");
+        std::fs::rename(&original, &moved).unwrap();
+        let mut reopened = Session::open(moved.to_str().unwrap(), settings()).unwrap();
+        assert_eq!(reopened.project_identity(), identity);
+        reopened.save(Some("Changed name")).unwrap();
+        assert_eq!(
+            crate::project_identity::read_persisted(&moved).unwrap(),
+            Some(identity.clone())
+        );
+        std::fs::create_dir(&original).unwrap();
+        let replacement = Session::open(original.to_str().unwrap(), settings()).unwrap();
+        assert_ne!(replacement.project_identity(), identity);
+    }
+
+    #[test]
+    fn corrupted_persistent_metadata_is_not_replaced_by_a_fresh_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let mut session = Session::open(root.path().to_str().unwrap(), settings()).unwrap();
+        session.save(None).unwrap();
+        let mut document = session.document();
+        document[crate::project_identity::FIELD] = serde_json::Value::Null;
+        let bytes = serde_json::to_vec(&document).unwrap();
+        std::fs::write(root.path().join("concat.json"), &bytes).unwrap();
+        assert!(Session::open(root.path().to_str().unwrap(), settings()).is_err());
+        assert_eq!(
+            std::fs::read(root.path().join("concat.json")).unwrap(),
+            bytes
+        );
     }
 
     #[test]
