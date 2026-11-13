@@ -15,6 +15,8 @@
 //! export sheet is the first, and the shape the rest follow.
 
 pub mod agent;
+/// Native model-channel metadata and secure credential settings.
+pub mod agent_settings;
 pub mod captions;
 pub mod export;
 pub mod glide;

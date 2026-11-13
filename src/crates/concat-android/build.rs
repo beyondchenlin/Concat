@@ -11,6 +11,8 @@ fn main() {
     println!("cargo:rerun-if-changed=java/ConcatFiles.java");
     println!("cargo:rerun-if-changed=java/BKCatRuntime.java");
     println!("cargo:rerun-if-changed=java/BKCatRuntimePolicy.java");
+    println!("cargo:rerun-if-changed=java/BKCatCredentials.java");
+    println!("cargo:rerun-if-changed=java/BKCatCredentialPolicy.java");
     let target = std::env::var("TARGET").unwrap_or_default();
     if !target.contains("android") {
         return;
@@ -29,6 +31,8 @@ fn main() {
         .file("java/ConcatFiles.java")
         .file("java/BKCatRuntime.java")
         .file("java/BKCatRuntimePolicy.java")
+        .file("java/BKCatCredentials.java")
+        .file("java/BKCatCredentialPolicy.java")
         .class_path(&android_jar)
         .classes_out_dir(&classes)
         .java_source_version(8)
