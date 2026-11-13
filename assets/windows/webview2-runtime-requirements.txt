@@ -1,0 +1,16 @@
+BK CAT（智能剪辑软件）桌面测试构建：网页运行组件要求
+
+聊天运行组件需要单独安装的 Microsoft Edge WebView2 Runtime（微软网页运行组件）。
+原生绑定所含的加载器不是完整运行组件，安装浏览器也不等于已经满足此要求。
+
+缺少组件时，请从微软官方网站获取适合本机的 Evergreen Runtime（持续更新版运行组件）：
+https://developer.microsoft.com/microsoft-edge/webview2/
+安装或更新完成后，重新打开应用，再通过原生界面的连接入口启动聊天组件。
+旧版本缺少受控资源拦截接口时，应用会拒绝开启聊天组件，更新后重新连接。
+
+本测试构建没有捆绑或自动下载、安装微软运行组件。
+当前安装器没有完成干净设备上的缺失组件检测、提示和重新运行验收，
+不能将本机已有组件环境中的成功运行记为安装器的无依赖安装验收通过。
+
+部署要求和检测方式的官方说明：
+https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution

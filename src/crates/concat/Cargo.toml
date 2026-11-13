@@ -18,6 +18,14 @@ path = "src/lib.rs"
 name = "concat"
 path = "src/main.rs"
 
+[features]
+bk-cat-native-probe = []
+
+[[example]]
+name = "bk-cat-native-probe"
+path = "examples/bk_cat_native_probe.rs"
+required-features = ["bk-cat-native-probe"]
+
 # Slint is taken under its GPL-3.0-only option to sit beside the AGPL engine.
 # See ../../../THIRD_PARTY_NOTICES.md for why those two combine legally.
 #
@@ -78,6 +86,20 @@ opener = { version = "0.8", features = ["reveal"] }
 # itself on the display winit opened. The same two crates winit draws
 # with, libwayland loaded at run time as winit loads it; libc for the
 # pipe the drop is read through and the poll that waits on it.
+# A hidden WebView2 controller lives on its own STA message thread. It does
+# not replace or own the Slint editing window.
+[target.'cfg(target_os = "windows")'.dependencies]
+webview2-com = "=0.39.1"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
@@ -133,6 +155,9 @@ slint = { version = "1.18", default-features = false, features = [
 
 [dependencies]
 concat-agent = { path = "../concat-agent" }
+# Component capabilities and locked browser resource integrity.
+getrandom = "0.3"
+sha2 = "0.10"
 # The log facade. The window writes `log::warn!`; where that ends up is
 # concat-host's logs.rs, opened by whichever entry point started this run.
 log = "0.4"

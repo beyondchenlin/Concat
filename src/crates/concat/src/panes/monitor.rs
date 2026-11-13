@@ -109,9 +109,28 @@ const SCRUB_GAP: std::time::Duration = std::time::Duration::from_millis(250);
 /// the true frame is there by the time anyone looks.
 const SCRUB_REST: std::time::Duration = std::time::Duration::from_millis(120);
 
+/// Evidence from a real preview request that successfully replaced the image.
+/// Only the opt-in integration executable can observe this; no production
+/// scheduling, rendering or admission decision depends on these fields.
+#[cfg(feature = "bk-cat-native-probe")]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ProbeFrame {
+    pub request: u64,
+    pub session: u64,
+    pub revision: u64,
+    pub time: f64,
+    pub exact: bool,
+}
+
 /// The monitor's state.
 #[derive(Default)]
 pub struct MonitorPane {
+    #[cfg(feature = "bk-cat-native-probe")]
+    pub(crate) probe_requested: u64,
+    #[cfg(feature = "bk-cat-native-probe")]
+    probe_shown: u64,
+    #[cfg(feature = "bk-cat-native-probe")]
+    pub(crate) probe_frame: Option<ProbeFrame>,
     /// The last frame drawn.
     pub image: slint::Image,
     busy: bool,
@@ -274,6 +293,10 @@ impl MonitorPane {
             Ok(image) => {
                 self.image = image;
                 self.inexact = !exact;
+                #[cfg(feature = "bk-cat-native-probe")]
+                {
+                    self.probe_shown = self.probe_shown.saturating_add(1);
+                }
             }
             Err(error) => {
                 log::warn!("preview: {error}");
@@ -368,6 +391,21 @@ impl MonitorPane {
             self.cadence.report(studio.project().active().video.rate());
         }
         let monitor = studio.host.monitor.clone();
+        #[cfg(feature = "bk-cat-native-probe")]
+        let mut probe_frame = {
+            self.probe_requested = self.probe_requested.saturating_add(1);
+            let session = studio
+                .session
+                .as_ref()
+                .expect("preview requires an open session");
+            ProbeFrame {
+                request: self.probe_requested,
+                session: session.session_id(),
+                revision: session.revision(),
+                time: spec.time,
+                exact: false,
+            }
+        };
         if refine {
             self.refining = true;
         } else {
@@ -411,7 +449,17 @@ impl MonitorPane {
                 frame
             },
             move |studio, _, _, result| {
+                #[cfg(feature = "bk-cat-native-probe")]
+                let before = studio.monitor.probe_shown;
+                #[cfg(feature = "bk-cat-native-probe")]
+                {
+                    probe_frame.exact = result.as_ref().is_ok_and(Picture::exact);
+                }
                 studio.handle(Msg::Monitor(MonitorMsg::Frame(result, spec, lane)));
+                #[cfg(feature = "bk-cat-native-probe")]
+                if studio.monitor.probe_shown > before {
+                    studio.monitor.probe_frame = Some(probe_frame);
+                }
             },
         );
     }

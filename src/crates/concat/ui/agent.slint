@@ -25,6 +25,10 @@ export struct AgentStatusData {
     model: string,
     can-send: bool,
     can-stop: bool,
+    can-review: bool,
+    can-continue: bool,
+    can-connect: bool,
+    recovery-summary: string,
     busy: bool,
     has-progress: bool,
     progress: float,
@@ -44,6 +48,10 @@ export global AgentUi {
         model: "未配置模型",
         can-send: false,
         can-stop: false,
+        can-review: false,
+        can-continue: false,
+        can-connect: false,
+        recovery-summary: "",
         busy: false,
         has-progress: false,
         progress: 0,
@@ -51,6 +59,9 @@ export global AgentUi {
 
     callback send-requested(text: string);
     callback stop-requested();
+    callback review-requested();
+    callback continue-requested();
+    callback connect-requested();
 }
 
 /// The same three destinations on a desk and a phone. The full original
@@ -147,6 +158,28 @@ export component AgentTaskStatus inherits VerticalLayout {
         color: Theme.danger;
         font-size: Theme.fs;
         wrap: word-wrap;
+    }
+    if AgentUi.status.recovery-summary != "": Text {
+        text: AgentUi.status.recovery-summary;
+        color: Theme.fg-muted;
+        font-size: Theme.fs;
+        wrap: word-wrap;
+    }
+    if AgentUi.status.can-review || AgentUi.status.can-continue || AgentUi.status.can-connect: HorizontalLayout {
+        spacing: 6px;
+        if AgentUi.status.can-review: Button {
+            label: "核对当前工程";
+            clicked => { AgentUi.review-requested(); }
+        }
+        if AgentUi.status.can-continue: Button {
+            label: "确认继续";
+            primary: true;
+            clicked => { AgentUi.continue-requested(); }
+        }
+        if AgentUi.status.can-connect: Button {
+            label: "连接会话";
+            clicked => { AgentUi.connect-requested(); }
+        }
     }
     if AgentUi.status.has-progress: Rectangle {
         height: 4px;

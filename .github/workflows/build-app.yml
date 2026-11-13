@@ -213,6 +213,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref }}
+      - name: Prepare fixed BK CAT runtime (Windows)
+        if: matrix.platform == 'windows'
+        uses: ./.github/actions/prepare-agent-runtime
       # The toolchain src/rust-toolchain.toml pins, installed by name, so the
       # runner never also fetches a stable it will not use.
       - name: The pinned toolchain
@@ -495,6 +498,8 @@ jobs:
         timeout-minutes: ${{ matrix.platform == 'macos' && matrix.arch == 'x86_64' && 100 || 60 }}
         shell: bash
         working-directory: src
+        env:
+          BK_CAT_REQUIRE_AGENT_ASSETS: ${{ matrix.platform == 'windows' && '1' || '0' }}
         run: |
           set -o pipefail
           cargo build --profile app -p concat --target ${{ matrix.target }} 2>&1 | tee build.log
@@ -937,6 +942,12 @@ jobs:
             }
           }
           Copy-Item LICENSE, THIRD_PARTY_NOTICES.md $dir
+          Copy-Item assets\windows\webview2-runtime-requirements.txt "$dir\WEBVIEW2-RUNTIME-REQUIREMENTS.txt"
+          # Keep the original embedded component licences available beside the
+          # executable. The runtime itself remains embedded in the binary.
+          New-Item -ItemType Directory -Force "$dir\licenses" | Out-Null
+          Copy-Item src\agent-runtime\dist\PI-LICENSE.txt "$dir\licenses\PI-LICENSE.txt"
+          Copy-Item src\agent-runtime\dist\PI-MCP-THIRD-PARTY-NOTICES "$dir\licenses" -Recurse
           # The Visual C++ runtime DLLs anything in the folder imports, from
           # the newest redistributable folder Visual Studio carries.
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath

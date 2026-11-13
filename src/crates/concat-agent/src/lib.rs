@@ -188,6 +188,55 @@ fn io_error(operation: &'static str, source: io::Error) -> Error {
     Error::Io { operation, source }
 }
 
+// Rust 1.93.1's standard library returns Unsupported for Android file locks.
+// Use the platform's descriptor-scoped flock there; a process-wide fcntl lock
+// would let two independently opened hosts in the same process share ownership.
+// The File remains in Core until every permit drains and handoff is explicit.
+#[cfg(target_os = "android")]
+fn android_flock(file: &File, operation: libc::c_int) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    loop {
+        // SAFETY: File owns a live descriptor for the entire call. flock does
+        // not retain a pointer or close the descriptor; Core retains the File.
+        if unsafe { libc::flock(file.as_raw_fd(), operation) } == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+fn lock_new_owner_file(file: &File) -> io::Result<()> {
+    #[cfg(target_os = "android")]
+    {
+        android_flock(file, libc::LOCK_EX)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        file.lock()
+    }
+}
+
+fn try_lock_owner_file(file: &File) -> Result<(), TryLockError> {
+    #[cfg(target_os = "android")]
+    {
+        android_flock(file, libc::LOCK_EX | libc::LOCK_NB).map_err(|error| {
+            if error.kind() == io::ErrorKind::WouldBlock {
+                TryLockError::WouldBlock
+            } else {
+                TryLockError::Error(error)
+            }
+        })
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        file.try_lock()
+    }
+}
+
 struct State {
     phase: Phase,
     active_operations: usize,
@@ -370,10 +419,10 @@ impl SessionOwner {
             // us. It cannot become an owner: an existing empty journal is
             // refused below. Wait for that check to release its handle rather
             // than return Busy and strand our first initialization forever.
-            file.lock()
+            lock_new_owner_file(&file)
                 .map_err(|error| io_error("lock newly created ownership file", error))?;
         } else {
-            match file.try_lock() {
+            match try_lock_owner_file(&file) {
                 Ok(()) => {}
                 Err(TryLockError::WouldBlock) => return Err(Error::Busy),
                 Err(TryLockError::Error(error)) => {

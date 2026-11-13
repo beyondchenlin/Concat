@@ -27,6 +27,8 @@ export class NativeWireClient {
   readonly #pending = new Map<string, Pending>();
   readonly #revocations = new Set<(lease: Pick<OwnerLease, "handle" | "generation">) => void>();
   readonly #revoked = new Set<string>();
+  readonly #savedAcks = new Set<string>();
+  #owner: OwnerLease | undefined;
   #sequence = 0;
   #closed = false;
   readonly #receive = (event: { data: string }) => {
@@ -36,6 +38,23 @@ export class NativeWireClient {
     if (envelope.event === "owner.revoked" && typeof envelope.ownerHandle === "string" && typeof envelope.generation === "string") {
       this.#revoked.add(JSON.stringify([envelope.ownerHandle, envelope.generation]));
       for (const listener of this.#revocations) listener({ handle: envelope.ownerHandle, generation: envelope.generation });
+      return;
+    }
+    if (envelope.event === "operation.saved") {
+      const owner = this.#owner;
+      const operationId = envelope.operationId;
+      if (!owner || this.#closed || envelope.ownerHandle !== owner.handle || envelope.generation !== owner.generation
+        || this.#revoked.has(JSON.stringify([owner.handle, owner.generation]))
+        || typeof operationId !== "string" || !/^[1-9][0-9]*$/.test(operationId) || operationId.length > 20) return;
+      if (this.#savedAcks.has(operationId)) return;
+      if (this.#savedAcks.size >= 65536) { this.#savedFailure("native save acknowledgement limit reached"); return; }
+      this.#savedAcks.add(operationId);
+      // A native save request is not a save acknowledgement. Only this actual
+      // native Written notification reaches here, and only receipt by this
+      // live component produces the final native journal acknowledgement.
+      void this.call({ method: "operation.acknowledge", operationId,
+        ownerHandle: owner.handle, generation: owner.generation,
+      }).catch((error: unknown) => this.#savedFailure(error instanceof Error ? error.message : String(error)));
       return;
     }
     if (typeof envelope.id !== "string" || ("result" in envelope) === ("error" in envelope)) return;
@@ -85,6 +104,22 @@ export class NativeWireClient {
     });
   }
 
+  bindOwner(lease: OwnerLease): void {
+    if (this.#closed || this.#owner) throw new RuntimeRefused("the native channel already has an owner");
+    this.#owner = Object.freeze({ ...lease });
+  }
+
+  #savedFailure(message: string): void {
+    if (this.#closed) return;
+    try {
+      this.#bridge.postMessage(JSON.stringify({ channel: NATIVE_CHANNEL, event: "operation.failed", message }));
+    } catch {
+      // A broken platform channel owns native revoke and teardown. Reject
+      // local waiters without creating an unhandled rejection or retry.
+      this.close();
+    }
+  }
+
   onRevoked(lease: OwnerLease, listener: () => void): () => void {
     const matching = (revoked: Pick<OwnerLease, "handle" | "generation">) => {
       if (revoked.handle === lease.handle && revoked.generation === lease.generation) listener();
@@ -104,6 +139,8 @@ export class NativeWireClient {
     this.#pending.clear();
     this.#revocations.clear();
     this.#revoked.clear();
+    this.#savedAcks.clear();
+    this.#owner = undefined;
   }
 }
 
@@ -118,7 +155,9 @@ export function messageNativePorts(wire: NativeWireClient): NativePorts {
         if (typeof lease.storageId !== "string" || typeof lease.handle !== "string" || typeof lease.generation !== "string") {
           throw new RuntimeRefused("native ownership response is incomplete");
         }
-        return { storageId: lease.storageId, handle: lease.handle, generation: lease.generation };
+        const owner = { storageId: lease.storageId, handle: lease.handle, generation: lease.generation };
+        wire.bindOwner(owner);
+        return owner;
       },
       async confirm(lease, snapshot, approval) {
         const grant = record(await bound(lease, "ownership.confirm", { snapshot, approval }));

@@ -1,0 +1,218 @@
+[
+  {
+    "source": ".build/m3-webview2-shutdown-unit.log",
+    "archive": "docs/development/evidence/m3b-windows-platform-tests.txt",
+    "bytes": 2816,
+    "sha256": "d65ad1f3e2fa8a55d362e330aba647100fada637402467302b79bc433f8c671b",
+    "normalization": "none",
+    "sourceBytes": 2816,
+    "sourceSha256": "d65ad1f3e2fa8a55d362e330aba647100fada637402467302b79bc433f8c671b"
+  },
+  {
+    "source": ".build/m3-webview2-shutdown-original.log",
+    "archive": "docs/development/evidence/m3b-windows-original-runtime.txt",
+    "bytes": 1552,
+    "sha256": "773f737292f458433c82dd9c39783dc90ecb664244c5e3e88b7692f3635f295a",
+    "normalization": "none",
+    "sourceBytes": 1552,
+    "sourceSha256": "773f737292f458433c82dd9c39783dc90ecb664244c5e3e88b7692f3635f295a"
+  },
+  {
+    "source": ".build/m3-webview2-shutdown-failed.log",
+    "archive": "docs/development/evidence/m3b-windows-boundary-shutdown.txt",
+    "bytes": 1646,
+    "sha256": "6a703dd885d23ff1471265ec3aca7ca043cde15ba8fdc39fd8e4f032438d988f",
+    "normalization": "none",
+    "sourceBytes": 1646,
+    "sourceSha256": "6a703dd885d23ff1471265ec3aca7ca043cde15ba8fdc39fd8e4f032438d988f"
+  },
+  {
+    "source": ".build/m3-runtime-tests-final.log",
+    "archive": "docs/development/evidence/m3b-runtime-tests.txt",
+    "bytes": 3499,
+    "sha256": "935521f105e1f05aea4f83ee2986ea68f90f2ed330be9eed8e8d9e9db07084f6",
+    "normalization": "none",
+    "sourceBytes": 3499,
+    "sourceSha256": "935521f105e1f05aea4f83ee2986ea68f90f2ed330be9eed8e8d9e9db07084f6"
+  },
+  {
+    "source": ".build/m3-runtime-original-final.log",
+    "archive": "docs/development/evidence/m3b-runtime-original-tests.txt",
+    "bytes": 756,
+    "sha256": "316d1e37f7b3b7c9f53c129e772153ae880895365c6469edef5af1628a50f610",
+    "normalization": "none",
+    "sourceBytes": 756,
+    "sourceSha256": "316d1e37f7b3b7c9f53c129e772153ae880895365c6469edef5af1628a50f610"
+  },
+  {
+    "source": ".build/m3-runtime-build.log",
+    "archive": "docs/development/evidence/m3b-runtime-build.txt",
+    "bytes": 144,
+    "sha256": "29dcd8ef184abafd5bbf16a67878e1a7329db63176eff4988d0e896ed5b6004f",
+    "normalization": "none",
+    "sourceBytes": 144,
+    "sourceSha256": "29dcd8ef184abafd5bbf16a67878e1a7329db63176eff4988d0e896ed5b6004f"
+  },
+  {
+    "source": ".build/m3-runtime-typecheck.log",
+    "archive": "docs/development/evidence/m3b-runtime-typecheck.txt",
+    "bytes": 69,
+    "sha256": "9c43186c7022704edfc05ea861de656768507d566761a7ac66e64f878239efd7",
+    "normalization": "line-endings-and-trailing-whitespace-only",
+    "sourceBytes": 70,
+    "sourceSha256": "e22ce5d908a1309bb294e1fb2e0bdd25f66b05c714177576981c1de6301bcd4c"
+  },
+  {
+    "source": ".build/android-runtime-java-r4/javac.log",
+    "archive": "docs/development/evidence/m3b-android-java-compile.txt",
+    "bytes": 1050,
+    "sha256": "a4ef4bb3a59fd41ba31517f3fc93342799f5aa837c85919c66a9820843480c48",
+    "normalization": "none",
+    "sourceBytes": 1050,
+    "sourceSha256": "a4ef4bb3a59fd41ba31517f3fc93342799f5aa837c85919c66a9820843480c48"
+  },
+  {
+    "source": ".build/android-runtime-java-r4/policy-tests.log",
+    "archive": "docs/development/evidence/m3b-android-policy-tests.txt",
+    "bytes": 788,
+    "sha256": "0d64eaa5c200b113dc7420d6cbc6a21613021cc8cf18f844a67f77f7f8c0b19e",
+    "normalization": "none",
+    "sourceBytes": 788,
+    "sourceSha256": "0d64eaa5c200b113dc7420d6cbc6a21613021cc8cf18f844a67f77f7f8c0b19e"
+  },
+  {
+    "source": ".build/android-runtime-java-r4/d8.log",
+    "archive": "docs/development/evidence/m3b-android-d8.txt",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "normalization": "none",
+    "sourceBytes": 0,
+    "sourceSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "source": ".build/android-runtime-java-r4/dex-sha256.txt",
+    "archive": "docs/development/evidence/m3b-android-dex-sha256.txt",
+    "bytes": 362,
+    "sha256": "89db7361d8e2168fabedd045fc32c56baab64567a2699da7061c8967f73017fc",
+    "normalization": "none",
+    "sourceBytes": 362,
+    "sourceSha256": "89db7361d8e2168fabedd045fc32c56baab64567a2699da7061c8967f73017fc"
+  },
+  {
+    "source": ".build/android-runtime-jni-check/check.log",
+    "archive": "docs/development/evidence/m3b-android-jni-typecheck.txt",
+    "bytes": 166,
+    "sha256": "0f207c1ddc90cfd4e7c48c8c52fecc8a740ced160c09228fec5f5b5f06b2d565",
+    "normalization": "none",
+    "sourceBytes": 166,
+    "sourceSha256": "0f207c1ddc90cfd4e7c48c8c52fecc8a740ced160c09228fec5f5b5f06b2d565"
+  },
+  {
+    "source": ".build/m3-native-regressions-final.log",
+    "archive": "docs/development/evidence/m3b-native-regressions.txt",
+    "bytes": 41774,
+    "sha256": "6dadcc0d3c45246030dfc314946bb44984c71b956733bf3621de365de4ea7169",
+    "normalization": "line-endings-and-trailing-whitespace-only",
+    "sourceBytes": 41776,
+    "sourceSha256": "c699b4c01ae9cc6b0ff8c93377df47c2d6ea0cfaa9da197475afbbf63dbcab84"
+  },
+  {
+    "source": ".build/runtime-packaging-check.log",
+    "archive": "docs/development/evidence/m3b-packaging-check.txt",
+    "bytes": 390,
+    "sha256": "7287bd34f390edcc5ec4658ac75f613ff1ca0ccf96ea3695f5bec1f4c7299a69",
+    "normalization": "none",
+    "sourceBytes": 390,
+    "sourceSha256": "7287bd34f390edcc5ec4658ac75f613ff1ca0ccf96ea3695f5bec1f4c7299a69"
+  },
+  {
+    "source": ".build/android-license-bundle-build.log",
+    "archive": "docs/development/evidence/m3b-license-build.txt",
+    "bytes": 168,
+    "sha256": "e37127b824adee44e3797b84e5a778e00a16dbfa50468b611e4207a07651cd71",
+    "normalization": "none",
+    "sourceBytes": 168,
+    "sourceSha256": "e37127b824adee44e3797b84e5a778e00a16dbfa50468b611e4207a07651cd71"
+  },
+  {
+    "source": ".build/android-license-inputs-check.log",
+    "archive": "docs/development/evidence/m3b-license-inputs.txt",
+    "bytes": 1502,
+    "sha256": "596c01f270f980f76a764d90200e2a4a1805ec41dcb2823e4b5600ffe2882e7f",
+    "normalization": "none",
+    "sourceBytes": 1502,
+    "sourceSha256": "596c01f270f980f76a764d90200e2a4a1805ec41dcb2823e4b5600ffe2882e7f"
+  },
+  {
+    "source": ".build/m3-window-build-final.log",
+    "archive": "docs/development/evidence/m3b-desktop-build-disk-failure.txt",
+    "bytes": 4220,
+    "sha256": "7c92906363fc9fe3ec2284ed23f45969657904b9db21103bcbd61c8833e2425f",
+    "normalization": "none",
+    "sourceBytes": 4220,
+    "sourceSha256": "7c92906363fc9fe3ec2284ed23f45969657904b9db21103bcbd61c8833e2425f"
+  },
+  {
+    "source": ".build/m3-window-tests-r2.log",
+    "archive": "docs/development/evidence/m3b-window-tests-r2.txt",
+    "sourceBytes": 19733,
+    "sourceSha256": "7ecf438ab350015e3aaa1008d098cadc7423d4db093cbc489c76e2926aba26fe",
+    "bytes": 19732,
+    "sha256": "b110f4f4e0bbe13fea568e0daf2782b955b2c488d8dcdfdfd6661ef867a374df",
+    "normalization": "line-endings-and-trailing-whitespace-only"
+  },
+  {
+    "source": ".build/m3-android-baseline-ci/manifest.json",
+    "archive": "docs/development/evidence/m3b-baseline-android-manifest.json",
+    "sourceBytes": 1823,
+    "sourceSha256": "f2ab823fbc99cdf7cd6a6f6c8adc232610bfea6d18409d34d2854fd2777ae291",
+    "bytes": 1823,
+    "sha256": "f2ab823fbc99cdf7cd6a6f6c8adc232610bfea6d18409d34d2854fd2777ae291",
+    "normalization": "none"
+  },
+  {
+    "source": ".build/m3-android-baseline-ci/key-original-lines.log",
+    "archive": "docs/development/evidence/m3b-baseline-android-key-lines.txt",
+    "sourceBytes": 6681,
+    "sourceSha256": "a7ed2d1148a2d3cdb3f56983359a3a64f914e71ca7e740a26781a433ebc697a0",
+    "bytes": 6678,
+    "sha256": "820e376662b504afe331f83dab2f87b6811a81e734b9476476f611a90852af05",
+    "normalization": "line-endings-and-trailing-whitespace-only"
+  },
+  {
+    "source": ".build/m3-android-baseline-ci/SHA256SUMS.txt",
+    "archive": "docs/development/evidence/m3b-baseline-android-full-log-sha256.txt",
+    "sourceBytes": 1001,
+    "sourceSha256": "80e0e25badd4a6a9cc39b9d19498d127a37870eb096a37225f687fc5eeb5c39e",
+    "bytes": 989,
+    "sha256": "b7951a10ab86f1c6940c5411b590c17a6a77aee239bfe95cd8514f22e708b3dd",
+    "normalization": "line-endings-and-trailing-whitespace-only"
+  },
+  {
+    "source": ".build/m3-android-ci-script-static.log",
+    "archive": "docs/development/evidence/m3b-android-ci-script-static.txt",
+    "sourceBytes": 266,
+    "sourceSha256": "11dc7453692cf20deb334021aae6e8ebb660ac2c2866cea3c7204554f1510be4",
+    "bytes": 266,
+    "sha256": "11dc7453692cf20deb334021aae6e8ebb660ac2c2866cea3c7204554f1510be4",
+    "normalization": "none"
+  },
+  {
+    "source": ".build/android-startup-assertions-check.log",
+    "archive": "docs/development/evidence/m3b-android-startup-assertions.txt",
+    "sourceBytes": 1592,
+    "sourceSha256": "f50ddc3529612318621511fdd40b3d9a5fd51d528e9e0ed964e902ec39e9118f",
+    "bytes": 1592,
+    "sha256": "f50ddc3529612318621511fdd40b3d9a5fd51d528e9e0ed964e902ec39e9118f",
+    "normalization": "none"
+  },
+  {
+    "source": ".build/m3-window-build-r2.log",
+    "archive": "docs/development/evidence/m3b-desktop-build-r2.txt",
+    "bytes": 2705,
+    "sha256": "931098a7060da21b8963bf9a40aea302d3c664731d5aa805ae7326e6de404cae",
+    "normalization": "none",
+    "sourceBytes": 2705,
+    "sourceSha256": "931098a7060da21b8963bf9a40aea302d3c664731d5aa805ae7326e6de404cae"
+  }
+]
