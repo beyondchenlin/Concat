@@ -3347,7 +3347,7 @@ mod tests {
     #[test]
     fn a_picked_colour_is_the_mean_about_the_point() {
         let mut frame = concat_core::frame::Frame::black(10, 10);
-        for (at, pixel) in frame.pixels_mut().chunks_exact_mut(4).enumerate() {
+        for (at, pixel) in frame.pixels_mut().as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let shade = if at % 2 == 0 { 0 } else { 255 };
             pixel.copy_from_slice(&[0, shade, 64, 255]);
         }

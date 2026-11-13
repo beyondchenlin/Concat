@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+//! Feature-gated executable for isolated native, platform and document checks.
 
 fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();

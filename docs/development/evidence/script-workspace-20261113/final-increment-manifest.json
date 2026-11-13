@@ -1,0 +1,118 @@
+{
+  "schema": 1,
+  "base_commit": "98d1c3bea05bb9534e11a62ae0d8d58873bda962",
+  "status": "reviewed source and actual evidence; new CI execution not yet obtained",
+  "old_test_candidate": "105dbc87421fec27456299a77cfcc6a9c0a861e0",
+  "device_r6_raw_final_logs_retrieved": false,
+  "later_barrier_patch_executed": false,
+  "files": [
+    {
+      "path": ".github/workflows/script-store.yml",
+      "bytes": 1429,
+      "sha256": "a85a2bce94353a77685fdbb4699973b357da3cdce82a174b16dacb20b6778cfb",
+      "git_blob": "134c0eb94617734450f38ab877a1b5c3da84e509"
+    },
+    {
+      "path": "docs/development/evidence/script-workspace-20261113/barrier-coordination-review.md",
+      "bytes": 4305,
+      "sha256": "2dd8e7750d12de9cccc5fbd73047c3a6a3ca99e739c569b8a47af82f6aa2e0c8",
+      "git_blob": "3f063d3fca20c3a6a893a8edb5aff99d93bf1ca4"
+    },
+    {
+      "path": "docs/development/evidence/script-workspace-20261113/barrier-coordination.patch",
+      "bytes": 785,
+      "sha256": "2725b917d1c43620cf48d65ede1f85191e85386474e6a34bd07003894abcd7f5",
+      "git_blob": "612199b5937cd357a49866544a015525ef85dcfc"
+    },
+    {
+      "path": "docs/development/evidence/script-workspace-20261113/ci-98d1c3be-completed.json",
+      "bytes": 14184,
+      "sha256": "12f2dd95b945bc890c660869980ffc0eaf3b9f9d13ce690553240d4b5b1ea94f",
+      "git_blob": "06c33a85e8a56b4f7f0e875fbdf19a4e68390956"
+    },
+    {
+      "path": "docs/development/evidence/script-workspace-20261113/ci-98d1c3be-observed-153505.json",
+      "bytes": 13122,
+      "sha256": "ec2134be316a9250b1eee297408c60e8cf09beae098c12c5ff57dc8c703958c8",
+      "git_blob": "e364bcc8c086bfa81e055994a5e1458bb062dec7"
+    },
+    {
+      "path": "docs/development/evidence/script-workspace-20261113/ci-engine-98d1c3be.log",
+      "bytes": 602563,
+      "sha256": "ef56000c86c8182825a9093434e1cd781b1c5b9f338492a4e49171a4018df1e3",
+      "git_blob": "fc1871eb356619b68ca63f67aae360146bb80654"
+    },
+    {
+      "path": "docs/development/evidence/script-workspace-20261113/ci-windows-98d1c3be.log",
+      "bytes": 419573,
+      "sha256": "1c2bce0eac2e68f107d45967ce853f5be81785e4ea36163a9b35ff21fab8b693",
+      "git_blob": "2a1dd392bca1eeaa0e74d1fdb2d56fdbee560b61"
+    },
+    {
+      "path": "docs/development/evidence/script-workspace-20261113/compiler-compatibility-review.md",
+      "bytes": 5980,
+      "sha256": "a03404e9622ecf9e789ed1e2c9a7c2e88562d3c65d30fbc390a92561b2827a9c",
+      "git_blob": "caa865db0c18e2457923bda8cb6b34d696435b6f"
+    },
+    {
+      "path": "docs/development/evidence/script-workspace-20261113/final-source-and-workflow-review.md",
+      "bytes": 7687,
+      "sha256": "c349fcdebb2030e62b228e5a4352a80cd778811ef6cfd0ea21c666dd2457f90f",
+      "git_blob": "7f8436822bf31c38e05c800db4177a395d9f0d52"
+    },
+    {
+      "path": "docs/development/evidence/script-workspace-20261113/native-r6-observed-results.json",
+      "bytes": 2754,
+      "sha256": "b7c1b587ac3950fd10f5a91fab11ec8d542e230f3db3a8b9391706d3ab4170db",
+      "git_blob": "b4b7d7b45ee3604a166385356d6c3ca07f3c90a9"
+    },
+    {
+      "path": "docs/development/script-workspace-20261113.md",
+      "bytes": 11333,
+      "sha256": "dae0e6194a6c66ed9b6f7dcb5e3c6f1c154279aaaf92b3ab1d4578e50c854df8",
+      "git_blob": "a61fcbf27990f15bc642969af1b19e8c57f5303d"
+    },
+    {
+      "path": "docs/prd/bk-cat-20261113/PRD.md",
+      "bytes": 114502,
+      "sha256": "5dfb8f17066ec93e25d782ff527505e9a2e2e7474952a0689c266b88dc727a9c",
+      "git_blob": "38e5da36ad58b430dfc7162695055fdaa05f538f"
+    },
+    {
+      "path": "src/crates/concat/examples/bk_cat_native_probe.rs",
+      "bytes": 514,
+      "sha256": "42156e11a060b4a36f1f286265a047550801eb4eec7647c531019916d48227cf",
+      "git_blob": "276a2f8a6f0539146c85eaeb25ec4920d51825ae"
+    },
+    {
+      "path": "src/crates/concat/src/agent/probe.rs",
+      "bytes": 31424,
+      "sha256": "960ec9fba96d02f11d1ee2877ff4cc14685d2eff52af29914b6c9edb7a205c65",
+      "git_blob": "9a7a46494abd5cfbff3edf7cd10adccfb6202bf2"
+    },
+    {
+      "path": "src/crates/concat/src/host.rs",
+      "bytes": 33589,
+      "sha256": "6cd19f838becc5d1607628c1e7f6a11478169a7367a99713e24df333821376cd",
+      "git_blob": "de6b03b1aeae5f2978a55997219038d7b57e348b"
+    },
+    {
+      "path": "src/crates/concat/src/studio.rs",
+      "bytes": 148063,
+      "sha256": "5b162b0e43dfc8cf4efff901abfdb04fee06c45d09fec0f03c684ddc7f6d83ed",
+      "git_blob": "454479b962c1768eb5846d1d1015c2d6b32905c8"
+    },
+    {
+      "path": "src/crates/concat-agent/tests/scripts.rs",
+      "bytes": 20088,
+      "sha256": "05f68f77a454d9dbb8b583043d2289a129dd964a4499adc14cfe50610f4fd474",
+      "git_blob": "7acc5b7decd1d1f214f556195ad423fb6576e84d"
+    }
+  ],
+  "workflow_logs": {
+    "source": "GitHub connector decoded job logs",
+    "windows_line_endings": "3424 CRLF sequences normalized to LF; other decoded text unchanged",
+    "engine_line_endings": "decoded text unchanged",
+    "not_a_raw_zip_archive": true
+  }
+}

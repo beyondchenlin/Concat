@@ -640,7 +640,7 @@ fn save_frame_jpeg(
     quality: u8,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut rgb = Vec::with_capacity(frame.width() as usize * frame.height() as usize * 3);
-    for pixel in frame.pixels().chunks_exact(4) {
+    for pixel in frame.pixels().as_chunks::<4>().0 {
         rgb.extend_from_slice(&pixel[..3]);
     }
 

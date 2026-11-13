@@ -1,0 +1,42 @@
+name: Script store checks
+
+on:
+  pull_request:
+    paths:
+      - "src/crates/concat-agent/**"
+      - "src/Cargo.toml"
+      - "src/Cargo.lock"
+      - "src/rust-toolchain.toml"
+      - ".github/workflows/script-store.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: script-store-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  script-store:
+    name: Real script storage and strict checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Read the repository toolchain
+        id: toolchain
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' src/rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          components: clippy, rustfmt
+      - name: Format the storage crate
+        working-directory: src
+        run: cargo fmt --check -p concat-agent
+      - name: Real storage and subprocess interruption tests
+        working-directory: src
+        run: cargo test --locked -p concat-agent --lib --test scripts -- --test-threads=2
+      - name: Strict checks for every storage target
+        working-directory: src
+        run: cargo clippy --locked -p concat-agent --all-targets -- -D warnings

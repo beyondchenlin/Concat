@@ -115,10 +115,11 @@ fn concurrent_snapshots_allow_exactly_one_writer_without_losing_the_other_draft(
             let snapshot = initial.clone();
             let barrier = barrier.clone();
             std::thread::spawn(move || {
-                let store = ScriptStore::open(&path).unwrap();
+                let store = ScriptStore::open(&path);
                 let mut draft = ScriptDraft::from_snapshot(snapshot);
                 draft.set_text(text.into()).unwrap();
                 barrier.wait();
+                let store = store.unwrap();
                 let result = store.save(&mut draft);
                 match result {
                     Ok(_) => {
