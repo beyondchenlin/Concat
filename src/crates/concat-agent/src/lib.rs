@@ -33,6 +33,10 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
+/// Non-secret native model channels, versioned independently of projects and sessions.
+pub mod configuration;
+/// Product-scoped platform secure credentials, never persisted in model metadata.
+pub mod credentials;
 /// Durable native edit intent, receipt, disk-save and notification states.
 pub mod operations;
 /// Original Pi session storage through a generation-fenced native SQLite port.
