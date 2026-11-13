@@ -460,9 +460,8 @@ impl OperationJournal {
                 let mut statement = transaction.prepare(
                     "SELECT id FROM operations WHERE project=?1 AND result_session=?2 \
                      AND result_revision=?3 AND receipt IS NOT NULL AND saved IS NULL")?;
-                let ids = statement.query_map(params![project_path,session.to_string(),revision.to_string()],
-                    |row| row.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?;
-                ids
+                statement.query_map(params![project_path,session.to_string(),revision.to_string()],
+                    |row| row.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?
             };
             let changed = transaction.execute(
                 "UPDATE operations SET saved=?1 WHERE project=?2 AND result_session=?3 \
