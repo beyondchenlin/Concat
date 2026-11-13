@@ -361,11 +361,7 @@ jobs:
           emulator-boot-timeout: 900
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -no-boot-anim -camera-back none -camera-front none
           disable-animations: true
-          # The emulator action launches script commands through /bin/sh.
-          # Keep both strict Bash scripts in one success-dependent command.
-          script: >-
-            bash scripts/ci/test-agent-android.sh run --artifact agent-ownership-x86_64 --out smoke-android/ownership &&
-            bash scripts/ci/smoke-android.sh --out smoke-android --wait 60 --require-agent apk/Concat-*.apk
+          script: bash scripts/ci/verify-agent-android.sh
 
       # The log, the screenshot and the rest, pass or fail.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

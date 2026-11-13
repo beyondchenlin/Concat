@@ -1,0 +1,92 @@
+{
+  "schema": 1,
+  "status": "云端冻结候选；未写入远端、未提交推送、未真实模拟器运行",
+  "own_branch_head": "f6871b6a225794f0838e0ac4ef547cfec195c084",
+  "platform_base": "f0b1a8767cc3aabc4485e2e6a4dc94c2d339309b",
+  "observed_failures": {
+    "run": 43445318036,
+    "jobs": [
+      131966666377,
+      131973915344
+    ],
+    "artifact_ids": [
+      14049023425,
+      14051250523
+    ]
+  },
+  "tests": {
+    "command": "python docs/development/evidence/android-emulator-preflight-20261113/test-preflight.py",
+    "test_methods_passed": 22,
+    "failed": 0,
+    "exit_code": 0,
+    "scope": "真实预检和总入口进程配合模拟设备命令；未执行安卓、安装或恢复",
+    "shell_syntax_exit_code": 0,
+    "elapsed_seconds": 40.065
+  },
+  "files": {
+    "scripts/ci/prepare-android-emulator.py": {
+      "bytes": 11164,
+      "sha256": "a2ce92d57d5d07f4202e4e2812d75831b837dc257a6610c798e71ba6a95b8293",
+      "git_blob": "c974d6eeab3dcd8e5122db8377a2dc8b18ca3097"
+    },
+    "scripts/ci/verify-agent-android.sh": {
+      "bytes": 723,
+      "sha256": "65befc740356abf7c507d2de0924cdbccecb5be02916fb83ac6902ce23e0839b",
+      "git_blob": "023f3d98d3d32e4208b88d3b6541e36b61847054"
+    },
+    "docs/development/android-emulator-preflight-20261113.md": {
+      "bytes": 7322,
+      "sha256": "4dfa16ee46290335d4a76d90f1e68c3377482eebe99538aab2206aa175a327f4",
+      "git_blob": "c04716e51712bc55c1c0236cb0cada382e11fc56"
+    },
+    "docs/development/evidence/android-emulator-preflight-20261113/test-preflight.py": {
+      "bytes": 19446,
+      "sha256": "e42c211f7329140069dcc787c519210bda9512ec062400325be6782738392576",
+      "git_blob": "8c5fba8dae08bda094265468259bca469fedb67f"
+    },
+    "docs/development/evidence/android-emulator-preflight-20261113/test-preflight.log": {
+      "bytes": 3546,
+      "sha256": "01c075f89962ec308e7a4cc72ea6ef9a6864d0691eee7dd413f46bd280dbf6d7",
+      "git_blob": "cdc0baa074b97208cef401e81927998f3b4fdeeb"
+    },
+    "docs/development/evidence/android-emulator-preflight-20261113/window-format-sources.json": {
+      "bytes": 2612,
+      "sha256": "575e2afb605218da492483ad62a5a23b4fe4c6e0748846990aac78373aacf050",
+      "git_blob": "2e395c3c37f2b8443c17bbcd9607f56ddf15c8a0"
+    }
+  },
+  "preserved_gate_files": {
+    "scripts/ci/smoke-android.sh": {
+      "bytes": 17313,
+      "sha256": "e497b3f9c14010eb4153431f6ab77ad223863935a433b43bc1de32bdce1faacc",
+      "git_blob": "49985953510ebd529ff47899a8f81cd49fe170c5"
+    },
+    "scripts/ci/test-agent-android.sh": {
+      "bytes": 8820,
+      "sha256": "bcf42c5278a88faec5bb66aeff926b856148bed463d1294f033b7571fa16bc0e",
+      "git_blob": "326b74b6a671ce3a3f2dc5b85f15f6f9bdbb27fa"
+    }
+  },
+  "platform_files_to_preserve": {
+    "BKCatRuntime.java": {
+      "bytes": 24812,
+      "sha256": "19ed510663419677c68b7aaee990f784df6a50f43833a39de75af7ab5181f937",
+      "git_blob": "3f2d897311798388e5605cd8a584d21bda4271e7"
+    },
+    "BKCatRuntimePolicy.java": {
+      "bytes": 3546,
+      "sha256": "b3b2baa0a7981dfb88201c177faa06df46bc0a165fb62fbdb94f4bdddb1007ea",
+      "git_blob": "62c59e4fc11bc682b28eaaa6b969896ad7a1dc3a"
+    },
+    "BKCatRuntimePolicyTest.java": {
+      "bytes": 10597,
+      "sha256": "3c5f0607601da2aedbdd7faef36c8ac316a7244d5d4bfde54ac3e61372a8873b",
+      "git_blob": "69f00b329c2246efe81ba32de696b2f38e94d3df"
+    }
+  },
+  "candidate_revision": 2,
+  "review_findings_addressed": [
+    "按官方当前显示和活动窗口来源解析，排除历史快照及表面装饰误拒绝",
+    "后置每条命令受固定后置截止约束，迟到清除仍失败"
+  ]
+}

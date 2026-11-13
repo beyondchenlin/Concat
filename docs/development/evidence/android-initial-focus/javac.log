@@ -1,0 +1,10 @@
+javac.exe : 注: E:\BK-CAT\.build\worktrees\continue-android-20261113\src\crates\concat-android\java\ConcatFiles.java使用或覆
+盖了已过时的 API。
+所在位置 E:\BK-CAT\.build\worktrees\continue-android-20261113\src\crates\concat-android\scripts\verify-runtime-java.ps1:31
+字符: 5
++     & $bkJavac -encoding UTF-8 -source 8 -target 8 -Xlint:-options -c ...
++     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (注: E:\BK-CAT\.b...使用或覆盖了已过时的 API。:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+
+注: 有关详细信息, 请使用 -Xlint:deprecation 重新编译。
