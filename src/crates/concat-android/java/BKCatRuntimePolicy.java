@@ -14,6 +14,27 @@ public final class BKCatRuntimePolicy {
 
     private boolean active = true;
     private boolean documentStarted = false;
+    private boolean viewStarted = false;
+
+    public enum StartupDecision { WAITING, START, ALREADY_STARTED, RETIRED, TIMED_OUT }
+
+    /**
+     * A single initial creation may wait for focus. The caller supplies Android's
+     * monotonic uptime and one fixed deadline; later focus cannot revive a
+     * retired component, and a stale timeout cannot retire an already-open view.
+     */
+    public synchronized StartupDecision startView(boolean foregroundReady,
+            long now, long deadline) {
+        if (!active) return StartupDecision.RETIRED;
+        if (viewStarted) return StartupDecision.ALREADY_STARTED;
+        if (now >= deadline) {
+            active = false;
+            return StartupDecision.TIMED_OUT;
+        }
+        if (!foregroundReady) return StartupDecision.WAITING;
+        viewStarted = true;
+        return StartupDecision.START;
+    }
 
     /** No redirects, credentials, ports, queries, fragments or alternate schemes. */
     public static String resourcePath(String url, String method) {

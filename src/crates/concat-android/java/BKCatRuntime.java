@@ -10,8 +10,11 @@ import android.net.http.SslError;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
+import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 import android.webkit.ConsoleMessage;
 import android.webkit.GeolocationPermissions;
 import android.webkit.JavascriptInterface;
@@ -52,6 +55,7 @@ public final class BKCatRuntime {
     // Accessed only on Android's UI thread, independently of Slint's thread.
     private static final Map<String, BKCatRuntime> INSTANCES = new HashMap<>();
     private static final String BRIDGE = "BKCatAndroid";
+    private static final long FOREGROUND_WAIT_MILLIS = 15_000L;
     private static Lifecycle lifecycle;
 
     private final BKCatRuntimePolicy policy = new BKCatRuntimePolicy();
@@ -59,6 +63,10 @@ public final class BKCatRuntime {
     private final Activity activity;
     private final String instance;
     private final Map<String, byte[]> resources;
+    private final long foregroundDeadline = SystemClock.uptimeMillis() + FOREGROUND_WAIT_MILLIS;
+    private View focusView;
+    private ViewTreeObserver.OnWindowFocusChangeListener focusListener;
+    private Runnable foregroundTimeout;
     private WebView webView;
 
     private BKCatRuntime(Activity activity, String instance, Map<String, byte[]> resources) {
@@ -97,12 +105,14 @@ public final class BKCatRuntime {
             final String document, final String runtime, final String bootstrap,
             final String transport) {
         if (!UI.post(() -> {
-            if (activity.isFinishing() || activity.isDestroyed() || !activity.hasWindowFocus()
-                    || lifecycle == null || lifecycle.activity != activity || lifecycle.paused) {
-                runtimeClosed(instance, "android activity is not foreground-ready");
+            String unavailable = activityUnavailableReason(activity);
+            if (unavailable != null) {
+                Log.i("concat", "bk-cat-android-host: state=refused reason=" + unavailable);
+                runtimeClosed(instance, unavailable);
                 return;
             }
             if (!INSTANCES.isEmpty()) {
+                Log.i("concat", "bk-cat-android-host: state=refused reason=preceding-runtime-not-closed");
                 runtimeClosed(instance, "the preceding Android runtime has not closed");
                 return;
             }
@@ -113,12 +123,68 @@ public final class BKCatRuntime {
             assets.put("/transport.js", transport.getBytes(StandardCharsets.UTF_8));
             BKCatRuntime host = new BKCatRuntime(activity, instance, Collections.unmodifiableMap(assets));
             INSTANCES.put(instance, host);
-            try {
-                host.openView();
-            } catch (RuntimeException error) {
-                host.dispose("Android WebView creation failed");
-            }
+            host.startWhenForeground();
         })) runtimeClosed(instance, "Android UI rejected runtime creation");
+    }
+
+    private static String activityUnavailableReason(Activity activity) {
+        if (activity.isFinishing() || activity.isDestroyed()) return "activity-ended";
+        if (lifecycle == null || lifecycle.activity != activity) return "lifecycle-observer-unavailable";
+        if (lifecycle.paused) return "activity-paused";
+        return null;
+    }
+
+    /** Wait only for this initial request; lifecycle retirement never retries. */
+    private void startWhenForeground() {
+        if (disposed.get()) return;
+        try {
+            String unavailable = activityUnavailableReason(activity);
+            if (unavailable != null) {
+                dispose(unavailable);
+                return;
+            }
+            switch (policy.startView(activity.hasWindowFocus(),
+                    SystemClock.uptimeMillis(), foregroundDeadline)) {
+                case START:
+                    clearForegroundWait();
+                    Log.i("concat", "bk-cat-android-host: state=starting reason=window-focused");
+                    openView();
+                    return;
+                case WAITING:
+                    if (focusListener != null) return;
+                    focusView = activity.getWindow().getDecorView();
+                    focusListener = focused -> { if (focused) startWhenForeground(); };
+                    focusView.getViewTreeObserver().addOnWindowFocusChangeListener(focusListener);
+                    foregroundTimeout = this::startWhenForeground;
+                    if (!UI.postDelayed(foregroundTimeout,
+                            Math.max(0L, foregroundDeadline - SystemClock.uptimeMillis()))) {
+                        dispose("initial-window-focus-queue-unavailable");
+                        return;
+                    }
+                    Log.i("concat", "bk-cat-android-host: state=waiting reason=initial-window-focus");
+                    return;
+                case TIMED_OUT:
+                    dispose("initial-window-focus-timeout");
+                    return;
+                case ALREADY_STARTED:
+                case RETIRED:
+                    return;
+            }
+        } catch (RuntimeException error) {
+            dispose("Android WebView initial setup failed");
+        }
+    }
+
+    /** Android UI thread only, on successful startup and every retirement path. */
+    private void clearForegroundWait() {
+        if (foregroundTimeout != null) UI.removeCallbacks(foregroundTimeout);
+        foregroundTimeout = null;
+        if (focusView != null && focusListener != null) {
+            ViewTreeObserver observer = focusView.getViewTreeObserver();
+            if (observer.isAlive()) observer.removeOnWindowFocusChangeListener(focusListener);
+        }
+        focusView = null;
+        focusListener = null;
     }
 
     /** The string is data, never interpolated as source code. */
@@ -356,23 +422,26 @@ public final class BKCatRuntime {
     private void dispose(String reason) {
         policy.retire();
         if (!disposed.compareAndSet(false, true)) return;
+        // All callers pass fixed native-host reasons, never webpage content.
+        Log.i("concat", "bk-cat-android-host: state=retiring reason=" + reason);
         // First revoke native execution, but retain its storage ownership until
         // destroy() actually returns. JS unload handlers are not a handoff gate.
         if (instance != null) runtimeStopping(instance, reason);
         WebView old = webView;
         webView = null;
-        if (old != null) {
-            try {
+        try {
+            clearForegroundWait();
+            if (old != null) {
                 old.removeJavascriptInterface(BRIDGE);
                 old.stopLoading();
                 ViewGroup parent = (ViewGroup) old.getParent();
                 if (parent != null) parent.removeView(old);
                 old.destroy();
-            } catch (RuntimeException error) {
-                // Fail closed: no "closed" acknowledgement, and no replacement
-                // component. Native keeps the revoked owner's storage locked.
-                return;
             }
+        } catch (RuntimeException error) {
+            // Fail closed: no "closed" acknowledgement, and no replacement
+            // component. Native keeps the revoked owner's storage locked.
+            return;
         }
         if (instance != null) {
             INSTANCES.remove(instance);

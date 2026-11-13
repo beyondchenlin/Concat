@@ -15,6 +15,53 @@ public final class BKCatRuntimePolicyTest {
         System.out.println("PASS " + name);
     }
     public static void main(String[] args) throws Exception {
+        BKCatRuntimePolicy initial = new BKCatRuntimePolicy();
+        check(initial.startView(false, 100, 200) == BKCatRuntimePolicy.StartupDecision.WAITING,
+                "initial request waits for the first window focus");
+        check(initial.active(), "waiting does not retire the initial request");
+        check(initial.startView(false, 199, 200) == BKCatRuntimePolicy.StartupDecision.WAITING,
+                "repeated unfocused callbacks do not create a view");
+        check(initial.startView(true, 199, 200) == BKCatRuntimePolicy.StartupDecision.START,
+                "first focus before the deadline admits exactly one view");
+        check(initial.startView(true, 199, 200) == BKCatRuntimePolicy.StartupDecision.ALREADY_STARTED,
+                "duplicate focus cannot create another view");
+        check(initial.startView(false, 201, 200) == BKCatRuntimePolicy.StartupDecision.ALREADY_STARTED
+                && initial.active(), "a stale timeout cannot retire an already-started view");
+        pass("initial focus waits, starts once and rejects duplicate creation");
+
+        for (String cause : new String[] {"pause", "stop", "saved-state", "destroy", "native-close"}) {
+            BKCatRuntimePolicy waiting = new BKCatRuntimePolicy();
+            check(waiting.startView(false, 100, 200) == BKCatRuntimePolicy.StartupDecision.WAITING,
+                    cause + " begins while initial focus is pending");
+            waiting.retire();
+            check(waiting.startView(true, 150, 200) == BKCatRuntimePolicy.StartupDecision.RETIRED,
+                    cause + " permanently rejects late focus");
+            check(!waiting.beginDocument(BKCatRuntimePolicy.DOCUMENT)
+                    && !waiting.canMessage(BKCatRuntimePolicy.DOCUMENT, "{}"),
+                    cause + " rejects late document and message callbacks");
+        }
+        pass("pause, stop, saved-state, destruction and close before focus cannot revive");
+
+        BKCatRuntimePolicy expired = new BKCatRuntimePolicy();
+        check(expired.startView(false, 200, 200) == BKCatRuntimePolicy.StartupDecision.TIMED_OUT,
+                "the exact initial deadline fails closed");
+        check(!expired.active(), "timeout retires authority");
+        check(expired.startView(true, 201, 200) == BKCatRuntimePolicy.StartupDecision.RETIRED,
+                "focus after timeout cannot revive");
+        check(!expired.beginDocument(BKCatRuntimePolicy.DOCUMENT), "timeout refuses a late document");
+        BKCatRuntimePolicy lateFocus = new BKCatRuntimePolicy();
+        check(lateFocus.startView(true, 201, 200) == BKCatRuntimePolicy.StartupDecision.TIMED_OUT,
+                "late focus cannot beat a delayed timeout callback");
+        pass("initial deadline rejects absent and late focus without extending itself");
+
+        BKCatRuntimePolicy retiredView = new BKCatRuntimePolicy();
+        check(retiredView.startView(true, 100, 200) == BKCatRuntimePolicy.StartupDecision.START,
+                "ready initial request starts");
+        retiredView.retire();
+        check(retiredView.startView(true, 150, 200) == BKCatRuntimePolicy.StartupDecision.RETIRED,
+                "resumed focus never restarts a previously opened and retired view");
+        pass("retired opened component is never restarted by focus recovery");
+
         for (String path : new String[] {
                 "/index.html", "/runtime.js", "/bootstrap.js", "/transport.js"}) {
             check(path.equals(BKCatRuntimePolicy.resourcePath(
