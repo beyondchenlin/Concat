@@ -48,9 +48,43 @@ pub struct AgentPane {
     pub task: AgentTask,
     /// A user-facing failure reported by the real runtime or native bridge.
     pub error: String,
+    /// Read-only recovery evidence from the current, authenticated component.
+    pub recovery_summary: String,
+    pub can_recover: bool,
+    pub can_review: bool,
+    pub runtime_loading: bool,
+    pub runtime_loaded: bool,
 }
 
 impl AgentPane {
+    pub(crate) fn apply_runtime(&mut self, runtime: &crate::embedded::RuntimeView) {
+        self.readiness.runtime_ready = runtime.phase == "ready" && !runtime.closed;
+        self.runtime_loading = matches!(
+            runtime.phase.as_str(),
+            "loading" | "acquiring" | "activating"
+        );
+        self.runtime_loaded = runtime.loaded && !runtime.closed;
+        self.can_review = runtime.phase == "recovery";
+        self.can_recover = false;
+        self.error = runtime.error.clone();
+        self.recovery_summary.clear();
+        if let Some(snapshot) = &runtime.snapshot {
+            if let Some(reason) = snapshot["blockedReason"].as_str() {
+                self.recovery_summary = reason.to_owned();
+            } else if self.can_review {
+                self.can_recover = snapshot["snapshotId"].is_string()
+                    && snapshot["projectPath"].is_string()
+                    && snapshot["hasInterruptedWork"] == false;
+                self.recovery_summary = if snapshot["schemaVersion"] == "empty" {
+                    "当前工程已核对。确认后初始化空会话；不会调用模型或自动编辑。"
+                } else {
+                    "当前工程与已存会话已核对。确认后打开会话；不会自动继续旧任务。"
+                }
+                .to_owned();
+            }
+        }
+    }
+
     fn missing(&self) -> String {
         let mut missing = Vec::new();
         if self.readiness.provider.trim().is_empty() {
@@ -91,6 +125,9 @@ impl AgentPane {
             missing: missing.clone().into(),
             error: self.error.as_str().into(),
             model: model.into(),
+            can_review: self.can_review,
+            can_continue: self.can_recover,
+            recovery_summary: self.recovery_summary.as_str().into(),
             ..AgentStatusData::default()
         };
         let owner = match owner {
@@ -99,11 +136,24 @@ impl AgentPane {
                 data.title = "会话暂不可用".into();
                 data.detail = "智能任务没有启动，仍可使用手动编辑。".into();
                 data.error = error.into();
+                data.can_connect = true;
                 return data;
             }
         };
+        data.can_connect = owner.phase == Phase::Released
+            || (owner.phase == Phase::RecoveryRequired
+                && !self.runtime_loaded
+                && !self.runtime_loading);
         data.can_stop = matches!(owner.phase, Phase::RecoveryRequired | Phase::Ready)
-            && (self.task.running || self.readiness.runtime_ready || owner.active_operations > 0);
+            && (self.task.running
+                || self.readiness.runtime_ready
+                || self.runtime_loaded
+                || self.runtime_loading
+                || owner.active_operations > 0);
+        if owner.phase != Phase::RecoveryRequired {
+            data.can_review = false;
+            data.can_continue = false;
+        }
         match owner.phase {
             Phase::RecoveryRequired => {
                 data.title = "等待恢复核对".into();

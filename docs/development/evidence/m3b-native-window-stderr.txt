@@ -1,0 +1,13 @@
+2026-11-13 12:43:27.099Z INFO  [main] concat_host::logs: Concat 0.2.10 · windows-x86_64 · commit local · log level INFO
+2026-11-13 12:43:27.099Z INFO  [main] concat_host::logs: system: Windows 10 Pro 22H2 (build 19045.6466)
+2026-11-13 12:43:27.100Z INFO  [main] concat_host::logs: cpu: 12th Gen Intel(R) Core(TM) i7-12700KF · 20 threads · has sse4.2 avx avx2 fma bmi2 f16c · lacks avx512f
+2026-11-13 12:43:27.105Z WARN  [main] concat::gpu: CONCAT_GPU=software: the window draws on the software rasteriser
+2026-11-13 12:43:27.328Z INFO  [main] concat::gpu: GPU adapter: Microsoft Basic Render Driver (Cpu, Dx12, driver 10.0.19041.5794)
+2026-11-13 12:43:27.329Z WARN  [main] concat::platform: the GPU adapter is a software rasteriser; the window draws on the CPU and the monitor on a device of its own
+2026-11-13 12:43:27.653Z INFO  [main] concat::studio::project_files: project: opening E:\BK-CAT\.build\target\bk-cat-probes\c646d06ec9d64872be8489bcae06375a\native\portable\projects\BK CAT isolated integration
+2026-11-13 12:43:28.169Z WARN  [concat cards] concat_host::cards: cards: a software adapter only; the cards are left undrawn
+2026-11-13 12:43:28.208Z INFO  [concat-worker-2] concat_export: previews draw on Microsoft Basic Render Driver (Cpu, Dx12)
+2026-11-13 12:43:28.386Z INFO  [concat-worker-2] concat_media::hardware: video decode on Direct3D 11
+2026-11-13 12:43:28.602Z INFO  [main] concat::studio::edit: edit: UpdateClip
+2026-11-13 12:43:28.669Z INFO  [main] concat::studio::project_files: project: closing BK CAT isolated integration
+2026-11-13 12:43:28.678Z INFO  [main] concat: close: event loop exited (ok=true)

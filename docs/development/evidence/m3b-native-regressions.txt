@@ -1,0 +1,650 @@
+   Compiling ort-sys v2.0.0-rc.13
+   Compiling ort v2.0.0-rc.13
+   Compiling concat-agent v0.2.10 (E:\BK-CAT\src\crates\concat-agent)
+   Compiling concat-vision v0.2.10 (E:\BK-CAT\src\crates\concat-vision)
+   Compiling concat-export v0.2.10 (E:\BK-CAT\src\crates\concat-export)
+   Compiling concat-host v0.2.10 (E:\BK-CAT\src\crates\concat-host)
+   Compiling concat-api v0.2.10 (E:\BK-CAT\src\crates\concat-api)
+   Compiling concat-server v0.2.10 (E:\BK-CAT\src\crates\concat-server)
+   Compiling concat-mcp v0.2.10 (E:\BK-CAT\src\crates\concat-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 47.72s
+     Running unittests src\lib.rs (E:\BK-CAT\.build\target\debug\deps\concat_agent-7c513de6bb558cbb.exe)
+
+running 5 tests
+test operations::readonly_tests::readonly_inspection_does_not_hold_ownership_while_waiting ... ok
+test sqlite::stop_tests::fast_stop_interrupts_a_real_read_and_allows_rollback ... ok
+test sqlite::stop_tests::fast_stop_interrupts_a_real_write_without_releasing_its_owner ... ok
+test tests::a_read_only_file_never_issues_a_generation ... ok
+test sqlite::readonly_tests::readonly_inspection_does_not_hold_ownership_while_waiting ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests\operations.rs (E:\BK-CAT\.build\target\debug\deps\operations-b507b62577ffac6f.exe)
+
+running 9 tests
+test crash_child_phase ... ignored, owned subprocess crash fixture
+
+running 1 test
+test early_verified_save_joins_only_the_matching_later_receipt ... ok
+test four_durable_transitions_are_distinct_and_repeated_work_is_never_replayed ... ok
+test invalid_saved_document_never_produces_save_evidence ... ok
+test notifications_never_auto_resume_after_reopening_the_journal ... ok
+test proven_native_refusals_are_terminal_but_unknown_failures_are_not ... ok
+test saved_document_must_match_the_exact_written_snapshot_and_receipt ... ok
+test unchanged_native_revision_finishes_without_inventing_a_save ... ok
+
+running 1 test
+
+running 1 test
+
+running 1 test
+test actual_subprocess_crashes_require_reconciliation_without_replaying ... ok
+
+test result: ok. 8 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 9.38s
+
+     Running tests\ownership.rs (E:\BK-CAT\.build\target\debug\deps\ownership-d3bb66c0ff3cd902.exe)
+
+running 20 tests
+test a_new_owner_cannot_start_work_until_reviewed ... ok
+test an_existing_empty_journal_cannot_reuse_generation_one ... ok
+test a_timed_out_handoff_refuses_new_owners_and_late_callbacks ... ok
+test concurrent_first_acquisition_has_one_owner_and_does_not_strand_an_empty_journal ... ok
+test callback_panic_fails_closed_until_the_host_is_closed ... ok
+test damaged_generation_journal_refuses_ownership_without_repairing_it ... ok
+test different_stores_cannot_exchange_tokens_even_when_generations_match ... ok
+test desktop_second_process_is_refused_by_the_operating_system_lock ... ok
+test dropping_the_host_revokes_but_keeps_the_kernel_lock_until_callbacks_drain ... ok
+test incomplete_or_repeated_review_does_not_approve_again ... ok
+test fast_stop_and_status_do_not_wait_for_an_admitted_write_or_release_ownership ... ok
+test killed_owner_can_be_taken_over_but_never_automatically_resumes ... ok
+test mobile_runtime_replacement_overlap_is_fenced_by_native_generation ... ok
+test malformed_complete_records_are_not_treated_as_a_fresh_store ... ok
+test owner_child_process ... ignored, subprocess helper; invoked explicitly by the real multiprocess tests
+test persistent_generation_increases_without_removing_the_lock_file ... ok
+test recovery_reads_are_allowed_but_revocation_refuses_even_read_callbacks ... ok
+test revocation_retains_ownership_until_safe_handoff_is_requested ... ok
+test same_store_and_canonical_path_alias_share_one_real_lock ... ok
+test native_revocation_and_a_write_are_one_ordered_boundary ... ok
+
+test result: ok. 19 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests\sqlite.rs (E:\BK-CAT\.build\target\debug\deps\sqlite-65b7bc5ed42a2855.exe)
+
+running 16 tests
+test a_nonterminating_query_is_bounded_without_losing_the_connection ... ok
+test a_version_two_marker_without_the_other_real_tables_is_never_writable ... ok
+test all_portable_value_types_round_trip_without_integer_precision_loss ... ok
+test authorizer_rejects_external_files_pragmas_and_sql_transaction_bypasses ... ok
+test dropping_a_revoked_connection_rolls_back_before_releasing_ownership ... ok
+test existing_same_named_metadata_views_are_never_executed_or_replaced ... ok
+test existing_unsupported_schema_is_read_only_inspected_and_not_migrated ... ok
+test identities_are_checked_on_reads_writes_and_cleanup ... ok
+test opening_frames_cannot_grant_themselves_initialization_or_a_path ... ok
+test a_version_two_store_with_a_fake_tasks_view_is_never_writable ... ok
+test recovery_inspection_never_initializes_an_absent_database ... ok
+test pinned_pi_schema_initializes_and_real_data_survives_handoff ... ok
+test single_statement_methods_refuse_a_second_statement_before_the_first_write ... ok
+test revocation_refuses_queries_and_commit_but_allows_matching_rollback_and_close ... ok
+test sqlite_automatic_rollback_cannot_turn_an_old_transaction_into_implicit_writes ... ok
+test unrelated_or_expired_transaction_handles_never_join_active_work ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running unittests src\lib.rs (E:\BK-CAT\.build\target\debug\deps\concat_api-c8d569c7cfeb34d6.exe)
+
+running 35 tests
+test contract::tests::a_reply_names_no_method_the_api_lacks ... ok
+test job::tests::a_job_is_followed_from_progress_to_its_end ... ok
+test job::tests::a_job_that_vanished_is_failed_and_old_ones_are_forgotten ... ok
+test job::tests::cancel_all_raises_only_the_running_flags_and_a_cancel_is_its_own_state ... ok
+test rpc::tests::a_bad_line_says_why_and_keeps_the_id ... ok
+test rpc::tests::a_bare_request_is_a_call_without_an_id ... ok
+test rpc::tests::a_reply_carries_the_id_and_an_error_its_code_twice ... ok
+test rpc::tests::an_envelope_parses_to_the_request_it_wraps ... ok
+test rpc::tests::an_event_is_a_notification_named_after_its_tag ... ok
+test contract::tests::every_method_has_a_reply_and_every_reference_resolves ... ok
+test tests::a_frame_over_8k_a_side_is_invalid ... ok
+test tests::a_mask_is_set_and_keyed_through_the_api ... ok
+test tests::a_method_on_a_closed_project_says_so ... ok
+test tests::a_project_another_process_holds_is_refused_with_the_way_in ... ok
+test tests::a_project_the_window_holds_is_refused_and_the_other_way_round ... ok
+test tests::a_project_the_window_holds_is_refused_as_before_while_its_switch_is_off ... ok
+test tests::a_refusal_is_the_command_layers_sentence_with_its_code ... ok
+test tests::a_request_parses_by_method_and_carries_a_command_verbatim ... ok
+test tests::a_response_is_a_result_or_an_error_object ... ok
+test tests::a_window_that_has_moved_on_says_the_project_is_not_open ... ok
+test tests::a_window_that_lends_its_project_says_so_in_the_version ... ok
+test tests::an_empty_timeline_has_nothing_to_export_and_no_job_to_cancel ... ok
+test tests::a_frame_comes_back_inline_when_no_output_is_named ... ok
+test tests::create_edit_save_and_reopen_round_trip ... ok
+test tests::creating_over_a_project_is_refused ... ok
+test tests::edits_to_the_window_s_project_land_in_its_session_and_history ... ok
+test tests::reads_and_renders_of_the_window_s_project_see_its_session ... ok
+test tests::the_catalogue_lists_packages_with_their_knobs ... ok
+test tests::the_document_is_what_a_save_writes ... ok
+test tests::the_switch_is_read_at_every_call ... ok
+test tests::the_window_saves_and_keeps_the_project_it_lends ... ok
+test tests::undo_and_redo_step_the_history ... ok
+test tests::version_names_what_the_build_serves ... ok
+test tests::writes_stay_under_the_roots ... ok
+test tests::an_export_is_a_job_that_reports_how_it_ended ... ok
+
+test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.01s
+
+     Running unittests src\lib.rs (E:\BK-CAT\.build\target\debug\deps\concat_host-244c50eecf1ee82c.exe)
+
+running 153 tests
+test awake::tests::a_hold_is_counted_until_it_is_let_go ... ok
+test capcut::tests::a_folder_without_a_draft_is_said_to_be_one ... ok
+test capcut::tests::the_drafts_on_this_machine_import ... ignored, needs CapCut's drafts on this machine
+test cards::tests::draw_every_card ... ignored, needs a GPU and writes the cards to a folder of your choosing
+test cards::tests::a_card_is_named_after_what_it_draws ... ok
+test cards::tests::every_picture_package_has_a_card_of_its_own ... ok
+test cards::tests::prune_sweeps_only_stale_cards ... ok
+test consolidate::tests::rejects_stale_clips_and_relinked_sources ... ok
+test consolidate::tests::render_keeps_source_cuts_audio_settings_and_timeline_gaps ... ok
+test crash::tests::a_crash_says_what_it_was_and_where ... ok
+test crash::tests::a_line_that_does_not_fit_is_cut_off ... ok
+test crash::tests::a_module_is_named_without_its_folder ... ok
+test cutout::tests::instants_group_into_runs_a_step_apart ... ok
+test dirs::tests::a_mac_keeps_one_folder_and_an_iphone_caches_the_rest ... ok
+test dirs::tests::an_iphone_follows_apples_convention ... ok
+test dirs::tests::the_directories_are_named_by_the_identifier ... ok
+为 C:\Users\ai\AppData\Local\Temp\concat-adopt-23856\org.standalones.concat <<===>> C:\Users\ai\AppData\Local\Temp\concat-adopt-23856\app.concat.editor 创建的联接
+test dirs::tests::the_former_identifiers_folder_is_adopted ... ok
+test dirs::tests::the_models_move_and_the_settings_stay ... ok
+test enhance::tests::a_crop_takes_the_top_left_and_leaves_a_fitting_frame_alone ... ok
+test enhance::tests::a_span_is_enhanced_on_its_own ... ok
+test enhance::tests::enhance_stage_timing ... ignored, a probe
+test enhance::tests::the_copy_is_named_after_the_file_and_the_factor ... ok
+test enhance::tests::the_estimate_is_the_warm_tile_time_over_every_tile_of_every_frame ... ok
+test enhance::tests::the_gpu_enhances_as_onnx_runtime_does ... ok
+test jobs::tests::a_mark_left_by_a_running_process_is_not_a_death ... ok
+test jobs::tests::a_tripwire_is_left_only_by_a_job_that_never_ended ... ok
+test jobs::tests::cancel_reaches_only_the_running_job ... ok
+test jobs::tests::cancel_when_idle_is_a_no_op ... ok
+test jobs::tests::refuses_a_second_concurrent_job ... ok
+test lock::tests::a_file_left_by_a_process_that_died_is_taken_over ... ok
+test lock::tests::a_lock_is_taken_named_and_given_back ... ok
+test lock::tests::a_second_process_is_refused_and_told_who_holds_it ... ok
+test logs::tests::a_folder_hangs_off_the_data_directory ... ok
+test logs::tests::a_line_written_through_the_facade_lands_in_the_file ... ok
+test logs::tests::a_stamp_reads_as_a_date_in_both_shapes ... ok
+test logs::tests::level_names_round_trip ... ok
+test logs::tests::pruning_keeps_the_newest_and_leaves_everything_else_alone ... ok
+test logs::tests::the_epoch_and_a_leap_day_come_out_right ... ok
+test machine::tests::the_lines_say_something ... ok
+test media::tests::a_card_picture_is_never_later_than_its_instant_nor_black_before_a_picture ... ok
+test media::tests::a_dead_frame_is_one_with_no_light_in_it ... ok
+test media::tests::a_filmstrip_of_a_synthetic_video_has_the_asked_for_shape ... ok
+test media::tests::a_filmstrip_tile_is_a_picture_from_its_own_slice ... ok
+test media::tests::a_keyframe_is_in_a_slice_from_its_start_to_the_next_ones ... ok
+test media::tests::a_keyframe_serves_as_a_card_when_lit_and_not_from_later ... ok
+test media::tests::a_picture_that_lasts_one_frame_is_a_still ... ok
+test media::tests::a_poster_is_never_a_black_frame ... ok
+test media::tests::artwork_keys_cannot_leave_the_cache ... ok
+test media::tests::cache_keys_are_stable ... ok
+test media::window_tests::a_cut_fits_in_its_cell ... ok
+test media::window_tests::the_grid_stops_at_a_second_and_at_the_finest_level ... ok
+test media::window_tests::wide_cuts_and_short_files_keep_the_files_own_strip ... ok
+test memory::tests::the_machine_says_how_much_memory_it_has ... ok
+test models::tests::a_custom_base_leads_when_asked_and_trails_otherwise ... ok
+test models::tests::a_digest_is_checked_and_an_empty_one_is_refused ... ok
+test models::tests::a_file_the_person_chose_is_installed_only_if_it_is_the_model ... ok
+test models::tests::a_hugging_face_upstream_is_also_offered_through_hf_mirror ... ok
+test models::tests::a_partial_download_is_finished_from_a_range ... ok
+test models::tests::preferences_have_stable_names ... ok
+test models::tests::the_mirror_comes_before_upstream ... ok
+test net::tests::a_failure_is_classed_by_what_the_system_said ... ok
+test cards::tests::every_card_draws_and_shows_its_package_at_work ... ok
+test net::tests::the_cause_that_explains_most_is_the_one_told ... ok
+test net::tests::the_shipped_roots_are_always_trusted ... ok
+test playback::tests::a_placeholder_data_size_means_the_rest_of_the_file ... ok
+test playback::tests::a_split_clip_plays_at_once_from_the_span_it_was_cut_from ... ok
+test playback::tests::a_stated_size_is_clamped_to_the_file ... ok
+test playback::tests::a_stretch_under_a_sound_layer_decodes_to_the_treated_mix ... ok
+test playback::tests::finds_the_data_chunk_past_the_headers ... ok
+test playback::tests::only_the_same_sound_stands_in_and_only_a_plain_one_is_copied ... ok
+test playback::tests::refuses_files_that_are_not_wav ... ok
+test playback::tests::sound_layers_are_mixed_in_stretches_of_the_clips_beneath_them ... ok
+test playback::tests::split_timing ... ignored, a probe
+test playback::tests::the_clock_runs_on_between_buffers_but_not_past_a_stall ... ok
+test playback::tests::the_engine_plays_both_halves_of_a_split_the_moment_it_is_made ... ok
+test net::tests::a_real_refused_connection_is_classed_as_refused ... ok
+test projects::tests::a_fresh_manifest_is_settings_only_and_a_saved_edit_is_not ... ok
+test projects::tests::a_late_snapshot_never_lands_after_a_newer_one ... ok
+test projects::tests::a_legacy_manifest_keeps_its_name ... ok
+test projects::tests::a_manifest_under_any_of_its_names_opens ... ok
+test projects::tests::a_project_named_nul_is_created_and_reads_back ... ok
+test playback::tests::the_sweep_removes_the_oldest_dead_files_first_and_never_live_ones ... ok
+test projects::tests::concurrent_saves_keep_the_document_readable ... ok
+test projects::tests::device_names_get_a_folder_windows_will_open ... ok
+test projects::tests::either_slash_names_the_same_folder_on_windows ... ok
+test projects::tests::paths_compare_case_insensitively ... ok
+test projects::tests::recents_with_a_three_channel_canvas_still_read ... ok
+test projects::tests::sanitises_names_windows_would_reject ... ok
+test proxy::tests::a_proxy_is_a_quarter_of_the_long_side_but_never_tiny_or_larger ... ok
+test proxy::tests::a_sweep_keeps_what_is_named_and_what_is_being_written ... ok
+test proxy::tests::a_written_proxy_is_read_for_a_moving_picture_only ... ok
+test projects::tests::an_older_ticket_is_skipped_and_a_real_failure_is_not ... ok
+test proxy::tests::only_files_larger_than_hd_get_a_proxy ... ok
+test proxy::tests::the_proxy_path_follows_the_file_and_changes_when_the_file_does ... ok
+test record::tests::a_paused_take_is_one_file_with_the_pause_cut_out ... ok
+test record::tests::a_take_lands_where_its_first_sample_was_heard ... ok
+test record::tests::a_take_that_heard_nothing_says_so ... ok
+test proxy::tests::an_hdr_file_gets_an_hdr_proxy ... ok
+test record::tests::a_wav_says_its_own_size_once_finished ... ok
+test record::tests::stereo_mixes_down_to_the_mean_at_the_gain ... ok
+test record::tests::the_meter_reads_peak_power_and_clipping_then_starts_again ... ok
+test record::tests::the_meter_spreads_decibels_along_the_bar ... ok
+test reverse::tests::a_run_is_sized_to_the_frame ... ok
+test reverse::tests::the_copy_is_named_after_the_file_and_the_span ... ok
+test route::tests::a_bypass_list_exempts_what_it_names ... ok
+test route::tests::a_macs_proxy_settings_are_read_from_scutil ... ok
+test route::tests::a_proxy_is_named_without_its_password ... ok
+test route::tests::a_url_is_read_down_to_its_host ... ok
+test route::tests::a_windows_proxy_list_is_read_as_browsers_read_it ... ok
+test route::tests::the_environment_names_a_proxy_and_no_proxy_exempts_hosts ... ok
+test record::tests::a_wav_still_being_written_is_whole_on_disk_every_second ... ok
+test session::tests::a_corrupt_document_is_refused ... ok
+test session::tests::a_snapshot_is_the_project_as_it_stands_and_leaves_the_session_alone ... ok
+test session::tests::a_truncated_document_is_refused_rather_than_replaced ... ok
+test session::tests::a_fresh_project_opens_empty_and_round_trips_a_save ... ok
+test session::tests::lock_rejection_does_not_advance_a_native_session_revision ... ok
+test session::tests::manual_edit_and_undo_still_invalidate_old_plans ... ok
+test session::tests::renaming_invalidates_plans_but_unchanged_or_empty_names_do_not ... ok
+test session::tests::reopening_the_same_path_invalidates_a_plan ... ok
+test sounds::tests::a_manifest_offers_only_what_it_can_check ... ok
+test sounds::tests::a_name_is_numbered_rather_than_overwritten ... ok
+test sounds::tests::an_index_cannot_point_out_of_the_folder ... ok
+test sounds::tests::only_sound_files_are_taken ... ok
+test session::tests::an_old_snapshot_written_after_a_rename_is_not_the_current_saved_version ... ok
+test stabilize::tests::a_faster_clip_reads_a_wider_margin ... ok
+test stabilize::tests::the_analysis_size_keeps_the_aspect_and_stays_even ... ok
+test sounds::tests::the_index_round_trips_and_a_removal_deletes_the_copy ... ok
+test templates::tests::instantiating_fills_through_the_engine ... ok
+test templates::tests::slots_come_back_in_timeline_order ... ok
+test templates::tests::saving_packs_a_bundle_and_it_round_trips ... ok
+test titles::tests::a_shape_rejoins_as_a_still_and_keeps_its_stretch ... ok
+test titles::tests::a_keyed_title_plays_its_keys_from_a_neutral_base ... ok
+test titles::tests::a_shape_rejoins_with_its_motion_mask_and_fades ... ok
+test titles::tests::a_title_is_never_stretched_whatever_its_clip_says ... ok
+test titles::tests::a_timeline_of_titles_past_the_budget_is_painted_once ... ok
+test titles::tests::a_title_wider_than_the_frame_rejoins_on_its_grown_canvas ... ok
+test titles::tests::live_paintings_go_least_recently_used_first ... ok
+test titles::tests::ready_paints_nothing_and_says_what_is_missing ... ok
+test titles::tests::a_title_rejoins_as_a_still ... ok
+test updates::tests::a_linux_install_is_told_by_what_is_on_the_machine ... ok
+test updates::tests::a_refusal_from_github_is_read_out_in_its_own_words ... ok
+test updates::tests::a_version_reads_a_tag_and_orders_by_its_numbers ... ok
+test updates::tests::standing_says_where_this_build_sits ... ok
+test updates::tests::the_list_keeps_stable_releases_from_the_first_switchable_newest_first ... ok
+test updates::tests::the_manifest_names_a_mac_arm64_and_everything_else_aarch64 ... ok
+test updates::tests::the_package_is_found_by_platform_architecture_and_kind ... ok
+test updates::tests::the_updates_folder_hangs_off_the_data_directory ... ok
+test titles::tests::styled_words_are_a_new_picture_and_follow_the_case ... ok
+test voices::tests::a_voice_description_is_one_capped_line ... ok
+test voices::tests::a_voice_is_kept_listed_and_removed ... ok
+test voices::tests::a_wav_header_says_what_follows ... ok
+test voices::tests::the_densest_window_is_where_the_speaking_is ... ok
+test voices::tests::a_recording_is_listened_to_for_its_voice ... ok
+
+test result: ok. 149 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 9.97s
+
+     Running tests\edit_scale.rs (E:\BK-CAT\.build\target\debug\deps\edit_scale-b97bb1dbae7fe86e.exe)
+
+running 1 test
+test edit_scale ... ignored, a measurement, not a check
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\export.rs (E:\BK-CAT\.build\target\debug\deps\export-69a06217adae8024.exe)
+
+running 17 tests
+test a_background_fills_the_bars_in_the_export_and_the_monitor ... ok
+test a_reversed_span_plays_its_seconds_backwards ... ok
+test a_colour_range_named_on_the_media_reaches_the_export ... ok
+test an_export_decodes_on_the_hardware_when_preferred ... ok
+test an_export_draws_on_a_lent_compositor ... ok
+test an_hlg_clip_exports_through_the_gpu_conversion ... ok
+test a_sound_layer_treats_the_mix_for_its_span_alone ... ok
+test an_hlg_timeline_exports_as_hdr_or_sdr ... ok
+test consolidation_keeps_the_global_frame_grid_at_fractional_starts ... ok
+test consolidation_of_silent_fractional_frames_covers_the_original_span ... ok
+test consolidation_after_pause_removal_preserves_picture_sound_and_undo ... ok
+test consolidation_preserves_the_timeline_clock_of_animated_effects ... ok
+test crop_and_flips_reach_the_picture ... ok
+test fades_and_wipes_reach_the_picture ... ok
+test one_clip_exports_whole_at_every_rate ... ok
+test the_edges_export_too ... ok
+test every_edit_still_exports has been running for over 60 seconds
+test every_edit_still_exports ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 169.35s
+
+     Running tests\import_speed.rs (E:\BK-CAT\.build\target\debug\deps\import_speed-0906982ab9960305.exe)
+
+running 1 test
+test import_speed ... ignored, a measurement, not a check
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\playback_feel.rs (E:\BK-CAT\.build\target\debug\deps\playback_feel-0dd5a3819d0cf546.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\stabilize.rs (E:\BK-CAT\.build\target\debug\deps\stabilize-807c8821579c9941.exe)
+
+running 1 test
+test a_shaky_shot_is_measured_and_held_still ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.02s
+
+     Running unittests src\lib.rs (E:\BK-CAT\.build\target\debug\deps\concat_mcp-30b64015a4a6d2b6.exe)
+
+running 22 tests
+test backend::tests::a_lost_guarded_reply_never_discovers_reconnects_or_replays ... ok
+test protocol::tests::a_cancelled_queued_guarded_frame_cannot_be_replayed ... ok
+test protocol::tests::a_connection_cannot_switch_to_a_different_protocol_after_initialize ... ok
+test protocol::tests::cancellation_overflow_refuses_every_later_guarded_write ... ok
+test protocol::tests::close_finishes_the_backend_once_and_never_reopens_the_session ... ok
+test protocol::tests::a_line_that_is_not_utf8_is_refused_and_the_session_goes_on ... ok
+test protocol::tests::embedded_tool_dispatch_preserves_guard_fields_and_refuses_duplicate_ids ... ok
+test protocol::tests::guarded_schema_and_typed_dispatch_refuse_missing_or_wrong_versions ... ok
+test protocol::tests::hidden_legacy_tools_and_unknown_methods_never_reach_the_backend ... ok
+test protocol::tests::every_supported_legacy_handshake_is_negotiated_without_relabeling ... ok
+test protocol::tests::pinned_pi_handshake_retains_its_version_and_requires_initialized ... ok
+test schema::tests::a_batch_keeps_the_one_reference_it_must_and_carries_its_definition ... ok
+test schema::tests::a_command_carries_the_project_path ... ok
+test schema::tests::a_method_is_cut_out_without_its_tag_and_with_its_references_inlined ... ok
+test schema::tests::the_embedded_list_contains_only_one_edit_vocabulary ... ok
+test protocol::tests::stdio_still_accepts_the_fixed_pi_handshake_version ... ok
+test summary::tests::a_view_reads_as_the_active_timeline_in_time_order ... ok
+test schema::tests::the_tool_list_fits_an_agents_context ... ok
+test tools::tests::a_wrong_argument_is_refused_by_the_schema_and_by_the_type_alike ... ok
+test tools::tests::every_tool_has_a_schema_and_a_sample_and_names_are_unique ... ok
+test tools::tests::every_sample_fits_its_schema_and_reads_as_its_request ... ok
+test tools::tests::export_wait_progress_follows_the_stages_the_exporter_reports ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.90s
+
+     Running unittests src\bin\concat-mcp.rs (E:\BK-CAT\.build\target\debug\deps\concat_mcp-6eb81622badba387.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\e2e.rs (E:\BK-CAT\.build\target\debug\deps\e2e-40a610f51084fc69.exe)
+
+running 4 tests
+concat mcp: serving through {"mode":"headless","writesUnder":["\\\\?\\C:\\Users\\ai\\AppData\\Local\\Temp\\.tmpIgEcYA"]}
+concat mcp: serving through {"mode":"headless","writesUnder":["\\\\?\\C:\\Users\\ai\\AppData\\Local\\Temp\\.tmpu1BiNB"]}
+test a_modern_client_discovers_and_is_told_which_versions_are_spoken ... ok
+concat mcp: serving through {"mode":"headless","writesUnder":["\\\\?\\C:\\Users\\ai\\AppData\\Local\\Temp\\.tmpxrIaf0"]}
+test guarded_edits_refuse_a_headless_copy_without_changing_it ... ok
+concat mcp: serving through {"address":"127.0.0.1:63320","mode":"window"}
+test through_a_running_server_the_agent_shares_its_api ... ok
+test an_agent_edits_previews_and_exports_a_project_headless ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.45s
+
+     Running unittests src\lib.rs (E:\BK-CAT\.build\target\debug\deps\concat_project-7b77a9e1924319c8.exe)
+
+running 223 tests
+test capcut::tests::a_draft_with_nothing_readable_is_refused ... ok
+test capcut::tests::a_copied_file_is_found_in_the_draft ... ok
+test capcut::tests::a_transition_overlap_becomes_a_cut_and_a_transition_clip ... ok
+test capcut::tests::place_size_turn_crop_and_speed_come_across ... ok
+test capcut::tests::sound_keeps_its_fades_volume_and_keys ... ok
+test capcut::tests::the_frame_rate_and_name_come_across ... ok
+test capcut::tests::titles_keep_their_words_and_look ... ok
+test capcut::tests::what_does_not_come_across_is_said ... ok
+test commands::media::tests::elsewhere_a_path_matches_only_itself ... ok
+test commands::media::tests::windows_reads_either_slash_and_ignores_case ... ok
+test capcut::tests::the_project_saves_and_loads_whole ... ok
+test guard::tests::a_cross_track_move_checks_both_source_and_destination ... ok
+test guard::tests::a_no_op_move_still_touches_a_locked_track ... ok
+test guard::tests::an_already_locked_target_rejects_even_a_single_add ... ok
+test guard::tests::a_no_op_patch_still_touches_a_locked_track ... ok
+test guard::tests::an_unlocked_round_trip_no_op_does_not_consume_history ... ok
+test guard::tests::automatic_or_vanished_tracks_do_not_fall_back_to_an_unchecked_lane ... ok
+test guard::tests::deletion_is_guarded_and_ripple_remains_explicitly_unsupported ... ok
+test guard::tests::duplicate_clip_targets_and_invalid_active_identity_fail_closed ... ok
+test guard::tests::lock_added_after_planning_is_checked_at_execution_and_unlock_retries ... ok
+test guard::tests::manual_and_automation_edits_continue_in_one_history ... ok
+test guard::tests::mixed_locked_batch_is_wholly_rejected_without_consuming_ids ... ok
+test guard::tests::native_validation_failure_cannot_commit_an_earlier_batch_member ... ok
+test guard::tests::nested_batches_cannot_hide_a_locked_intermediate_edit ... ok
+test guard::tests::rejected_batches_preserve_redo_and_the_live_mint ... ok
+test guard::tests::snapshot_is_detached_from_live_history_and_project_mutation ... ok
+test guard::tests::two_subtitles_share_one_native_undo_and_redo_step ... ok
+test guard::tests::unknown_objects_are_rejected_instead_of_tolerated_as_success ... ok
+test guard::tests::unsupported_commands_roll_back_earlier_staged_commands ... ok
+test model::shape_tests::a_preset_is_a_figure_set_a_particular_way ... ok
+test model::shape_tests::a_shape_this_build_does_not_know_is_a_square_and_numbers_are_held_in_range ... ok
+test model::shape_tests::a_shape_written_before_heights_reads_as_it_was_drawn ... ok
+test runs::tests::a_deletion_shortens_a_run_and_a_whole_one_goes ... ok
+test runs::tests::a_patch_over_part_of_a_run_splits_it_and_keeps_what_it_leaves_out ... ok
+test runs::tests::a_range_is_styled_clamped_and_in_either_order ... ok
+test runs::tests::a_run_moves_with_the_words_before_it ... ok
+test runs::tests::case_moves_runs_to_the_characters_they_become ... ok
+test runs::tests::clearing_cuts_the_range_out_of_every_run ... ok
+test runs::tests::edits_after_a_run_leave_it_alone ... ok
+test runs::tests::neighbours_that_look_the_same_are_joined ... ok
+test runs::tests::numbers_are_held_in_range ... ok
+test runs::tests::overlapping_runs_from_a_file_resolve_with_the_later_winning ... ok
+test runs::tests::runs_round_trip_and_a_title_without_them_writes_none ... ok
+test guard::tests::nesting_and_operation_limits_reject_without_history_changes ... ok
+test runs::tests::sentence_case_reads_the_same_as_it_always_did ... ok
+test runs::tests::the_caret_settles_where_a_repeated_letter_was_typed ... ok
+test runs::tests::the_edit_between_two_texts_is_their_middle ... ok
+test runs::tests::typing_at_the_very_start_takes_the_first_characters_look ... ok
+test runs::tests::typing_inside_a_coloured_word_keeps_its_colour ... ok
+test runs::tests::typing_just_after_a_coloured_word_carries_its_colour_on ... ok
+test runs::tests::typing_just_before_a_coloured_word_is_in_the_plain_look ... ok
+test runs::tests::typing_over_a_selection_takes_the_look_of_its_first_character ... ok
+test speed::tests::a_clip_without_a_curve_is_left_alone ... ok
+test speed::tests::a_moved_point_is_no_longer_the_preset ... ok
+test speed::tests::a_smooth_ramp_split_in_two_plays_what_the_whole_played ... ok
+test speed::tests::a_window_past_the_end_holds_the_end_speed ... ok
+test speed::tests::every_preset_is_a_curve_inside_the_engine_range ... ok
+test speed::tests::the_two_halves_of_a_split_play_what_the_whole_played ... ok
+test srt::tests::a_bom_crlf_and_no_trailing_blank_line_are_taken ... ok
+test srt::tests::a_cue_with_no_words_is_kept_empty ... ok
+test srt::tests::a_dot_before_the_milliseconds_reads_like_a_comma ... ok
+test srt::tests::a_lanes_titles_are_its_cues_in_order ... ok
+test srt::tests::a_plain_file_reads_as_its_cues ... ok
+test srt::tests::an_empty_file_has_no_cues ... ok
+test srt::tests::cues_are_written_numbered_with_comma_milliseconds ... ok
+test srt::tests::extra_blank_lines_a_missing_number_and_trailing_coordinates_are_taken ... ok
+test srt::tests::malformed_files_are_errors_that_name_the_line ... ok
+test srt::tests::odd_bytes_never_panic ... ok
+test srt::tests::writing_drops_blank_lines_inside_a_cue_and_negative_times ... ok
+test srt::tests::written_cues_read_back_the_same ... ok
+test tests::a_batch_is_one_undo_step ... ok
+test tests::a_batch_reports_applied_only_when_a_member_changed_something ... ok
+test tests::a_canvas_colour_is_written_only_when_it_is_not_black ... ok
+test tests::a_background_is_absent_until_chosen_and_round_trips ... ok
+test tests::a_caption_lands_above_the_highest_occupied_lane ... ok
+test tests::a_caption_mints_a_new_lane_when_every_lane_above_is_taken ... ok
+test tests::a_caption_on_an_empty_timeline_lands_on_the_bottom_lane ... ok
+test tests::a_clip_added_onto_another_takes_the_nearest_gap ... ok
+test tests::a_clip_time_past_a_hundred_hours_is_pulled_back ... ok
+test tests::a_command_carrying_nan_is_refused_whole ... ok
+test tests::a_command_copies_only_what_it_writes ... ok
+test tests::a_colour_space_round_trips ... ok
+test tests::a_command_leaves_a_tidy_clip_behind ... ok
+test tests::a_delete_across_lanes_is_one_undo_step ... ok
+test tests::a_document_from_a_newer_build_is_refused ... ok
+test tests::a_failed_batch_changes_nothing ... ok
+test tests::a_failed_command_records_no_history ... ok
+test tests::a_fill_on_a_keyed_scale_is_a_key ... ok
+test tests::a_document_without_masks_opens_maskless ... ok
+test tests::a_freeze_on_the_main_lane_moves_the_linked_lanes_along ... ok
+test tests::a_gap_too_small_for_the_clip_is_passed_over ... ok
+test tests::a_garbage_document_is_none_not_a_panic ... ok
+test tests::a_gesture_is_one_undo_step ... ok
+test tests::a_group_keeps_its_shape_and_moves_as_one ... ok
+test tests::a_head_trim_cannot_reach_before_the_source_begins ... ok
+test tests::a_head_trim_moves_the_in_point_with_speed ... ok
+test tests::a_legacy_flat_document_loads_as_one_timeline ... ok
+test tests::a_key_reads_its_ease_named_or_numbered ... ok
+test tests::a_loaded_document_holds_the_same_ranges_every_command_does ... ok
+test tests::a_magnetic_delete_closes_the_lane ... ok
+test tests::a_mask_reads_from_its_wire_spelling ... ok
+test tests::a_magnetic_speed_up_closes_the_lane_behind_it_and_a_plain_one_leaves_the_gap ... ok
+test tests::a_matched_clip_takes_everything_but_its_place ... ok
+test tests::a_medias_colour_range_is_an_undoable_edit_that_round_trips ... ok
+test tests::a_medias_origin_round_trips_and_an_unknown_one_reads_as_an_import ... ok
+test tests::a_move_into_open_space_lands_where_it_is_dropped ... ok
+test tests::a_move_onto_a_clip_lands_in_the_nearest_gap_beside_it ... ok
+test tests::a_move_onto_another_lane_avoids_what_is_there ... ok
+test tests::a_move_whose_clips_would_cover_each_other_stays_put ... ok
+test tests::a_new_project_has_one_timeline_and_four_lanes ... ok
+test tests::a_multi_move_skips_unknown_clips_and_floors_start_at_zero ... ok
+test tests::a_null_crop_on_the_wire_takes_the_crop_off ... ok
+test tests::a_path_spelled_another_way_is_not_imported_twice_on_windows ... ok
+test tests::a_plain_delete_still_leaves_the_hole ... ok
+test tests::a_plain_head_trim_moves_the_head_and_nothing_else ... ok
+test tests::a_plain_head_trim_stops_at_the_clip_before ... ok
+test tests::a_plain_title_still_lands_on_the_first_free_lane_from_the_bottom ... ok
+test tests::a_plain_trim_still_leaves_the_lane_alone ... ok
+test tests::a_plain_trim_stops_at_the_next_clip ... ok
+test tests::a_playhead_outside_the_clip_cuts_nothing ... ok
+test tests::a_ramp_that_slows_a_clip_moves_the_lane_along ... ok
+test tests::a_rate_no_video_has_opens_at_the_fallback_and_is_refused ... ok
+test tests::a_remove_clips_document_without_the_ripple_field_still_parses_as_a_plain_delete ... ok
+test tests::a_renamed_timeline_does_not_count_towards_the_next_number ... ok
+test tests::a_range_of_a_titles_words_is_styled_undone_and_saved ... ok
+test tests::a_ripple_copies_only_the_clips_it_moves ... ok
+test tests::a_ripple_on_another_lane_leads_nothing ... ok
+test tests::a_sequence_lands_end_to_end_on_one_lane_and_undoes_as_one ... ok
+test tests::a_slot_fills_in_place_keeping_the_template_timing ... ok
+test tests::a_split_leaves_the_fade_in_with_the_head_and_the_fade_out_with_the_tail ... ok
+test tests::a_sound_layer_carries_an_audio_chain_and_round_trips ... ok
+test tests::a_split_ramp_plays_on_in_both_halves ... ok
+test tests::a_tail_trim_stretches_only_the_duration_and_stops_at_the_minimum ... ok
+test tests::a_text_style_without_a_box_height_reads_as_the_words_own ... ok
+test tests::a_timeline_moves_to_a_new_slot_without_stealing_the_selection ... ok
+test tests::a_timeline_turns_hdr_with_its_first_hdr_clip ... ok
+test tests::a_timeline_without_its_own_frame_takes_the_documents ... ok
+test tests::a_tolerated_no_op_records_no_undo_entry ... ok
+test tests::a_track_goes_on_top_or_underneath ... ok
+test tests::a_trim_clip_document_without_the_ripple_field_still_parses_as_a_plain_trim ... ok
+test tests::a_transition_clip_goes_over_the_footage_and_survives_the_document ... ok
+test tests::a_version_one_document_loads ... ok
+test tests::a_video_whose_detached_sound_was_deleted_can_be_unmuted ... ok
+test tests::a_version_one_document_opens_and_saves_at_the_current_version ... ok
+test tests::add_at_first_free_takes_the_lowest_empty_lane_or_opens_one ... ok
+test tests::an_adjustment_layer_lands_above_the_picture ... ok
+test tests::an_enhanced_clip_switches_between_copy_and_original ... ok
+test tests::an_entry_the_reader_cannot_parse_is_dropped_not_the_document ... ok
+test tests::clips_for_vanished_tracks_or_media_are_dropped_on_load ... ok
+test tests::consolidation_accepts_different_sources_and_preserves_its_span_and_neighbours ... ok
+test tests::commands_arrive_in_camel_case ... ok
+test tests::consolidation_refuses_a_short_or_non_video_render_atomically ... ok
+test tests::consolidation_refuses_invalid_selections_without_changing_the_edit ... ok
+test tests::consolidation_refuses_layered_content_and_detached_audio ... ok
+test tests::consolidation_refuses_subframe_spans_that_would_lose_a_rendered_frame ... ok
+test tests::consolidation_requires_both_sides_of_edge_transitions ... ok
+test tests::consolidation_replaces_many_edited_pieces_and_undo_restores_everything ... ok
+test tests::delete_left_takes_the_clip_from_its_start_to_the_playhead ... ok
+test tests::delete_right_takes_the_clip_from_the_playhead_to_its_end ... ok
+test tests::detach_and_reattach_round_trip_the_sound ... ok
+test tests::duplicate_media_paths_are_ignored ... ok
+test tests::effect_keys_ride_a_knob_and_survive_the_document ... ok
+test tests::detaching_a_two_track_recording_gives_one_sound_clip_per_track ... ok
+test tests::effect_keys_stay_on_their_instant_through_a_split ... ok
+test tests::every_command_round_trips_through_serde ... ok
+test tests::fields_this_build_does_not_know_survive_a_round_trip ... ok
+test tests::filling_ordinary_media_is_refused ... ok
+test tests::fit_and_fill_size_a_picture_to_the_frame ... ok
+test tests::fonts_deduplicate_by_path_and_removal_leaves_titles_alone ... ok
+test tests::framing_follows_the_turn_and_the_crop ... ok
+test tests::freeze_frame_holds_a_second_and_ripples_the_tail ... ok
+test tests::freeze_frame_on_a_curved_clip_keeps_the_pieces_continuous ... ok
+test tests::hand_edited_values_are_clamped_on_load ... ok
+test tests::keys_stay_on_their_instant_through_split_trim_and_merge ... ok
+test tests::magnetic_head_trim_can_reach_back_only_as_far_as_the_source_and_moves_nothing_when_it_cannot ... ok
+test tests::linkage_is_on_unless_written_off ... ok
+test tests::magnetic_head_trim_keeps_the_clip_where_it_was_and_closes_behind_it ... ok
+test tests::magnetic_head_trim_restoring_source_pushes_the_lane_back ... ok
+test tests::magnetic_trim_is_one_undo_step_that_puts_the_lane_back ... ok
+test tests::magnetic_tail_trim_moves_the_lane_behind_it_both_ways ... ok
+test tests::magnetic_trim_leaves_a_clip_in_front_of_the_edge_alone ... ok
+test tests::magnetic_trim_stops_at_the_minimum_and_the_lane_stays_touching ... ok
+test tests::missing_media_detects_nonexistent_paths ... ok
+test tests::missing_media_ignores_existing_paths ... ok
+test tests::moves_to_a_vanished_track_keep_the_time_change_and_drop_the_track_change ... ok
+test tests::nan_in_transition_or_text_patch_is_refused ... ok
+test tests::masks_and_their_keys_round_trip ... ok
+test tests::old_styles_keep_their_original_appearance ... ok
+test tests::rearranged_pieces_refuse_to_merge ... ok
+test tests::removing_a_timeline_moves_the_active_tab_to_a_neighbour ... ok
+test tests::removing_a_track_takes_its_clips_and_stops_at_the_floor_of_one ... ok
+test tests::removing_media_sweeps_its_clips_from_every_timeline ... ok
+test tests::renames_trim_whitespace_and_refuse_to_blank_a_name ... ok
+test tests::replace_clip_media_can_move_the_in_point_to_the_copy ... ok
+test tests::replace_clip_media_points_the_clip_at_the_copy_and_keeps_the_original ... ok
+test tests::restored_ids_can_never_be_reissued ... ok
+test tests::ripple_delete_closes_the_gap_on_its_own_track_only_unlinked ... ok
+test tests::retired_clip_fields_are_dropped_and_named ... ok
+test tests::ripple_delete_counts_overlapping_spans_once ... ok
+test tests::ripple_delete_leaves_a_clip_stacked_at_the_same_start_alone ... ok
+test tests::ripple_delete_is_one_undo_step_that_puts_everything_back ... ok
+test tests::ripple_delete_of_a_span_reaching_past_a_survivor_pulls_only_up_to_it ... ok
+test tests::ripple_delete_of_everything_on_a_lane_is_just_a_delete ... ok
+test tests::ripple_delete_of_several_clips_moves_each_survivor_by_what_was_before_it ... ok
+test tests::ripple_delete_of_unknown_ids_moves_nothing_and_records_nothing ... ok
+test tests::rotation_wraps_into_the_half_open_degree_range ... ok
+test tests::ripple_delete_on_the_main_lane_pulls_the_linked_lanes ... ok
+test tests::setting_a_value_already_in_place_records_no_undo_entry ... ok
+test tests::slowing_a_clip_down_moves_what_follows_it ... ok
+test tests::speed_clamps_to_the_engine_range ... ok
+test tests::shape_clips_survive_without_media_and_carry_their_figure ... ok
+test tests::split_produces_source_continuous_halves_and_merge_rejoins_them ... ok
+test tests::switching_and_reordering_tabs_is_not_an_edit ... ok
+test tests::the_background_belongs_to_the_lowest_picture_lane ... ok
+test tests::text_clips_survive_without_media_and_carry_their_words ... ok
+test tests::the_document_round_trips ... ok
+test tests::timelines_add_switch_and_delete_with_a_floor_of_one ... ok
+test tests::the_placeholder_flag_round_trips_and_defaults_off ... ok
+test tests::track_flags_flip_independently_and_report_no_ops_honestly ... ok
+test tests::trimming_a_ramp_cuts_it_rather_than_squeezing_it ... ok
+test tests::typography_preserves_source_and_round_trips ... ok
+test tests::undo_and_redo_walk_the_history ... ok
+test tests::undo_depth_evicts_the_oldest_snapshot_first ... ok
+
+test result: ok. 223 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+   Doc-tests concat_agent
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests concat_api
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests concat_host
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests concat_mcp
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests concat_project
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

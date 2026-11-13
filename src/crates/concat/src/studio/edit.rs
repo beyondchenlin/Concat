@@ -553,9 +553,22 @@ impl Studio {
         let ticket = projects::ticket();
         let saved_session = session.session_id();
         let saved_revision = session.revision();
+        let agent = self.host.agent.clone();
         crate::host::spawn_in_project_publishing(
-            move || projects::save_ordered(&path, &document, ticket),
-            move |studio, _, _, result| {
+            move || {
+                let result = projects::save_ordered(&path, &document, ticket);
+                let journal_error = if matches!(result, Ok(projects::Saved::Written)) {
+                    agent.as_ref().and_then(|bridge| {
+                        bridge
+                            .record_saved(&path, saved_session, saved_revision, &document)
+                            .err()
+                    })
+                } else {
+                    None
+                };
+                (result, journal_error)
+            },
+            move |studio, _, _, (result, journal_error)| {
                 let current = studio.session.as_ref().is_some_and(|session| {
                     session
                         .check_revision(saved_session, saved_revision)
@@ -574,6 +587,12 @@ impl Studio {
                             studio.dirty = true;
                         }
                         studio.notify(&tf("studio.couldNotSave", &[&error]), true);
+                    }
+                }
+                if let Some(error) = journal_error {
+                    log::warn!("native agent save journal requires reconciliation: {error}");
+                    if current {
+                        studio.notify("工程已落盘；智能任务回执需要重新核对。", true);
                     }
                 }
             },

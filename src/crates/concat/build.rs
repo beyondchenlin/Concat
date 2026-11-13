@@ -5,6 +5,7 @@
 //! the build for Settings > About.
 
 fn main() {
+    bundle_agent_resources();
     // Fonts and images are compiled into the binary rather than read off disk
     // at run time.
     //
@@ -153,4 +154,49 @@ fn main() {
         .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
         .unwrap_or_else(|| "unknown".into());
     println!("cargo:rustc-env=BUILD_RUSTC={version}");
+}
+
+// Original editor builds can omit the agent bundle and remain usable. Product
+// packaging sets BK_CAT_REQUIRE_AGENT_ASSETS=1 and therefore cannot accidentally
+// ship an installer with a missing runtime. Present bundles are validated again
+// by RuntimeResources before a platform web view is created.
+fn bundle_agent_resources() {
+    let root = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("manifest dir"))
+        .join("../../agent-runtime/dist");
+    println!("cargo:rerun-if-changed={}", root.display());
+    println!("cargo:rerun-if-env-changed=BK_CAT_REQUIRE_AGENT_ASSETS");
+    let names = [
+        "manifest.json",
+        "index.html",
+        "runtime.js",
+        "bootstrap.js",
+        "PI-LICENSE.txt",
+    ];
+    let complete = names.iter().all(|name| root.join(name).is_file());
+    let target = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let profile = std::env::var("PROFILE").unwrap_or_default();
+    let product_release = matches!(target.as_str(), "windows" | "android")
+        && matches!(profile.as_str(), "release" | "app");
+    let required =
+        product_release || std::env::var("BK_CAT_REQUIRE_AGENT_ASSETS").as_deref() == Ok("1");
+    assert!(
+        complete || !required,
+        "build src/agent-runtime with the pinned Pi reference before packaging BK CAT"
+    );
+    let out = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("out dir"));
+    let mut table = String::from("pub static ASSETS: &[(&str, &[u8])] = &[\n");
+    if complete {
+        for name in names {
+            let source = root.join(name);
+            println!("cargo:rerun-if-changed={}", source.display());
+            let target = out.join(format!("bk-cat-{name}"));
+            std::fs::copy(&source, &target).expect("copy reviewed runtime resource");
+            table.push_str(&format!(
+                "    ({name:?}, include_bytes!({:?})),\n",
+                target.to_string_lossy()
+            ));
+        }
+    }
+    table.push_str("];\n");
+    std::fs::write(out.join("agent_assets.rs"), table).expect("write runtime resource table");
 }

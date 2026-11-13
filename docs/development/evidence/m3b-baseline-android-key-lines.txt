@@ -1,0 +1,63 @@
+## android-arm64.log
+2026-11-13T10:24:24.1669541Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +348dbc5804ecc4f08918460013de959d810a5150:refs/remotes/pull/4/merge
+2026-11-13T10:24:25.7787881Z  * [new ref]         348dbc5804ecc4f08918460013de959d810a5150 -> pull/4/merge
+2026-11-13T10:24:26.0640108Z HEAD is now at 348dbc5 Merge fb85eb72086e29e71c8ff6a5dbfb0f2de494477c into 746b2502c28122414f7ac1efa44f2e1468d15998
+2026-11-13T10:24:26.0723035Z 348dbc5804ecc4f08918460013de959d810a5150
+2026-11-13T10:24:35.8920487Z   1.93.1-x86_64-unknown-linux-gnu installed - rustc 1.93.1 (01f6ddf75 2026-02-11)
+2026-11-13T10:24:35.9418774Z   1.93.1-x86_64-unknown-linux-gnu unchanged - rustc 1.93.1 (01f6ddf75 2026-02-11)
+2026-11-13T10:24:36.0738680Z rustc 1.93.1 (01f6ddf75 2026-02-11)
+2026-11-13T10:25:05.9028201Z [1m[92m    Finished[0m `release` profile [optimized] target(s) in 29.07s
+2026-11-13T10:52:15.8582334Z [1m[92m    Finished[0m `release` profile [optimized] target(s) in 26m 54s
+2026-11-13T10:52:40.2536068Z ok   16384  lib/arm64-v8a/libc++_shared.so
+2026-11-13T10:52:40.2536619Z ok   16384  lib/arm64-v8a/libconcat_android.so
+2026-11-13T10:52:43.6298583Z SHA256 digest of uploaded artifact is 61504332dee04fbe622766f11546c37ac621b67c42c7e6dc967d73110e692ed6
+2026-11-13T10:52:44.0341370Z Artifact Concat-android-arm64 has been successfully uploaded! Final size is 83830792 bytes. Artifact ID is 14030635453
+2026-11-13T10:52:44.0348239Z Artifact download URL: https://github.com/beyondchenlin/Concat/actions/runs/43408766977/artifacts/14030635453
+
+## android-x86_64.log
+2026-11-13T10:24:23.7307691Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +348dbc5804ecc4f08918460013de959d810a5150:refs/remotes/pull/4/merge
+2026-11-13T10:24:25.3871785Z  * [new ref]         348dbc5804ecc4f08918460013de959d810a5150 -> pull/4/merge
+2026-11-13T10:24:25.5903961Z HEAD is now at 348dbc5 Merge fb85eb72086e29e71c8ff6a5dbfb0f2de494477c into 746b2502c28122414f7ac1efa44f2e1468d15998
+2026-11-13T10:24:25.5998749Z 348dbc5804ecc4f08918460013de959d810a5150
+2026-11-13T10:24:33.7550949Z   1.93.1-x86_64-unknown-linux-gnu installed - rustc 1.93.1 (01f6ddf75 2026-02-11)
+2026-11-13T10:24:33.7985817Z   1.93.1-x86_64-unknown-linux-gnu unchanged - rustc 1.93.1 (01f6ddf75 2026-02-11)
+2026-11-13T10:24:33.9067159Z rustc 1.93.1 (01f6ddf75 2026-02-11)
+2026-11-13T10:24:53.9036206Z [1m[92m    Finished[0m `release` profile [optimized] target(s) in 19.47s
+2026-11-13T10:44:19.0397158Z [1m[92m    Finished[0m `release` profile [optimized] target(s) in 19m 08s
+2026-11-13T10:44:43.3643423Z SHA256 digest of uploaded artifact is 83c10a2fc14c73d3c7113ab254ab4120ad489b590c65bf1ce21eee8683fc270b
+2026-11-13T10:44:43.7596564Z Artifact smoke-apk-android-x86_64 has been successfully uploaded! Final size is 89595979 bytes. Artifact ID is 14029023593
+2026-11-13T10:44:43.7600855Z Artifact download URL: https://github.com/beyondchenlin/Concat/actions/runs/43408766977/artifacts/14029023593
+
+## android-api35-smoke.log
+2026-11-13T10:53:09.0541661Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --filter=blob:none --depth=1 origin +348dbc5804ecc4f08918460013de959d810a5150:refs/remotes/pull/4/merge
+2026-11-13T10:53:09.2816159Z  * [new ref]         348dbc5804ecc4f08918460013de959d810a5150 -> pull/4/merge
+2026-11-13T10:53:09.5193852Z HEAD is now at 348dbc5 Merge fb85eb72086e29e71c8ff6a5dbfb0f2de494477c into 746b2502c28122414f7ac1efa44f2e1468d15998
+2026-11-13T10:53:09.5318846Z 348dbc5804ecc4f08918460013de959d810a5150
+2026-11-13T10:53:11.0100280Z SHA256 digest of downloaded artifact is 83c10a2fc14c73d3c7113ab254ab4120ad489b590c65bf1ce21eee8683fc270b
+2026-11-13T10:54:43.5698536Z the APK carries: x86_64
+2026-11-13T10:54:56.7058278Z Success
+2026-11-13T10:55:02.2621371Z Starting: Intent { cmp=app.concat.editor/android.app.NativeActivity }
+2026-11-13T10:55:02.2699250Z Status: ok
+2026-11-13T10:56:04.6513273Z   mCurrentFocus=Window{10ba262 u0 Application Not Responding: com.google.android.apps.nexuslauncher}
+2026-11-13T10:56:04.6514829Z   mFocusedApp=ActivityRecord{64c9e3b u0 app.concat.editor/android.app.NativeActivity t8}
+2026-11-13T10:56:04.6826025Z ##[warning]the window in focus is not the app's:  mCurrentFocus=Window{10ba262 u0 Application Not Responding: com.google.android.apps.nexuslauncher}
+2026-11-13T10:56:04.6928718Z 11-13 10:54:58.428  3451  3471 W concat  : concat::host: embedded agent unavailable: lock newly created ownership file: lock() not supported
+2026-11-13T10:56:06.6193393Z SHA256 digest of uploaded artifact is 27deb9ac774cc42a330d085545e86f13c588bfa18c241d12b4ff23da6bfb0c21
+2026-11-13T10:56:07.0541146Z Artifact smoke-android-api35 has been successfully uploaded! Final size is 654012 bytes. Artifact ID is 14031010442
+2026-11-13T10:56:07.0545657Z Artifact download URL: https://github.com/beyondchenlin/Concat/actions/runs/43408766977/artifacts/14031010442
+
+## android-api30-smoke.log
+2026-11-13T10:53:08.8257841Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --filter=blob:none --depth=1 origin +348dbc5804ecc4f08918460013de959d810a5150:refs/remotes/pull/4/merge
+2026-11-13T10:53:09.0820522Z  * [new ref]         348dbc5804ecc4f08918460013de959d810a5150 -> pull/4/merge
+2026-11-13T10:53:09.5222404Z HEAD is now at 348dbc5 Merge fb85eb72086e29e71c8ff6a5dbfb0f2de494477c into 746b2502c28122414f7ac1efa44f2e1468d15998
+2026-11-13T10:53:09.5315280Z 348dbc5804ecc4f08918460013de959d810a5150
+2026-11-13T10:53:10.9117650Z SHA256 digest of downloaded artifact is 83c10a2fc14c73d3c7113ab254ab4120ad489b590c65bf1ce21eee8683fc270b
+2026-11-13T10:54:50.0760735Z the APK carries: x86_64
+2026-11-13T10:54:56.3170790Z Success
+2026-11-13T10:54:58.1164948Z Starting: Intent { cmp=app.concat.editor/android.app.NativeActivity }
+2026-11-13T10:54:58.1200724Z Status: ok
+2026-11-13T10:55:59.6043260Z   mFocusedApp=ActivityRecord{d6359f6 u0 app.concat.editor/android.app.NativeActivity t9}
+2026-11-13T10:55:59.6101485Z 11-13 10:54:56.367  3958  3993 W concat  : concat::host: embedded agent unavailable: lock newly created ownership file: lock() not supported
+2026-11-13T10:56:00.9236502Z SHA256 digest of uploaded artifact is dcf00db5d1d5d963e8c70d235e8c9f152742f7ab719e8d6c316885444ca5c3f3
+2026-11-13T10:56:01.2777890Z Artifact smoke-android-api30 has been successfully uploaded! Final size is 370397 bytes. Artifact ID is 14030895595
+2026-11-13T10:56:01.2781712Z Artifact download URL: https://github.com/beyondchenlin/Concat/actions/runs/43408766977/artifacts/14030895595

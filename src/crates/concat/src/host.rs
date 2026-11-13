@@ -144,7 +144,9 @@ pub struct Shell {
     /// The window, weakly: a callback that outlives it is a no-op.
     pub app: slint::Weak<App>,
     /// Kept outside Studio's RefCell so termination can revoke mid-edit.
-    pub agent: Option<Arc<crate::agent::AgentBridge>>,
+    pub agent: RefCell<Option<Arc<crate::agent::AgentBridge>>>,
+    /// Exactly one controlled platform component; replacement is user driven.
+    pub embedded: RefCell<Option<Arc<crate::embedded::EmbeddedRuntime>>>,
     /// Presentation is separate from Studio so stop never borrows an editor.
     pub agent_pane: RefCell<crate::panes::agent::AgentPane>,
     /// The window's state.

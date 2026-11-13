@@ -1,0 +1,278 @@
+   Compiling ort-sys v2.0.0-rc.13
+   Compiling whisper-rs-sys v0.15.0 (E:\BK-CAT\src\patches\whisper-rs-sys)
+warning: variable does not need to be mutable
+   --> patches\whisper-rs-sys\build.rs:154:13
+    |
+154 |         let mut bindings = bindgen::Builder::default()
+    |             ----^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling ort v2.0.0-rc.13
+warning: `whisper-rs-sys` (build script) generated 1 warning
+   Compiling concat-vision v0.2.10 (E:\BK-CAT\src\crates\concat-vision)
+   Compiling concat-export v0.2.10 (E:\BK-CAT\src\crates\concat-export)
+   Compiling concat-host v0.2.10 (E:\BK-CAT\src\crates\concat-host)
+   Compiling whisper-rs v0.16.0
+   Compiling concat-api v0.2.10 (E:\BK-CAT\src\crates\concat-api)
+   Compiling concat-server v0.2.10 (E:\BK-CAT\src\crates\concat-server)
+   Compiling concat-speech v0.2.10 (E:\BK-CAT\src\crates\concat-speech)
+   Compiling concat-mcp v0.2.10 (E:\BK-CAT\src\crates\concat-mcp)
+   Compiling concat v0.2.10 (E:\BK-CAT\src\crates\concat)
+warning: concat@0.2.10: warning: The property 'viewport-height' has been deprecated. Please use 'content-height' instead
+warning: concat@0.2.10:     --> E:\BK-CAT\src\crates\concat\ui\primitives\modal.slint:248:17
+warning: concat@0.2.10:      |
+warning: concat@0.2.10:  248 |                 viewport-height: Math.max(self.height, content.preferred-height);
+warning: concat@0.2.10:      |                 ^^^^^^^^^^^^^^^
+warning: concat@0.2.10:      |
+warning: concat@0.2.10: warning: The property 'viewport-height' has been deprecated. Please use 'content-height' instead
+warning: concat@0.2.10:     --> E:\BK-CAT\src\crates\concat\ui\primitives\modal.slint:252:38
+warning: concat@0.2.10:      |
+warning: concat@0.2.10:  252 |                     height: scroller.viewport-height;
+warning: concat@0.2.10:      |                                      ^^^^^^^^^^^^^^^
+warning: concat@0.2.10: warning: Component is neither used nor exported
+warning: concat@0.2.10:     --> E:\BK-CAT\src\crates\concat\ui\start.slint:1335:1
+warning: concat@0.2.10:      |
+warning: concat@0.2.10: 1335 | / component TextLink inherits Pressable {
+warning: concat@0.2.10: 1336 | |     in property <string> text;
+warning: concat@0.2.10: 1337 | |
+warning: concat@0.2.10: 1338 | |     label: root.text;
+warning: concat@0.2.10: ...    |
+warning: concat@0.2.10: 1363 | | }
+warning: concat@0.2.10:      | |_^
+   Compiling concat-agent v0.2.10 (E:\BK-CAT\src\crates\concat-agent)
+warning: associated function `publish_messages` is never used
+   --> crates\concat\src\panes\agent.rs:250:12
+    |
+ 61 | impl AgentPane {
+    | -------------- associated function in this implementation
+...
+250 |     pub fn publish_messages(app: &App, entries: Vec<AgentMessageData>) {
+    |            ^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `concat` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10m 40s
+     Running unittests src\lib.rs (E:\BK-CAT\.build\target\debug\deps\concat-15938f728f2b5a69.exe)
+
+running 215 tests
+test batch_volume::tests::an_unkeyed_clip_takes_the_level_and_gains_no_key ... ok
+test batch_volume::tests::a_keyed_clip_moves_its_whole_ride_and_keeps_a_fade_to_silence ... ok
+test batch_volume::tests::single_selection_stays_with_the_existing_inspector ... ok
+test batch_volume::tests::mixed_or_missing_clips_do_not_enable_batch_volume ... ok
+test dock::saved_tests::a_saved_dock_that_does_not_read_is_none ... ok
+test batch_volume::tests::video_requires_an_audio_stream_and_can_mix_with_audio_clips ... ok
+test batch_volume::tests::audio_clips_keep_selection_order ... ok
+test batch_volume::tests::locked_lanes_are_not_targets_even_when_only_one_unlocked_clip_remains ... ok
+test dock::saved_tests::a_dock_comes_back_as_it_was_saved ... ok
+test dock::saved_tests::a_squeezed_ratio_is_pulled_back ... ok
+test embedded::resources::tests::each_native_component_has_a_distinct_unpredictable_capability ... ok
+test embedded::windows::tests::failed_run_revokes_before_controller_destruction ... ok
+test embedded::windows::tests::command_handle_is_send_sync_and_rejects_after_close ... ok
+test embedded::tests::origin_token_and_envelope_shape_are_checked_before_native_dispatch ... ok
+test embedded::windows::tests::failed_event_revokes_before_another_callback_can_run ... ok
+test embedded::resources::tests::resource_allowlist_rejects_network_and_path_confusion ... ok
+test embedded::resources::tests::modified_or_missing_bundles_never_load ... ok
+test embedded::windows::tests::delivery_queue_is_bounded_and_never_waits ... ok
+test embedded::windows::tests::normal_close_revokes_before_controller_destruction ... ok
+test embedded::windows::tests::packaged_origin_is_an_exact_allowlist ... ok
+test fonts::tests::every_fallback_key_is_listed_once ... ok
+test fonts::tests::each_face_is_the_fallback_for_its_scripts ... ok
+test format::tests::a_running_time_reads_as_a_player_says_it ... ok
+test embedded::windows::tests::unwind_revokes_before_controller_destruction ... ok
+test format::tests::a_typed_colour_is_read_in_every_length_and_refused_otherwise ... ok
+test fonts::tests::inter_is_the_fallback_for_cyrillic ... ok
+test embedded::windows::tests::native_host_window_is_hidden_disabled_and_nonactivating ... ok
+test format::tests::bars_follow_the_zoom_in_steps_of_sixteen ... ok
+test format::tests::colours_round_trip ... ok
+test format::tests::a_waveform_has_one_floored_bar_per_column ... ok
+test format::tests::an_estimate_is_said_in_the_unit_that_fits_it ... ok
+test format::tests::phrases_are_coarse ... ok
+test agent::native::tests::a_page_cannot_approve_recovery_or_change_native_evidence ... ok
+test grading::tests::a_curve_is_drawn_as_the_shader_draws_it ... ok
+test host::epoch_tests::a_result_from_an_earlier_project_is_stale ... ok
+test grading::tests::a_curve_is_edited_point_by_point ... ok
+test format::tests::zooming_in_reveals_the_fine_buckets_and_never_loses_a_peak ... ok
+test agent::tests::protocol_cancellation_does_not_wait_for_the_running_protocol_call ... ok
+test agent::native::tests::no_open_project_is_readable_but_cannot_enable_execution ... ok
+test agent::native::tests::a_native_approval_rechecks_project_and_file_contents_before_activation ... ok
+test i18n::tests::every_locale_file_ships_and_each_once ... ok
+test i18n::tests::placeholders_fill_in_order ... ok
+test agent::tests::embedded_endpoint_keeps_one_owner_and_never_approves_recovery ... ok
+test keymap::tests::a_chord_is_built_from_the_text_and_the_modifiers ... ok
+test keymap::tests::a_rebind_survives_the_prefs_file ... ok
+test keymap::tests::a_rebind_moves_the_chord_and_leaves_the_loser_none ... ok
+test keymap::tests::binding_an_action_back_to_its_default_clears_the_override ... ok
+test i18n::tests::every_key_is_dotted_lower_camel_case ... ok
+test agent::native::tests::read_only_fingerprinting_observes_revocation_between_blocks ... ok
+test agent::native::tests::recovery_reads_do_not_open_storage_or_grant_a_second_component ... ok
+test keymap::tests::ctrl_y_redoes_where_the_platform_redoes_that_way ... ok
+test keymap::tests::every_action_has_a_name ... ok
+test i18n::tests::a_file_keyed_by_the_english_still_reads ... ok
+test keymap::tests::every_default_displays_the_way_the_platform_writes_it ... ok
+test keymap::tests::reset_takes_the_shipped_chord_back ... ok
+test keymap::tests::shift_steps_ten_frames_with_whatever_key_steps ... ok
+test keymap::tests::the_defaults_resolve_to_their_actions ... ok
+test keymap::tests::no_two_actions_ship_on_the_same_chord ... ok
+test keymap::tests::the_plus_key_zooms_whether_shift_was_held_or_not ... ok
+test i18n::tests::a_missing_translation_reads_as_the_key ... ok
+test keymap::tests::the_keys_that_are_not_chords_build_nothing ... ok
+test keymap::tests::the_windows_own_chords_are_reserved ... ok
+test keymap::tests::the_special_keys_name_themselves ... ok
+test live::tests::a_running_native_edit_is_not_falsely_cancelled ... ok
+test live::tests::queued_timeout_or_stop_never_executes_later ... ok
+test live::tests::stop_after_registration_cancels_and_closes_admission ... ok
+test live::tests::stop_before_registration_refuses_the_late_request ... ok
+test meters::tests::a_bar_rises_at_once_and_falls_steadily_while_its_peak_holds ... ok
+test meters::tests::full_scale_is_the_top_and_the_floor_is_the_foot ... ok
+test live::tests::racing_admission_and_cancellation_have_exactly_one_winner ... ok
+test panes::agent::tests::an_idle_open_database_does_not_look_like_a_running_task ... ok
+test panes::agent::tests::a_stale_enabled_button_cannot_submit_after_ownership_is_lost ... ok
+test panes::agent::tests::every_missing_condition_blocks_native_submission ... ok
+test panes::agent::tests::only_real_bounded_task_progress_is_displayed ... ok
+test panes::agent::tests::running_or_failed_work_disables_send_but_keeps_stop_available ... ok
+test panes::captions::tests::a_language_row_reads_back_as_its_code ... ok
+test panes::captions::tests::imported_srt_ignores_empty_captions ... ok
+test panes::captions::tests::a_voice_is_named_by_its_file_and_where_it_starts ... ok
+test panes::captions::tests::the_captioned_clip_follows_a_new_selection_of_a_clip_with_sound ... ok
+test panes::captions::tests::a_script_is_cut_into_readable_lines ... ok
+test panes::export::tests::the_file_name_is_a_file_name ... ok
+test panes::export::tests::the_timeline_rate_comes_first ... ok
+test panes::glide::tests::a_finger_held_still_before_it_lifts_throws_nothing ... ok
+test panes::glide::tests::a_jittery_sample_does_not_swing_the_speed ... ok
+test panes::captions::tests::imported_srt_preserves_short_cues_and_multiline_text ... ok
+test panes::glide::tests::a_slow_release_is_no_throw_and_a_wild_one_is_capped ... ok
+test panes::glide::tests::a_throw_runs_down_and_stops ... ok
+test panes::media_bin::tests::a_band_walks_the_filtered_grid_and_survives_zero_columns ... ok
+test panes::glide::tests::a_late_timer_moves_as_far_as_a_punctual_one ... ok
+test panes::glide::tests::only_the_last_tenth_of_a_second_counts ... ok
+test panes::glide::tests::a_steady_drag_measures_its_speed ... ok
+test panes::media_bin::tests::a_click_toggles_only_when_additive ... ok
+test panes::glide::tests::too_little_to_tell_by_is_no_speed ... ok
+test panes::media_bin::tests::a_filter_and_a_sort_shape_the_visible_list ... ok
+test panes::media_bin::tests::a_generated_voice_is_on_its_own_shelf_and_no_other ... ok
+test panes::media_bin::tests::picks_are_numbered_in_the_order_they_were_made ... ok
+test panes::media_bin::tests::rows_are_assigned_once_and_never_reused ... ok
+test panes::monitor::tests::a_cadence_counts_repeats_and_gaps ... ok
+test panes::monitor::tests::quality_is_half_until_chosen_and_kept_per_timeline ... ok
+test panes::monitor::tests::a_frame_is_even_sided_and_never_vanishes ... ok
+test panes::pace::tests::a_stage_of_no_time_is_not_the_one_shown_first ... ok
+test panes::pace::tests::reports_out_of_range_are_held_in ... ok
+test panes::pace::tests::a_skipped_stage_is_passed_over_and_the_bar_never_goes_back ... ok
+test panes::pace::tests::stages_take_room_by_their_expected_time ... ok
+test panes::pace::tests::timings_keep_the_last_measure_of_each ... ok
+test panes::relink::tests::a_dismissed_file_stays_quiet_while_it_is_missing ... ok
+test panes::relink::tests::a_file_that_comes_back_and_goes_missing_again_is_news ... ok
+test panes::relink::tests::opening_a_project_forgets_an_earlier_projects_dismissals ... ok
+test panes::relink::tests::a_recheck_opens_the_dialog_on_what_is_missing ... ok
+test panes::relink::tests::a_recheck_that_finds_nothing_closes_the_dialog ... ok
+test panes::relink::tests::a_new_missing_file_opens_the_dialog_beside_a_dismissed_one ... ok
+test panes::settings::listen_tests::a_missing_or_bad_half_gets_the_default ... ok
+test panes::settings::listen_tests::a_listen_address_splits_into_host_and_port_and_joins_back ... ok
+test panes::settings::listen_tests::only_a_loopback_host_is_this_computer_alone ... ok
+test panes::settings::tests::a_row_shows_the_download_as_a_fraction_of_the_whole ... ok
+test panes::settings::tests::a_failed_download_says_why_and_offers_the_way_round ... ok
+test panes::settings::tests::a_token_is_thirty_two_hex_digits_and_never_the_same_twice ... ok
+test panes::settings::tests::installed_keeps_the_settings_order ... ok
+test panes::speech::tests::a_tag_lands_as_its_own_word ... ok
+test panes::speech::tests::a_voice_avatar_is_its_initial_in_its_own_colour ... ok
+test panes::speech::tests::a_voice_name_reads_as_a_person_would_say_it ... ok
+test panes::start::tests::each_platform_has_a_place_for_new_projects ... ok
+test panes::start::tests::a_second_untitled_project_gets_a_name_of_its_own ... ok
+test panes::start::tests::every_link_has_an_address ... ok
+test panes::timeline::tests::a_centred_view_keeps_the_playhead_in_the_middle ... ok
+test panes::start::tests::the_projects_search_and_sort ... ok
+test panes::timeline::tests::a_clip_is_shown_when_any_of_it_is_in_the_span ... ok
+test panes::timeline::tests::a_pinch_zooms_by_its_whole_scale_about_the_fingers ... ok
+test panes::timeline::tests::zoom_keeps_the_anchor_under_the_pointer_and_stays_in_range ... ok
+test panes::voiceover::tests::a_pause_from_elsewhere_pauses_the_take_too_until_the_cut_ends ... ok
+test panes::timeline::tests::the_span_is_a_screen_either_side_of_the_view ... ok
+test panes::voiceover::tests::a_refused_seek_is_explained_once_a_take ... ok
+test panes::voiceover::tests::play_moves_the_take_and_the_picture_together ... ok
+test panes::voiceover::tests::the_playhead_stays_put_while_a_take_holds_it ... ok
+test platform::tests::a_phone_picker_is_asked_for_the_dialogs_kinds ... ok
+test platform::tests::a_press_near_the_frame_finds_its_edge ... ok
+test platform::tests::a_folder_dialog_starts_at_a_folder_that_exists ... ok
+test platform::tests::shortcuts_read_the_way_the_platform_writes_them ... ok
+test prefs::tests::a_chosen_magnetic_timeline_outranks_the_default ... ok
+test prefs::tests::a_crash_draws_in_software_until_another_build ... ok
+test prefs::tests::a_hash_means_a_picked_colour ... ok
+test prefs::tests::a_row_finds_its_scale ... ok
+test prefs::tests::a_remembered_scale_finds_its_row ... ok
+test prefs::tests::a_picked_playhead_round_trips_and_an_older_file_has_none ... ok
+test prefs::tests::accent_id_round_trips_through_the_file ... ok
+test prefs::tests::a_scale_round_trips_and_an_older_file_follows_the_display ... ok
+test prefs::tests::a_scale_reads_as_a_multiplier ... ok
+test prefs::tests::accent_matches_by_name_not_by_case ... ok
+test prefs::tests::no_accent_is_the_first ... ok
+test prefs::tests::older_file_without_an_accent_is_the_default ... ok
+test prefs::tests::older_settings_have_no_remembered_project_location ... ok
+test panes::start::tests::compose_offers_a_name_that_is_free_in_the_location ... ok
+test panes::start::tests::only_a_made_up_name_moves_on ... ok
+test prefs::tests::rebound_shortcuts_round_trip_and_an_older_file_has_none ... ok
+test prefs::tests::a_missing_or_non_directory_project_location_uses_the_default ... ok
+test prefs::tests::the_old_software_key_is_let_go ... ok
+test prefs::tests::unknown_or_empty_accent_falls_back ... ok
+test agent::native::tests::real_protocol_handshake_does_not_grant_edit_authority ... ok
+test presets::tests::a_partial_style_lays_over_the_default ... ok
+test presets::tests::a_preset_carries_its_styled_words ... ok
+test presets::tests::built_in_ids_are_unique_and_the_plain_title_is_first ... ok
+test speed_ramp::tests::a_new_point_lands_in_time_order ... ok
+test speed_ramp::tests::a_preset_is_named_until_it_is_shaped ... ok
+test speed_ramp::tests::the_ends_stay_put_and_the_middle_stays_between ... ok
+test speed_ramp::tests::chosen_points_move_together_and_stop_at_the_points_that_stay ... ok
+test speed_ramp::tests::smooth_or_straight_is_every_point_or_none ... ok
+test speed_ramp::tests::a_slider_brings_the_extreme_and_its_side_along ... ok
+test speed_ramp::tests::the_scale_is_doublings_with_one_in_the_middle ... ok
+test studio::masking::tests::a_drag_on_each_grip_does_what_it_says ... ok
+test studio::masking::tests::a_turned_picture_turns_its_mask_and_its_drags ... ok
+test presets::tests::every_shipped_preset_file_parses ... ok
+test studio::masks::tests::every_mask_number_field_names_a_number_a_shape_has ... ok
+test studio::masking::tests::the_grips_sit_on_the_box_in_the_shorter_side ... ok
+test studio::tests::a_batch_keeps_its_shape_about_the_first_clip ... ok
+test studio::masks::tests::the_current_mask_is_the_picked_one_or_the_first ... ok
+test studio::masking::tests::the_outline_traces_the_edge_the_compositor_keeps ... ok
+test agent::native::tests::revoked_database_can_rollback_and_close_but_page_cannot_release_os_owner ... ok
+test studio::tests::a_batch_level_is_one_undo_step_for_every_clip ... ok
+test studio::tests::a_caret_byte_is_the_character_it_falls_at ... ok
+test studio::consolidate::tests::unadopted_render_is_removed_but_adopted_media_survives ... ok
+test studio::tests::a_click_moves_nothing ... ok
+test studio::tests::a_detach_says_why_it_cannot_happen ... ok
+test embedded::tests::mailbox_creation_failure_and_invalid_session_leave_the_same_bridge_retryable ... ok
+test studio::tests::a_keyed_property_is_written_as_a_key_and_committed_as_commands ... ok
+test studio::tests::a_motion_picked_in_the_inspector_is_committed ... ok
+test studio::tests::a_paste_keeps_the_groups_shape_and_lands_on_rows_that_exist ... ok
+test studio::tests::a_copy_of_a_split_tail_shows_the_tails_frames ... ok
+test studio::tests::a_picked_colour_is_the_mean_about_the_point ... ok
+test studio::tests::a_typed_frame_is_even_and_bounded ... ok
+test studio::tests::a_typed_rate_is_an_exact_fraction ... ok
+test studio::tests::a_voice_set_in_the_inspector_is_committed ... ok
+test studio::tests::footprint_contains_an_unturned_box ... ok
+test studio::tests::footprint_turns_clockwise ... ok
+test studio::tests::half_bounds_follow_the_turn ... ok
+test studio::tests::footprint_turns_in_pixels ... ok
+test studio::tests::home_folder_is_under_home_with_native_separators ... ok
+test studio::tests::snap_picks_the_nearest_target_inside_the_pull ... ok
+test studio::tests::rows_holding_models_are_compared_by_what_the_models_hold ... ok
+test studio::tests::the_edit_points_are_walked_in_order_across_lanes ... ok
+test tests::a_failed_save_does_not_schedule_the_relaunch ... ok
+test embedded::tests::failed_platform_creation_releases_ownership_on_worker_and_allows_reconnect ... ok
+test prefs::tests::the_last_project_location_survives_loading_and_saving ... ok
+test prefs::tests::a_settings_file_that_does_not_read_whole_keeps_what_does ... ok
+test presets::tests::every_built_in_preset_is_drawn_in_its_own_face ... ok
+test agent::native::tests::interrupted_pi_tasks_block_both_decisions_without_starting_a_scheduler ... ok
+test i18n::tests::both_chinese_standards_ship_under_their_own_names ... ok
+test i18n::tests::every_shipped_locale_parses_names_itself_and_keys_off_the_inventory ... ok
+test fonts::tests::every_locale_has_a_glyph_for_every_character ... ok
+test agent::native::tests::saved_completion_requires_an_actual_bound_page_acknowledgement ... ok
+test studio::tests::a_wheel_keys_as_one_knob ... ok
+test studio::tests::a_colour_knob_is_a_swatch ... ok
+test studio::tests::the_adjust_panel_draws_its_wheels_and_curves ... ok
+test tests::a_delayed_autosave_cannot_replace_the_close_snapshot ... ok
+test studio::tests::every_built_in_picture_package_ships_a_card ... ok
+test tests::a_failed_save_keeps_the_real_session_and_its_edit ... ok
+
+test result: ok. 215 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.87s

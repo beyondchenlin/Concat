@@ -115,6 +115,15 @@ impl PendingRegistry {
     }
 }
 
+/// Identity read from the native window for recovery, without opening a file
+/// or constructing another editable project.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CurrentProject {
+    pub path: String,
+    pub session_id: u64,
+    pub revision: u64,
+}
+
 /// The background protocol adapter to the one project open in the native UI.
 pub struct Live {
     owner: Arc<SessionOwner>,
@@ -133,6 +142,18 @@ impl Live {
             token,
             pending: Mutex::new(PendingRegistry::default()),
         }
+    }
+
+    /// Read the actual selected project on its owning thread. A window without
+    /// a project is a successful `None`, never an invented path or timeout.
+    pub(crate) fn current_project(&self) -> Result<Option<CurrentProject>, ApiError> {
+        self.on_window_target(None, false, |studio| {
+            Ok(studio.session.as_ref().map(|session| CurrentProject {
+                path: session.path().to_owned(),
+                session_id: session.session_id(),
+                revision: session.revision(),
+            }))
+        })
     }
 
     /// Permanently stop this bridge and retire requests not yet executing.
@@ -184,6 +205,15 @@ impl Live {
         publish: bool,
         body: impl FnOnce(&mut Studio) -> Result<T, ApiError> + Send + 'static,
     ) -> Result<T, ApiError> {
+        self.on_window_target(Some(path), publish, body)
+    }
+
+    fn on_window_target<T: Send + 'static>(
+        &self,
+        path: Option<&str>,
+        publish: bool,
+        body: impl FnOnce(&mut Studio) -> Result<T, ApiError> + Send + 'static,
+    ) -> Result<T, ApiError> {
         Self::require_background_thread()?;
         let permit = if publish {
             Some(self.owner.begin(&self.token).map_err(ownership_error)?)
@@ -197,7 +227,7 @@ impl Live {
         let queued_request = Arc::clone(&request);
         let owner = Arc::clone(&self.owner);
         let token = self.token.clone();
-        let path = path.to_owned();
+        let path = path.map(str::to_owned);
         let (reply, answer) = mpsc::channel();
 
         slint::invoke_from_event_loop(move || {
@@ -212,14 +242,15 @@ impl Live {
                 Shell::with(|shell, app| {
                     let result = {
                         let mut studio = shell.studio.borrow_mut();
-                        if studio
-                            .session
-                            .as_ref()
-                            .is_some_and(|session| same_folder(session.path(), &path))
-                        {
+                        if path.as_deref().is_none_or(|path| {
+                            studio
+                                .session
+                                .as_ref()
+                                .is_some_and(|session| same_folder(session.path(), path))
+                        }) {
                             body(&mut studio)
                         } else {
-                            Err(not_open(&path))
+                            Err(not_open(path.as_deref().unwrap_or_default()))
                         }
                     };
                     if publish && result.is_ok() {

@@ -1,0 +1,47 @@
+{
+  "archived_at_utc": "2026-11-13 12:03:08 UTC",
+  "repository": "beyondchenlin/Concat",
+  "workflow": ".github/workflows/mobile.yml",
+  "workflow_name": "Build for phones",
+  "run_id": 43408766977,
+  "url": "https://github.com/beyondchenlin/Concat/actions/runs/43408766977",
+  "head_sha": "fb85eb72086e29e71c8ff6a5dbfb0f2de494477c",
+  "actual_checkout_sha": "348dbc5804ecc4f08918460013de959d810a5150",
+  "pull_request": 4,
+  "base_sha": "746b2502c28122414f7ac1efa44f2e1468d15998",
+  "rust_toolchain": "1.93.1",
+  "conclusion_scope": "Android build and application install/start jobs only; embedded agent unavailable on both emulators; no M3 platform hosts are included.",
+  "raw_logs": [
+    {
+      "file": "android-arm64.log",
+      "job_id": 131829724233,
+      "name": "Android arm64",
+      "conclusion": "success"
+    },
+    {
+      "file": "android-x86_64.log",
+      "job_id": 131829724272,
+      "name": "Android x86_64",
+      "conclusion": "success"
+    },
+    {
+      "file": "android-api35-smoke.log",
+      "job_id": 131842298272,
+      "name": "Android smoke (API 35)",
+      "conclusion": "success"
+    },
+    {
+      "file": "android-api30-smoke.log",
+      "job_id": 131842298318,
+      "name": "Android smoke (API 30)",
+      "conclusion": "success"
+    }
+  ],
+  "artifacts_downloaded": false,
+  "observed_limitations": [
+    "Both emulator logs: embedded agent unavailable: lock newly created ownership file: lock() not supported",
+    "API 35 emulator reports launcher ANR and window focus not in the app.",
+    "Run includes a failed iOS simulator job and an unfinished iOS arm64 job; overall workflow success is not asserted."
+  ],
+  "log_format": "Complete decoded original log text returned by GitHub connector; no filtering or redaction. SHA256SUMS.txt hashes the archived local UTF-8 files."
+}

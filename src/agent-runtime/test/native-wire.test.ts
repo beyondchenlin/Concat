@@ -75,3 +75,24 @@ test("native ports bind the trusted invocation beside MCP JSON, and never fall b
   assert.equal(b.sent.length, 1);
   wire.close();
 });
+
+
+test("only a live acquired owner acknowledges a genuinely received native save notification", async () => {
+  const b = bridge(); const wire = new NativeWireClient(b.api); const ports = messageNativePorts(wire);
+  const acquisition = ports.ownership.acquire("fixed");
+  b.receive({ channel: NATIVE_CHANNEL, id: b.sent[0]!.id,
+    result: { storageId: "fixed", handle: "native-owner", generation: "7" } });
+  await acquisition;
+  const saved = { channel: NATIVE_CHANNEL, event: "operation.saved", ownerHandle: "native-owner", generation: "7", operationId: "3" };
+  b.receive({ ...saved, generation: "6" });
+  assert.equal(b.sent.length, 1);
+  b.receive(saved);
+  const ack = b.sent[1]!;
+  assert.equal(ack.payload.method, "operation.acknowledge");
+  assert.equal(ack.payload.operationId, "3");
+  b.receive({ channel: NATIVE_CHANNEL, id: ack.id, result: null });
+  b.receive(saved); assert.equal(b.sent.length, 2);
+  b.receive({ channel: NATIVE_CHANNEL, event: "owner.revoked", ownerHandle: "native-owner", generation: "7" });
+  b.receive({ ...saved, operationId: "4" }); assert.equal(b.sent.length, 2);
+  wire.close();
+});

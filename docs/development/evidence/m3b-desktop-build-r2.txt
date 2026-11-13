@@ -1,0 +1,56 @@
+warning: variable does not need to be mutable
+   --> patches\whisper-rs-sys\build.rs:154:13
+    |
+154 |         let mut bindings = bindgen::Builder::default()
+    |             ----^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `whisper-rs-sys` (build script) generated 1 warning
+warning: concat@0.2.10: warning: The property 'viewport-height' has been deprecated. Please use 'content-height' instead
+warning: concat@0.2.10:     --> E:\BK-CAT\src\crates\concat\ui\primitives\modal.slint:248:17
+warning: concat@0.2.10:      |
+warning: concat@0.2.10:  248 |                 viewport-height: Math.max(self.height, content.preferred-height);
+warning: concat@0.2.10:      |                 ^^^^^^^^^^^^^^^
+warning: concat@0.2.10:      |
+warning: concat@0.2.10: warning: The property 'viewport-height' has been deprecated. Please use 'content-height' instead
+warning: concat@0.2.10:     --> E:\BK-CAT\src\crates\concat\ui\primitives\modal.slint:252:38
+warning: concat@0.2.10:      |
+warning: concat@0.2.10:  252 |                     height: scroller.viewport-height;
+warning: concat@0.2.10:      |                                      ^^^^^^^^^^^^^^^
+warning: concat@0.2.10: warning: Component is neither used nor exported
+warning: concat@0.2.10:     --> E:\BK-CAT\src\crates\concat\ui\start.slint:1335:1
+warning: concat@0.2.10:      |
+warning: concat@0.2.10: 1335 | / component TextLink inherits Pressable {
+warning: concat@0.2.10: 1336 | |     in property <string> text;
+warning: concat@0.2.10: 1337 | |
+warning: concat@0.2.10: 1338 | |     label: root.text;
+warning: concat@0.2.10: ...    |
+warning: concat@0.2.10: 1363 | | }
+warning: concat@0.2.10:      | |_^
+   Compiling concat-agent v0.2.10 (E:\BK-CAT\src\crates\concat-agent)
+   Compiling concat v0.2.10 (E:\BK-CAT\src\crates\concat)
+warning: method `snapshot` is never used
+   --> crates\concat\src\agent\native.rs:338:19
+    |
+131 | impl NativeSession {
+    | ------------------ method in this implementation
+...
+338 |     pub(crate) fn snapshot(&self) -> Result<Value, String> {
+    |                   ^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated function `publish_messages` is never used
+   --> crates\concat\src\panes\agent.rs:250:12
+    |
+ 61 | impl AgentPane {
+    | -------------- associated function in this implementation
+...
+250 |     pub fn publish_messages(app: &App, entries: Vec<AgentMessageData>) {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: `concat` (lib) generated 2 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11m 38s

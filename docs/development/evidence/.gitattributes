@@ -1,0 +1,2 @@
+# Preserve the exact evidence bytes recorded in m3b-evidence-index.json.
+m3b-* -text
