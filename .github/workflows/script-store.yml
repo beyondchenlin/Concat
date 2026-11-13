@@ -48,10 +48,10 @@ jobs:
     name: Fixed original runtime and native transport checks
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    env:
-      BK_CAT_PI_REFERENCE: ${{ runner.temp }}/bk-cat-pi-reference
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Share the fixed reference with subsequent steps
+        run: echo "BK_CAT_PI_REFERENCE=$RUNNER_TEMP/bk-cat-pi-reference" >> "$GITHUB_ENV"
       - uses: ./.github/actions/prepare-agent-runtime
       - name: Strict types against the fixed original source
         working-directory: src/agent-runtime
