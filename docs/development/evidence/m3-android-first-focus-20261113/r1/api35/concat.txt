@@ -1,0 +1,26 @@
+11-13 14:10:50.926  3533  3568 I concat  : concat_host::logs: Concat 0.2.10 · android-x86_64 · commit b584d2f05c80 · log level INFO
+11-13 14:10:50.926  3533  3568 I concat  : concat_host::logs: system: Android 15 (API 35) · Google sdk_gphone64_x86_64
+11-13 14:10:50.928  3533  3568 I concat  : concat_host::logs: cpu: Android virtual processor · 4 threads · has sse4.2 avx f16c · lacks avx2 fma bmi2 avx512f
+11-13 14:10:50.928  3533  3568 I concat  : concat_android: Concat 0.2.10 starting
+11-13 14:10:51.775  3533  3603 W concat  : wgpu_core::instance: Missing downlevel flags: DownlevelFlags(SURFACE_VIEW_FORMATS)
+11-13 14:10:51.775  3533  3603 W concat  : The underlying API or device in use does not support enough features to be a fully compliant implementation of WebGPU. A subset of the features can still be used. If you are running this program on native and not in a browser and wish to limit the features you use to the supported subset, call Adapter::downlevel_properties or Device::downlevel_properties to get a listing of the features the current platform supports.
+11-13 14:10:51.775  3533  3603 W concat  : wgpu_core::instance: DownlevelCapabilities {
+11-13 14:10:51.775  3533  3603 W concat  :     flags: DownlevelFlags(
+11-13 14:10:51.775  3533  3603 W concat  :         COMPUTE_SHADERS | FRAGMENT_WRITABLE_STORAGE | INDIRECT_EXECUTION | BASE_VERTEX | READ_ONLY_DEPTH_STENCIL | NON_POWER_OF_TWO_MIPMAPPED_TEXTURES | CUBE_ARRAY_TEXTURES | COMPARISON_SAMPLERS | INDEPENDENT_BLEND | VERTEX_STORAGE | ANISOTROPIC_FILTERING | FRAGMENT_STORAGE | MULTISAMPLED_SHADING | DEPTH_TEXTURE_AND_BUFFER_COPIES | WEBGPU_TEXTURE_FORMAT_SUPPORT | BUFFER_BINDINGS_NOT_16_BYTE_ALIGNED | UNRESTRICTED_INDEX_BUFFER | FULL_DRAW_INDEX_UINT32 | DEPTH_BIAS_CLAMP | VIEW_FORMATS | UNRESTRICTED_EXTERNAL_TEXTURE_COPIES | NONBLOCKING_QUERY_RESOLVE | SHADER_F16_IN_F32 | MSL2_1 | TEXTURE_COMPRESSION,
+11-13 14:10:51.775  3533  3603 W concat  :     ),
+11-13 14:10:51.775  3533  3603 W concat  :     limits: DownlevelLimits,
+11-13 14:10:51.775  3533  3603 W concat  :     shader_model: Sm5,
+11-13 14:10:51.775  3533  3603 W concat  : }
+11-13 14:10:52.436  3533  3603 W concat  : concat_host::cards: cards: a software adapter only; the cards are left undrawn
+11-13 14:10:53.121  3533  3533 I concat  : concat::embedded: bk-cat-agent: state=stopping
+11-13 14:10:53.121  3533  3533 I concat  : concat::embedded: bk-cat-agent: state=stopping
+11-13 14:10:53.141  3533  3706 I concat  : concat::embedded: bk-cat-agent: state=closed
+11-13 14:10:53.504  3533  3568 W concat  : wgpu_core::instance: Missing downlevel flags: DownlevelFlags(SURFACE_VIEW_FORMATS)
+11-13 14:10:53.504  3533  3568 W concat  : The underlying API or device in use does not support enough features to be a fully compliant implementation of WebGPU. A subset of the features can still be used. If you are running this program on native and not in a browser and wish to limit the features you use to the supported subset, call Adapter::downlevel_properties or Device::downlevel_properties to get a listing of the features the current platform supports.
+11-13 14:10:53.504  3533  3568 W concat  : wgpu_core::instance: DownlevelCapabilities {
+11-13 14:10:53.504  3533  3568 W concat  :     flags: DownlevelFlags(
+11-13 14:10:53.504  3533  3568 W concat  :         COMPUTE_SHADERS | FRAGMENT_WRITABLE_STORAGE | INDIRECT_EXECUTION | BASE_VERTEX | READ_ONLY_DEPTH_STENCIL | NON_POWER_OF_TWO_MIPMAPPED_TEXTURES | CUBE_ARRAY_TEXTURES | COMPARISON_SAMPLERS | INDEPENDENT_BLEND | VERTEX_STORAGE | ANISOTROPIC_FILTERING | FRAGMENT_STORAGE | MULTISAMPLED_SHADING | DEPTH_TEXTURE_AND_BUFFER_COPIES | WEBGPU_TEXTURE_FORMAT_SUPPORT | BUFFER_BINDINGS_NOT_16_BYTE_ALIGNED | UNRESTRICTED_INDEX_BUFFER | FULL_DRAW_INDEX_UINT32 | DEPTH_BIAS_CLAMP | VIEW_FORMATS | UNRESTRICTED_EXTERNAL_TEXTURE_COPIES | NONBLOCKING_QUERY_RESOLVE | SHADER_F16_IN_F32 | MSL2_1 | TEXTURE_COMPRESSION,
+11-13 14:10:53.504  3533  3568 W concat  :     ),
+11-13 14:10:53.504  3533  3568 W concat  :     limits: DownlevelLimits,
+11-13 14:10:53.504  3533  3568 W concat  :     shader_model: Sm5,
+11-13 14:10:53.504  3533  3568 W concat  : }
