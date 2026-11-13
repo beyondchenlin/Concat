@@ -84,6 +84,8 @@ import { CaptionStyles } from "dialogs/captions.slint";
 import { Meters } from "timeline/vu-meter.slint";
 import { MotionPose, MotionTile, MotionTiles } from "inspector/motion-picker.slint";
 import { Workspace } from "workspace/workspace.slint";
+import { AgentUi, AgentView, AgentMessageData, AgentStatusData, AgentNavigation } from "agent.slint";
+import { AgentWorkspace } from "workspace/agent-workspace.slint";
 import {
     Backdrop,
     BackdropData,
@@ -114,6 +116,10 @@ import {
 import { SpeedRamp } from "inspector/speed-ramp.slint";
 
 export {
+    AgentUi,
+    AgentView,
+    AgentMessageData,
+    AgentStatusData,
     Curves,
     Fmt,
     Focus,
@@ -235,7 +241,18 @@ export component App inherits Window {
     // the focus back here on the way out.
     changed on-start => {
         if (!root.on-start) {
+            AgentUi.view = AgentView.chat;
             keys.focus();
+        }
+    }
+    property <AgentView> agent-view: AgentUi.view;
+    changed agent-view => {
+        // A sheet belongs to the original phone editor, not to the chat
+        // screen which replaces it. Do not leave Android Back swallowing
+        // events for a sheet whose component has been destroyed.
+        if (root.agent-view != AgentView.editor) {
+            PhoneSheets.close-asked += 1;
+            PhoneSheets.open = false;
         }
     }
     property <bool> sheet-open: root.export.open || root.settings.open
@@ -696,6 +713,12 @@ export component App inherits Window {
             // leaves the app.
             if (event.text == Key.Back) {
                 if (!root.on-start) {
+                    if (AgentUi.view != AgentView.chat) {
+                        if (SourcePreview.open) { SourcePreview.closed(); }
+                        AgentUi.view = AgentView.chat;
+                        keys.focus();
+                        return accept;
+                    }
                     root.app-menu-selected("close-project");
                     return accept;
                 }
@@ -779,18 +802,37 @@ export component App inherits Window {
                 link(name) => { root.start-link(name); }
             }
 
+            if !root.on-start: AgentNavigation {
+                phone: root.phone;
+                project-name: root.project-name;
+                projects => { root.app-menu-selected("close-project"); }
+                save => { root.app-menu-selected("save"); }
+            }
+
+            if !root.on-start && AgentUi.view != AgentView.editor: AgentWorkspace {
+                vertical-stretch: 1;
+                phone: root.phone;
+                project-name: root.project-name;
+                project-status: root.project-status;
+                recents: root.recents;
+                open => { root.start-open(); }
+                open-recent(path) => { root.start-open-recent(path); }
+                save => { root.app-menu-selected("save"); }
+                export-clicked => { root.export-clicked(); }
+            }
+
             // Everything the workspace shows now reads the Editor global, so
             // nothing is passed to it: it is a box with four seats in it, and
             // the views inside those seats reach the state directly. See
             // editor.slint.
-            if !root.on-start && !root.phone: Workspace {
+            if !root.on-start && !root.phone && AgentUi.view == AgentView.editor: Workspace {
                 vertical-stretch: 1;
             }
 
             // The phone's editor reads the same global; only the shell round
             // it differs. Its three verbs that are the window's - export,
             // settings, closing the project - go where the strip's went.
-            if !root.on-start && root.phone: PhoneEditor {
+            if !root.on-start && root.phone && AgentUi.view == AgentView.editor: PhoneEditor {
                 vertical-stretch: 1;
                 project-name: root.project-name;
                 status: root.project-status;

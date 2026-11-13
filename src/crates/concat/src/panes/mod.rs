@@ -14,6 +14,7 @@
 //! The panes move here one at a time from the window's controller; the
 //! export sheet is the first, and the shape the rest follow.
 
+pub mod agent;
 pub mod captions;
 pub mod export;
 pub mod glide;

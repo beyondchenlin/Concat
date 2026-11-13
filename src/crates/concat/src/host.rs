@@ -145,6 +145,8 @@ pub struct Shell {
     pub app: slint::Weak<App>,
     /// Kept outside Studio's RefCell so termination can revoke mid-edit.
     pub agent: Option<Arc<crate::agent::AgentBridge>>,
+    /// Presentation is separate from Studio so stop never borrows an editor.
+    pub agent_pane: RefCell<crate::panes::agent::AgentPane>,
     /// The window's state.
     pub studio: RefCell<Studio>,
     /// The live models, handed to Slint once and never replaced.

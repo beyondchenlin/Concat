@@ -442,10 +442,70 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     let shell = Rc::new(Shell {
         app: app.as_weak(),
         agent: studio.host.agent.clone(),
+        agent_pane: RefCell::new(panes::agent::AgentPane::default()),
         studio: RefCell::new(studio),
         models: Models::new(),
     });
     Shell::install(shell.clone());
+
+    // State comes from the same native owner as protocol admission. A rendered
+    // enabled button is never authority: the send callback reads it again.
+    let agent_ui = app.global::<AgentUi>();
+    agent_ui.on_send_requested(|draft| {
+        Shell::with(|shell, app| {
+            let owner = shell
+                .agent
+                .as_ref()
+                .ok_or_else(|| "会话暂不可用，仍可使用手动编辑。".to_owned())
+                .and_then(|bridge| bridge.status());
+            let mut pane = shell.agent_pane.borrow_mut();
+            pane.error = match pane.validate_submission(owner, &draft) {
+                Ok(_) => "聊天运行组件尚未连接，草稿已保留。".to_owned(),
+                Err(error) => error,
+            };
+            pane.publish(
+                &app,
+                shell
+                    .agent
+                    .as_ref()
+                    .ok_or_else(|| "会话暂不可用，仍可使用手动编辑。".to_owned())
+                    .and_then(|bridge| bridge.status()),
+            );
+        });
+    });
+    agent_ui.on_stop_requested(|| {
+        Shell::with(|shell, app| {
+            // Revoke synchronously before any asynchronous runtime cleanup.
+            if let Some(bridge) = &shell.agent {
+                bridge.stop();
+            }
+            shell.agent_pane.borrow().publish(
+                &app,
+                shell
+                    .agent
+                    .as_ref()
+                    .ok_or_else(|| "会话暂不可用，仍可使用手动编辑。".to_owned())
+                    .and_then(|bridge| bridge.status()),
+            );
+        });
+    });
+    let agent_status_timer = slint::Timer::default();
+    agent_status_timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(250),
+        || {
+            Shell::with(|shell, app| {
+                shell.agent_pane.borrow().publish(
+                    &app,
+                    shell
+                        .agent
+                        .as_ref()
+                        .ok_or_else(|| "会话暂不可用，仍可使用手动编辑。".to_owned())
+                        .and_then(|bridge| bridge.status()),
+                );
+            });
+        },
+    );
 
     // The machine's fonts, for the Text inspector's picker. Read on a
     // worker: on a machine with a few thousand faces it is a moment, and
@@ -2822,6 +2882,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
 
     let result = app.run();
     stop_native_agent();
+    drop(agent_status_timer);
     drop(reader_sweep);
     log::info!("close: event loop exited (ok={})", result.is_ok());
     // The loop failing is the window never having run at all - on a phone
