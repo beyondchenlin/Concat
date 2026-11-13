@@ -1,0 +1,37 @@
+
+running 21 tests
+test a_new_owner_cannot_start_work_until_reviewed ... ok
+test a_symlink_to_the_storage_root_cannot_create_a_second_owner ... ok
+test a_timed_out_handoff_refuses_new_owners_and_late_callbacks ... ok
+test an_existing_empty_journal_cannot_reuse_generation_one ... ok
+test callback_panic_fails_closed_until_the_host_is_closed ... ok
+test damaged_generation_journal_refuses_ownership_without_repairing_it ... ok
+test concurrent_first_acquisition_has_one_owner_and_does_not_strand_an_empty_journal ... FAILED
+test different_stores_cannot_exchange_tokens_even_when_generations_match ... ok
+test dropping_the_host_revokes_but_keeps_the_kernel_lock_until_callbacks_drain ... ok
+test fast_stop_and_status_do_not_wait_for_an_admitted_write_or_release_ownership ... ok
+test incomplete_or_repeated_review_does_not_approve_again ... ok
+test desktop_second_process_is_refused_by_the_operating_system_lock ... ok
+test malformed_complete_records_are_not_treated_as_a_fresh_store ... ok
+test mobile_runtime_replacement_overlap_is_fenced_by_native_generation ... ok
+test killed_owner_can_be_taken_over_but_never_automatically_resumes ... ok
+test owner_child_process ... ignored, subprocess helper; invoked explicitly by the real multiprocess tests
+test persistent_generation_increases_without_removing_the_lock_file ... ok
+test recovery_reads_are_allowed_but_revocation_refuses_even_read_callbacks ... ok
+test revocation_retains_ownership_until_safe_handoff_is_requested ... ok
+test same_store_and_canonical_path_alias_share_one_real_lock ... ok
+test native_revocation_and_a_write_are_one_ordered_boundary ... ok
+
+failures:
+
+---- concurrent_first_acquisition_has_one_owner_and_does_not_strand_an_empty_journal stdout ----
+
+thread 'concurrent_first_acquisition_has_one_owner_and_does_not_strand_an_empty_journal' (90) panicked at crates/concat-agent/tests/ownership.rs:444:49:
+first initialization was not stranded: Busy
+
+
+failures:
+    concurrent_first_acquisition_has_one_owner_and_does_not_strand_an_empty_journal
+
+test result: FAILED. 19 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.04s
+

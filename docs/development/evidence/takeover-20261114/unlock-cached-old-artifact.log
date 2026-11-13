@@ -1,0 +1,28 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.45s
+     Running unittests src/lib.rs (target/debug/deps/concat_agent-d38a5a6ae06c3582)
+
+running 2 tests
+test tests::drained_handoff_unlocks_while_an_inherited_descriptor_remains_open ... FAILED
+test tests::inherited_descriptor_does_not_release_a_live_operation_before_drain ... FAILED
+
+failures:
+
+---- tests::drained_handoff_unlocks_while_an_inherited_descriptor_remains_open stdout ----
+
+thread 'tests::drained_handoff_unlocks_while_an_inherited_descriptor_remains_open' (16) panicked at crates/concat-agent/src/lib.rs:780:14:
+Released must permit handoff even before inherited descriptors close: Busy
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- tests::inherited_descriptor_does_not_release_a_live_operation_before_drain stdout ----
+
+thread 'tests::inherited_descriptor_does_not_release_a_live_operation_before_drain' (17) panicked at crates/concat-agent/src/lib.rs:829:14:
+the final drained permit explicitly releases the retired owner's lock: Busy
+
+
+failures:
+    tests::drained_handoff_unlocks_while_an_inherited_descriptor_remains_open
+    tests::inherited_descriptor_does_not_release_a_live_operation_before_drain
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p concat-agent --lib`

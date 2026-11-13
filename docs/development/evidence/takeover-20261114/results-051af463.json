@@ -1,0 +1,96 @@
+{
+  "tested_head": "051af463942cfc0451b32fffede6c478776baf5e",
+  "tested_tree": "75138b83aa60a593a8049f4a1d74879e5d67e0c5",
+  "rustc": "1.93.1 (01f6ddf75 2026-02-11)",
+  "cargo": "1.93.1 (083ac5135 2025-12-15)",
+  "core": {
+    "command": "cargo test --locked -p concat-agent -- --test-threads=2",
+    "exit_code": 0,
+    "passed": 98,
+    "failed": 0,
+    "ignored_subprocess_helpers": 4,
+    "filtered": 0
+  },
+  "core_strict": {
+    "command": "cargo clippy --locked -p concat-agent --all-targets -- -D warnings",
+    "exit_code": 0
+  },
+  "workspace_format": {
+    "command": "cargo fmt --manifest-path src/Cargo.toml --all -- --check",
+    "exit_code": 0
+  },
+  "locales": {
+    "exit_code": 0,
+    "note": "原有相同英文提示仍保留，未提高或降低原门槛。"
+  },
+  "models": {
+    "exit_code": 0,
+    "count": 22
+  },
+  "unlock_differential": {
+    "before": "1e8525f267c6381d0238565ef56708cab4030b20，仅移植新提交的两项真实复制描述符回归，未改旧生产实现",
+    "before_exit_code": 101,
+    "before_failed": 2,
+    "after": "051af463942cfc0451b32fffede6c478776baf5e，重新编译本库后执行相同两个用例",
+    "after_exit_code": 0,
+    "after_passed": 2,
+    "artifact_control": "首次切回候选时误复用了旧工作树共享目标目录的单元测试二进制，测试清单缺少新位置锁用例，且仍为旧源码行号；保留该次失败和二进制清单。仅清理本库派生产物后重新编译，取得修补后的真实结果。此混用运行不计为候选源码测试。",
+    "cached_old_binary_sha256": "8be9ebede9f086e2c55c22860152de055c8e0f16d881b64a3b008bb153cf28df",
+    "ownership_repetitions": {
+      "rounds": 10,
+      "exit_codes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "command": "cargo test --locked -p concat-agent --test ownership -- --test-threads=2",
+      "note": "完整用例组重复核验，不把重复轮次相加为独立覆盖数量，也未在失败后重试隐藏结果。"
+    }
+  },
+  "runtime": {
+    "node": "24.22.1",
+    "build_exit": 0,
+    "typecheck_exit": 0,
+    "unit_passed": 40,
+    "original_passed": 3,
+    "failed": 0,
+    "skipped": 0,
+    "note": "显式使用固定参考路径；不替代固定22.19流水线、真实窗口、设备或模型调用。"
+  },
+  "ci": {
+    "core_success": "https://github.com/beyondchenlin/Concat/actions/runs/43526488503/job/132233418290",
+    "format_success": "https://github.com/beyondchenlin/Concat/actions/runs/43526488395/job/132233920170",
+    "runtime_path_failure": "https://github.com/beyondchenlin/Concat/actions/runs/43526488503/job/132233418519",
+    "window_ui_property_failure": "https://github.com/beyondchenlin/Concat/actions/runs/43526488395/job/132233919788",
+    "mac_ui_property_failure": "https://github.com/beyondchenlin/Concat/actions/runs/43526488395/job/132233920415"
+  },
+  "limits": [
+    "未执行用户电脑同步或真实窗口验收",
+    "本记录尚无原生宿主11项回归执行结论",
+    "未执行真实模型调用",
+    "未记完整产品验收通过"
+  ],
+  "files_sha256": {
+    "initial-core-failure.log": "5a2656713dea83d83c07ef669068dd7dd50e1dc02bc8d98162f5d5f3d28c0bf0",
+    "ownership-reproduced-before.log": "a3a673c3742744bed34d58dfa29d6ff92af2fc37f5c3426d31d21b70028da217",
+    "core-tests-051af463.log": "134a25c6a2320a4cb1597f21e7950474dd67bd6ab136df252449ff9df481bcac",
+    "core-clippy-051af463.log": "e496f22d80631c6b78b06b85258f1cc980bbd1615a2851e6cd39ce16c7cdaab8",
+    "unlock-before-regression.log": "b411b1cafeb27711b1701ff127b55d4ae13bcc35a702461ad3003d70d30967bc",
+    "unlock-after-regression-051af463.log": "8b80f7960966ddbfc2b1d54ffc9a46c6976e6e0d1406bf81c54c8a570ffffdd6",
+    "unlock-cached-old-artifact.log": "e553b9711db428e818bb47e62ed607c66e6ece93a405205068f9e80a898f05b8",
+    "unlock-cached-artifact-list.txt": "219911099da635ce02cbcae507361f5fcd7e1da9d6db1af1162076e06d7defbd",
+    "ownership-repeat-051af463.log": "7447b634c24065d929d4b412a2099d47860409749d59cbb4bf75d90f7223e742",
+    "runtime-unit-051af463.log": "45891cb61a1357cc66a5f7647433962b77e12f7595b53538defb27fbeadb1251",
+    "runtime-original-051af463.log": "e16cac56b955386b29096faa9c10fbe39aca2103572167ae83946a04ff82c1d8",
+    "runtime-provenance-051af463.json": "998c6be7edc3228e36b747085818989d52e6a0c95eb03972143a7a541c9766d5",
+    "runtime-build-051af463.log": "b6567e045fc6480bbe55f61d71dcf19c643e94afacecbe74507cdb937432a412",
+    "runtime-typecheck-051af463.log": "8f2140c3f804aaea2fb456feffa1b436a4105b875b1846c618592ffce78fab58"
+  }
+}
