@@ -1,0 +1,12 @@
+Original workflow head: 4eeb3dda705f1eb1ab35c8e5e3a156e34f50d939
+Run: https://github.com/beyondchenlin/Concat/actions/runs/43429045628
+
+API 35 job: https://github.com/beyondchenlin/Concat/actions/runs/43429045628/job/131911899524
+2026-11-13T13:25:29.5568175Z [command]/usr/bin/sh -c set -euo pipefail
+2026-11-13T13:25:29.5642908Z /usr/bin/sh: 1: set: Illegal option -o pipefail
+2026-11-13T13:25:29.5691996Z ##[error]The process '/usr/bin/sh' failed with exit code 2
+
+API 30 job: https://github.com/beyondchenlin/Concat/actions/runs/43429045628/job/131911899614
+2026-11-13T13:25:34.8471008Z [command]/usr/bin/sh -c set -euo pipefail
+2026-11-13T13:25:34.8504695Z /usr/bin/sh: 1: set: Illegal option -o pipefail
+2026-11-13T13:25:34.8557729Z ##[error]The process '/usr/bin/sh' failed with exit code 2
