@@ -1,0 +1,77 @@
+{
+  "purpose": "安卓网页组件边界诊断归档候选；未修改远端或生产门禁",
+  "bindings": {
+    "pr7_head": "f6871b6a225794f0838e0ac4ef547cfec195c084",
+    "pr7_tested_merge": "9765faccb9c96dd3c5ff4e2663f5dff79165dbf2",
+    "pr7_mobile_run": 43442794633,
+    "pr6_head": "f0b1a8767cc3aabc4485e2e6a4dc94c2d339309b",
+    "pr6_tested_merge": "ab20720a3b19eacc2533357ed124d9dc79974afd",
+    "pr6_mobile_run": 43445318036
+  },
+  "external_inputs": {
+    "apk_artifact_id": 14049335080,
+    "apk_artifact_sha256": "0050c461213f971f2b0cdd4b4cd95bdb0f927458abe5373ae5fd0905cf597416",
+    "apk_sha256": "2b749e7e0d7896c3b1c9694ea5afee7591f9544f22e1581d19f4216c492afb5c",
+    "browser_source": "https://storage.googleapis.com/chromium-browser-snapshots/Linux_x64/756035/chrome-linux.zip",
+    "browser_archive_sha256": "fa50829db660187d02d36463376156d184badfc2a174fd664defde0e37ee8440",
+    "browser_version": "Chromium 83.0.4103.0",
+    "syntax_compiler": "esbuild 0.28.2"
+  },
+  "rerun_observation": {
+    "reported_by": "主流程",
+    "job_id": 131966666377,
+    "request_result": "服务拒绝：整个工作流仍在运行；没有触发重跑",
+    "permission_or_approval_rejection": false,
+    "next_action": "不发起第三次重跑；下一次验证前先形成可核验环境准备记录",
+    "first_attempt_terminal_at": "2026-11-13T15:14:12Z",
+    "single_rerun_accepted_at": "2026-11-13T15:18:40Z",
+    "single_rerun_requested_by": "主流程",
+    "new_job_id": 131973915344,
+    "run_attempt": 2,
+    "tested_merge": "ab20720a3b19eacc2533357ed124d9dc79974afd",
+    "new_job_result": "failure",
+    "run_result": "cancelled",
+    "terminal_at": "2026-11-13T15:20:54Z",
+    "new_artifact_id": 14051250523,
+    "failure": "同一系统启动器无响应弹窗占据焦点，进程3381首次焦点超时；未加载网页组件",
+    "api30_rerun": false
+  },
+  "files": {
+    "device-observations.json": {
+      "bytes": 32270,
+      "sha256": "ce8144a00eff2f7e7b0a702556a475ac31f6518b5f60b25bfe3b5c0b833f6972"
+    },
+    "old-engine-reproduction.json": {
+      "bytes": 1394,
+      "sha256": "171555b120672afe72a094ac2a82eb3f78f4a7a38501fd4a5d8e4112ce24d15a"
+    },
+    "pr6-f0-api30-original.zip": {
+      "bytes": 350186,
+      "sha256": "c2350452390c732262bffe7bfcc84c1588cf5fd644d454ab757692e538a283a0"
+    },
+    "pr6-f0-api35-attempt2-original.zip": {
+      "bytes": 345199,
+      "sha256": "1726a5c080d96bfaaaab5c9e62a28014302f84ac098d5b32b01744e43f452617"
+    },
+    "pr6-f0-api35-original.zip": {
+      "bytes": 333148,
+      "sha256": "24a726ce277f8774e8b2498f950d2a58ed7c541856f581eebeb5362adfaf29f4"
+    },
+    "pr7-f687-api30-original.zip": {
+      "bytes": 331265,
+      "sha256": "fe1da602075affb8f6afe2062a277f5396d1235bba11b30323ba7baac51628e1"
+    },
+    "pr7-f687-api35-original.zip": {
+      "bytes": 698964,
+      "sha256": "bdeeeda537c458568892c7a22ff6d93295e7a96f69a616f3de7af390e8672b79"
+    },
+    "reproduce-old-webview.py": {
+      "bytes": 6864,
+      "sha256": "65c6d9fcb54ca308a65e4cd31961d5a8a3a5539896b774c1661db3f5953e6212"
+    },
+    "runtime-manifest.json": {
+      "bytes": 739,
+      "sha256": "f5c111f099dd7cbe46b331220f97c30d95e96d7956304a22004d7f35188046b1"
+    }
+  }
+}

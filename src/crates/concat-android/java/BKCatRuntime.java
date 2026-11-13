@@ -55,7 +55,6 @@ public final class BKCatRuntime {
     // Accessed only on Android's UI thread, independently of Slint's thread.
     private static final Map<String, BKCatRuntime> INSTANCES = new HashMap<>();
     private static final String BRIDGE = "BKCatAndroid";
-    private static final long FOREGROUND_WAIT_MILLIS = 15_000L;
     private static Lifecycle lifecycle;
 
     private final BKCatRuntimePolicy policy = new BKCatRuntimePolicy();
@@ -63,11 +62,70 @@ public final class BKCatRuntime {
     private final Activity activity;
     private final String instance;
     private final Map<String, byte[]> resources;
-    private final long foregroundDeadline = SystemClock.uptimeMillis() + FOREGROUND_WAIT_MILLIS;
-    private View focusView;
-    private ViewTreeObserver.OnWindowFocusChangeListener focusListener;
-    private Runnable foregroundTimeout;
     private WebView webView;
+    private final BKCatRuntimePolicy.InitialCreation initialCreation =
+            new BKCatRuntimePolicy.InitialCreation(SystemClock.uptimeMillis());
+    private final Runnable initialDeadline = this::tryInitialOpen;
+    private final ViewTreeObserver.OnWindowFocusChangeListener initialFocus = focused -> {
+        if (focused) tryInitialOpen();
+    };
+    private View initialFocusView;
+
+    /** Only fixed codes are logged; no instance capability, message or path. */
+    private enum StopReason {
+        ACTIVITY_FINISHING("activity-finishing", "Android activity is finishing"),
+        ACTIVITY_DESTROYED("activity-destroyed", "Android activity was destroyed"),
+        ACTIVITY_REPLACED("activity-replaced", "Android activity was replaced"),
+        ACTIVITY_PAUSED("activity-paused", "Android activity paused; explicit recovery is required"),
+        ACTIVITY_STOPPED("activity-stopped", "Android activity stopped"),
+        ACTIVITY_SAVED("activity-saved", "Android activity state saved; explicit recovery is required"),
+        OBSERVER_UNAVAILABLE("observer-unavailable", "Android lifecycle observer is unavailable"),
+        PREVIOUS_COMPONENT_OPEN("previous-component-open", "The preceding Android runtime has not closed"),
+        INITIAL_FOCUS_TIMEOUT("initial-focus-timeout", "Android window did not become foreground-ready"),
+        INITIAL_FOCUS_OBSERVER_FAILED("initial-focus-observer-failed", "Android window focus could not be observed"),
+        INITIAL_FOCUS_QUEUE_REJECTED("initial-focus-queue-rejected", "Android UI rejected the initial focus deadline"),
+        UI_CREATE_REJECTED("ui-create-rejected", "Android UI rejected runtime creation"),
+        WEBVIEW_CREATE_FAILED("webview-create-failed", "Android WebView creation failed"),
+        COMPONENT_RETIRED("component-retired", "Android runtime has no active activity"),
+        NATIVE_DELIVERY_FAILED("native-delivery-failed", "Android runtime rejected native delivery"),
+        NATIVE_CLOSED("native-closed", "Native host closed"),
+        UI_CLOSE_REJECTED("ui-close-rejected", "Android UI could not acknowledge destruction"),
+        DOWNLOAD_FORBIDDEN("download-forbidden", "A runtime document attempted a download"),
+        MESSAGE_TOO_LARGE("message-too-large", "Android runtime exceeded its message bound"),
+        UI_MESSAGE_REJECTED("ui-message-rejected", "Android UI refused a runtime message"),
+        NAVIGATION_FORBIDDEN("navigation-forbidden", "Runtime navigation is forbidden"),
+        DOCUMENT_CHANGED("document-changed", "Runtime document identity changed"),
+        HISTORY_CHANGED("history-changed", "Runtime document history changed"),
+        TLS_FORBIDDEN("tls-forbidden", "Runtime TLS request is forbidden"),
+        DOCUMENT_LOAD_FAILED("document-load-failed", "Runtime document failed to load"),
+        RENDERER_EXITED("renderer-exited", "Android runtime renderer exited; native recovery is required");
+
+        final String code;
+        final String description;
+        StopReason(String code, String description) {
+            this.code = code;
+            this.description = description;
+        }
+    }
+
+    private static void reportStopping(String instance, StopReason reason) {
+        Log.i("concat", "bk-cat-android-host: state=stopping reason=" + reason.code);
+        runtimeStopping(instance, reason.description);
+    }
+
+    private static void reportClosed(String instance, StopReason reason) {
+        Log.i("concat", "bk-cat-android-host: state=closed reason=" + reason.code);
+        runtimeClosed(instance, reason.description);
+    }
+
+    private static StopReason activityProblem(Activity activity) {
+        if (activity.isFinishing()) return StopReason.ACTIVITY_FINISHING;
+        if (activity.isDestroyed()) return StopReason.ACTIVITY_DESTROYED;
+        if (lifecycle == null) return StopReason.OBSERVER_UNAVAILABLE;
+        if (lifecycle.activity != activity) return StopReason.ACTIVITY_REPLACED;
+        if (lifecycle.paused) return StopReason.ACTIVITY_PAUSED;
+        return null;
+    }
 
     private BKCatRuntime(Activity activity, String instance, Map<String, byte[]> resources) {
         this.activity = activity;
@@ -86,7 +144,7 @@ public final class BKCatRuntime {
             if (activity.isFinishing() || activity.isDestroyed()) return;
             if (lifecycle != null && lifecycle.activity == activity) return;
             if (lifecycle != null) {
-                lifecycle.retire("Android activity replaced");
+                lifecycle.retire(StopReason.ACTIVITY_REPLACED);
                 lifecycle.activity.getApplication().unregisterActivityLifecycleCallbacks(lifecycle);
                 lifecycle = null;
             }
@@ -105,15 +163,13 @@ public final class BKCatRuntime {
             final String document, final String runtime, final String bootstrap,
             final String transport) {
         if (!UI.post(() -> {
-            String unavailable = activityUnavailableReason(activity);
-            if (unavailable != null) {
-                Log.i("concat", "bk-cat-android-host: state=refused reason=" + unavailable);
-                runtimeClosed(instance, unavailable);
+            StopReason problem = activityProblem(activity);
+            if (problem != null) {
+                reportClosed(instance, problem);
                 return;
             }
             if (!INSTANCES.isEmpty()) {
-                Log.i("concat", "bk-cat-android-host: state=refused reason=preceding-runtime-not-closed");
-                runtimeClosed(instance, "the preceding Android runtime has not closed");
+                reportClosed(instance, StopReason.PREVIOUS_COMPONENT_OPEN);
                 return;
             }
             Map<String, byte[]> assets = new HashMap<>();
@@ -123,68 +179,79 @@ public final class BKCatRuntime {
             assets.put("/transport.js", transport.getBytes(StandardCharsets.UTF_8));
             BKCatRuntime host = new BKCatRuntime(activity, instance, Collections.unmodifiableMap(assets));
             INSTANCES.put(instance, host);
-            host.startWhenForeground();
-        })) runtimeClosed(instance, "Android UI rejected runtime creation");
+            host.tryInitialOpen();
+        })) reportClosed(instance, StopReason.UI_CREATE_REJECTED);
     }
 
-    private static String activityUnavailableReason(Activity activity) {
-        if (activity.isFinishing() || activity.isDestroyed()) return "activity-ended";
-        if (lifecycle == null || lifecycle.activity != activity) return "lifecycle-observer-unavailable";
-        if (lifecycle.paused) return "activity-paused";
-        return null;
-    }
-
-    /** Wait only for this initial request; lifecycle retirement never retries. */
-    private void startWhenForeground() {
-        if (disposed.get()) return;
-        try {
-            String unavailable = activityUnavailableReason(activity);
-            if (unavailable != null) {
-                dispose(unavailable);
-                return;
-            }
-            switch (policy.startView(activity.hasWindowFocus(),
-                    SystemClock.uptimeMillis(), foregroundDeadline)) {
-                case START:
-                    clearForegroundWait();
-                    Log.i("concat", "bk-cat-android-host: state=starting reason=window-focused");
-                    openView();
-                    return;
-                case WAITING:
-                    if (focusListener != null) return;
-                    focusView = activity.getWindow().getDecorView();
-                    focusListener = focused -> { if (focused) startWhenForeground(); };
-                    focusView.getViewTreeObserver().addOnWindowFocusChangeListener(focusListener);
-                    foregroundTimeout = this::startWhenForeground;
-                    if (!UI.postDelayed(foregroundTimeout,
-                            Math.max(0L, foregroundDeadline - SystemClock.uptimeMillis()))) {
-                        dispose("initial-window-focus-queue-unavailable");
+    /**
+     * Continue only this never-opened component while its first window gains
+     * focus. Pause/save/destroy/close retire it and cancel both observers.
+     * Resuming an activity does not call this method or create a replacement.
+     */
+    private void tryInitialOpen() {
+        if (disposed.get() || !policy.active()) return;
+        StopReason problem = activityProblem(activity);
+        if (problem != null) {
+            dispose(problem);
+            return;
+        }
+        BKCatRuntimePolicy.InitialCreation.Decision decision = initialCreation.poll(
+                activity.hasWindowFocus(), SystemClock.uptimeMillis());
+        switch (decision) {
+            case WAIT:
+                if (initialFocusView != null) return;
+                try {
+                    View decor = activity.getWindow().getDecorView();
+                    ViewTreeObserver observer = decor.getViewTreeObserver();
+                    if (!observer.isAlive()) {
+                        dispose(StopReason.INITIAL_FOCUS_OBSERVER_FAILED);
+                        return;
+                    }
+                    initialFocusView = decor;
+                    observer.addOnWindowFocusChangeListener(initialFocus);
+                    if (!UI.postAtTime(initialDeadline, initialCreation.deadlineMillis())) {
+                        dispose(StopReason.INITIAL_FOCUS_QUEUE_REJECTED);
                         return;
                     }
                     Log.i("concat", "bk-cat-android-host: state=waiting reason=initial-window-focus");
-                    return;
-                case TIMED_OUT:
-                    dispose("initial-window-focus-timeout");
-                    return;
-                case ALREADY_STARTED:
-                case RETIRED:
-                    return;
-            }
-        } catch (RuntimeException error) {
-            dispose("Android WebView initial setup failed");
+                } catch (RuntimeException error) {
+                    dispose(StopReason.INITIAL_FOCUS_OBSERVER_FAILED);
+                }
+                return;
+            case OPEN:
+                clearInitialWait();
+                try {
+                    openView();
+                } catch (RuntimeException error) {
+                    dispose(StopReason.WEBVIEW_CREATE_FAILED);
+                }
+                return;
+            case EXPIRED:
+                dispose(StopReason.INITIAL_FOCUS_TIMEOUT);
+                return;
+            case OPENED:
+            case RETIRED:
+                return;
+            default:
+                throw new AssertionError("Unhandled initial creation decision");
         }
     }
 
-    /** Android UI thread only, on successful startup and every retirement path. */
-    private void clearForegroundWait() {
-        if (foregroundTimeout != null) UI.removeCallbacks(foregroundTimeout);
-        foregroundTimeout = null;
-        if (focusView != null && focusListener != null) {
-            ViewTreeObserver observer = focusView.getViewTreeObserver();
-            if (observer.isAlive()) observer.removeOnWindowFocusChangeListener(focusListener);
+    private void clearInitialWait() {
+        UI.removeCallbacks(initialDeadline);
+        View decor = initialFocusView;
+        initialFocusView = null;
+        if (decor == null) return;
+        try {
+            // A pre-attach observer is merged into a new one when the decor
+            // attaches. Always remove from the decor's current observer.
+            ViewTreeObserver observer = decor.getViewTreeObserver();
+            if (observer.isAlive()) observer.removeOnWindowFocusChangeListener(initialFocus);
+        } catch (RuntimeException error) {
+            // A retained callback cannot reopen a retired or already-opened
+            // component; this does not acknowledge any WebView destruction.
+            Log.w("concat", "bk-cat-android-host: state=cleanup reason=focus-listener-removal-failed");
         }
-        focusView = null;
-        focusListener = null;
     }
 
     /** The string is data, never interpolated as source code. */
@@ -200,7 +267,7 @@ public final class BKCatRuntime {
                 fragment.webView.evaluateJavascript(
                         "window.__BKCatDeliver(" + quoted + ");", null);
             } catch (RuntimeException error) {
-                fragment.dispose("Android runtime rejected native delivery");
+                fragment.dispose(StopReason.NATIVE_DELIVERY_FAILED);
             }
         })) throw new IllegalStateException("Android UI rejected native delivery");
     }
@@ -208,14 +275,14 @@ public final class BKCatRuntime {
     public static void close(final String instance) {
         if (!UI.post(() -> {
             BKCatRuntime fragment = INSTANCES.get(instance);
-            if (fragment != null) fragment.dispose("native host closed");
-        })) runtimeStopping(instance, "Android UI could not acknowledge destruction");
+            if (fragment != null) fragment.dispose(StopReason.NATIVE_CLOSED);
+        })) reportStopping(instance, StopReason.UI_CLOSE_REJECTED);
     }
 
     @SuppressLint("SetJavaScriptEnabled")
     private void openView() {
         if (!policy.active()) {
-            dispose("Android runtime has no active activity");
+            dispose(StopReason.COMPONENT_RETIRED);
             return;
         }
         WebView.setWebContentsDebuggingEnabled(false);
@@ -258,7 +325,7 @@ public final class BKCatRuntime {
             }
         });
         view.setDownloadListener((url, agent, disposition, mime, length) ->
-                dispose("a runtime document attempted a download"));
+                dispose(StopReason.DOWNLOAD_FORBIDDEN));
         view.addJavascriptInterface(new NativeBridge(), BRIDGE);
         // One invisible, noninteractive pixel outside the native editor bounds.
         // The original NativeActivity surface and Slint input are not replaced.
@@ -284,8 +351,8 @@ public final class BKCatRuntime {
             if (message == null || message.length() > BKCatRuntimePolicy.MAX_MESSAGE_CHARS
                     || message.getBytes(StandardCharsets.UTF_8).length
                             > BKCatRuntimePolicy.MAX_MESSAGE_CHARS) {
-                if (!UI.post(() -> dispose("Android runtime exceeded its message bound"))) {
-                    queueUnavailable("Android UI refused an oversized runtime message");
+                if (!UI.post(() -> dispose(StopReason.MESSAGE_TOO_LARGE))) {
+                    queueUnavailable(StopReason.UI_MESSAGE_REJECTED);
                 }
                 return;
             }
@@ -296,35 +363,35 @@ public final class BKCatRuntime {
                 if (webView != null && policy.canMessage(webView.getUrl(), message)) {
                     runtimeMessage(instance, message);
                 }
-            })) queueUnavailable("Android UI refused a runtime message");
+            })) queueUnavailable(StopReason.UI_MESSAGE_REJECTED);
         }
     }
 
     // Called from a bridge thread only when the UI queue cannot accept work.
     // Revoke synchronously; no off-thread WebView access or fake destruction.
-    private void queueUnavailable(String reason) {
+    private void queueUnavailable(StopReason reason) {
         policy.retire();
-        runtimeStopping(instance, reason);
+        reportStopping(instance, reason);
     }
 
     private final class ControlledClient extends WebViewClient {
         @Override public boolean shouldOverrideUrlLoading(
                 WebView view, WebResourceRequest request) {
-            dispose("runtime navigation is forbidden");
+            dispose(StopReason.NAVIGATION_FORBIDDEN);
             return true;
         }
         @Override public boolean shouldOverrideUrlLoading(WebView view, String url) {
-            dispose("runtime navigation is forbidden");
+            dispose(StopReason.NAVIGATION_FORBIDDEN);
             return true;
         }
         @Override public void onPageStarted(WebView view, String url, Bitmap favicon) {
             if (!policy.beginDocument(url)) {
-                dispose("runtime document identity changed");
+                dispose(StopReason.DOCUMENT_CHANGED);
             }
         }
         @Override public void doUpdateVisitedHistory(WebView view, String url, boolean reload) {
             if (reload || !BKCatRuntimePolicy.DOCUMENT.equals(url)) {
-                dispose("runtime document history changed");
+                dispose(StopReason.HISTORY_CHANGED);
             }
         }
         @Override public WebResourceResponse shouldInterceptRequest(
@@ -337,19 +404,19 @@ public final class BKCatRuntime {
         @Override public void onReceivedSslError(
                 WebView view, SslErrorHandler handler, SslError error) {
             handler.cancel();
-            dispose("runtime TLS request is forbidden");
+            dispose(StopReason.TLS_FORBIDDEN);
         }
         @Override public void onReceivedError(WebView view,
                 WebResourceRequest request, WebResourceError error) {
-            if (request.isForMainFrame()) dispose("runtime document failed to load");
+            if (request.isForMainFrame()) dispose(StopReason.DOCUMENT_LOAD_FAILED);
         }
         @Override public void onReceivedHttpError(WebView view,
                 WebResourceRequest request, WebResourceResponse error) {
-            if (request.isForMainFrame()) dispose("runtime document failed to load");
+            if (request.isForMainFrame()) dispose(StopReason.DOCUMENT_LOAD_FAILED);
         }
         @Override public boolean onRenderProcessGone(
                 WebView view, RenderProcessGoneDetail detail) {
-            dispose("Android runtime renderer exited; native recovery is required");
+            dispose(StopReason.RENDERER_EXITED);
             return true;
         }
     }
@@ -387,7 +454,7 @@ public final class BKCatRuntime {
 
         Lifecycle(Activity activity) { this.activity = activity; }
 
-        void retire(String reason) {
+        void retire(StopReason reason) {
             paused = true;
             for (BKCatRuntime host : INSTANCES.values().toArray(new BKCatRuntime[0])) {
                 if (host.activity == activity) host.dispose(reason);
@@ -401,51 +468,51 @@ public final class BKCatRuntime {
             if (value == activity) paused = false;
         }
         @Override public void onActivityPaused(Activity value) {
-            if (value == activity) retire("Android activity paused; explicit recovery is required");
+            if (value == activity) retire(StopReason.ACTIVITY_PAUSED);
         }
         @Override public void onActivityStopped(Activity value) {
-            if (value == activity) retire("Android activity stopped");
+            if (value == activity) retire(StopReason.ACTIVITY_STOPPED);
         }
         @Override public void onActivitySaveInstanceState(Activity value, Bundle state) {
             // This can precede onPause on supported older Android versions.
             // Nothing about the runtime, its capability or queue is serialized.
-            if (value == activity) retire("Android activity state saved; explicit recovery is required");
+            if (value == activity) retire(StopReason.ACTIVITY_SAVED);
         }
         @Override public void onActivityDestroyed(Activity value) {
             if (value != activity) return;
-            retire("Android activity destroyed");
+            retire(StopReason.ACTIVITY_DESTROYED);
             activity.getApplication().unregisterActivityLifecycleCallbacks(this);
             if (lifecycle == this) lifecycle = null;
         }
     }
 
-    private void dispose(String reason) {
+    private void dispose(StopReason reason) {
         policy.retire();
+        initialCreation.retire();
         if (!disposed.compareAndSet(false, true)) return;
-        // All callers pass fixed native-host reasons, never webpage content.
-        Log.i("concat", "bk-cat-android-host: state=retiring reason=" + reason);
         // First revoke native execution, but retain its storage ownership until
         // destroy() actually returns. JS unload handlers are not a handoff gate.
-        if (instance != null) runtimeStopping(instance, reason);
+        if (instance != null) reportStopping(instance, reason);
+        clearInitialWait();
         WebView old = webView;
         webView = null;
-        try {
-            clearForegroundWait();
-            if (old != null) {
+        if (old != null) {
+            try {
                 old.removeJavascriptInterface(BRIDGE);
                 old.stopLoading();
                 ViewGroup parent = (ViewGroup) old.getParent();
                 if (parent != null) parent.removeView(old);
                 old.destroy();
+            } catch (RuntimeException error) {
+                // Fail closed: no "closed" acknowledgement, and no replacement
+                // component. Native keeps the revoked owner's storage locked.
+                Log.e("concat", "bk-cat-android-host: state=cleanup reason=webview-destruction-failed");
+                return;
             }
-        } catch (RuntimeException error) {
-            // Fail closed: no "closed" acknowledgement, and no replacement
-            // component. Native keeps the revoked owner's storage locked.
-            return;
         }
         if (instance != null) {
             INSTANCES.remove(instance);
-            runtimeClosed(instance, reason);
+            reportClosed(instance, reason);
         }
     }
 }

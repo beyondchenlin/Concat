@@ -1,0 +1,28 @@
+{
+  "workflowRun": 43435858859,
+  "checkout": "b584d2f05c805ef0bdcdeba58632747bd9d9ce3e",
+  "artifacts": [
+    {
+      "api": 30,
+      "id": 14044398122,
+      "pid": "4133",
+      "sha256": "38c8a33a251eb2b00569ebf7511416655837e22f0db6f2e16c94eda4273256ee",
+      "url": "https://github.com/beyondchenlin/Concat/actions/runs/43435858859/artifacts/14044398122",
+      "completeArchive": "E:\\BK-CAT\\.build\\worktrees\\m3-android-first-focus-20261113\\.build\\startup-artifacts\\api30.zip",
+      "logcatSha256": "c8c6e9f077b864e14ca4aa2a828210effc0f673e0aa1fe128606a280ab3a77e1",
+      "originalCrashLogBytes": 0,
+      "selectedLinesAreTranscribedFromOriginalFile": true
+    },
+    {
+      "api": 35,
+      "id": 14044278307,
+      "pid": "3533",
+      "sha256": "519f531d544e0dcfe8ec998a0761756b64fe75cfcc0a46b782ac0fc0e57bd1e8",
+      "url": "https://github.com/beyondchenlin/Concat/actions/runs/43435858859/artifacts/14044278307",
+      "completeArchive": "E:\\BK-CAT\\.build\\worktrees\\m3-android-first-focus-20261113\\.build\\startup-artifacts\\api35.zip",
+      "logcatSha256": "3ce15347091d5e320a07de5ea7dfc71d7ad927772b790ecbbc3a93855793de60",
+      "originalCrashLogBytes": 0,
+      "selectedLinesAreTranscribedFromOriginalFile": true
+    }
+  ]
+}

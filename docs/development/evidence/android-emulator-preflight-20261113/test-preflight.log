@@ -1,0 +1,28 @@
+Command fixtures only: no real emulator, APK installation or native recovery is asserted.
+test_app_and_unknown_anrs_or_crash_dialogs_fail_without_cleanup (__main__.Contracts.test_app_and_unknown_anrs_or_crash_dialogs_fail_without_cleanup) ... ok
+test_clear_environment_has_no_mutation_and_retains_both_snapshots (__main__.Contracts.test_clear_environment_has_no_mutation_and_retains_both_snapshots) ... ok
+test_current_window_entries_accept_surface_decoration_but_ignore_stale_references (__main__.Contracts.test_current_window_entries_accept_surface_decoration_but_ignore_stale_references) ... ok
+test_device_or_focus_change_before_cleanup_prevents_mutation (__main__.Contracts.test_device_or_focus_change_before_cleanup_prevents_mutation) ... ok
+test_exact_launcher_anr_gets_one_fixed_cleanup_and_verified_clear (__main__.Contracts.test_exact_launcher_anr_gets_one_fixed_cleanup_and_verified_clear) ... ok
+test_failed_cleanup_keeps_failure_and_post_action_evidence (__main__.Contracts.test_failed_cleanup_keeps_failure_and_post_action_evidence) ... ok
+test_known_launcher_anr_away_from_current_focus_is_not_cleaned (__main__.Contracts.test_known_launcher_anr_away_from_current_focus_is_not_cleaned) ... ok
+test_late_clear_result_cannot_exceed_the_fixed_settle_deadline (__main__.Contracts.test_late_clear_result_cannot_exceed_the_fixed_settle_deadline) ... ok
+test_missing_multiple_malformed_or_nondefault_user_focus_fail_closed (__main__.Contracts.test_missing_multiple_malformed_or_nondefault_user_focus_fail_closed) ... ok
+test_missing_or_ambiguous_active_window_sources_fail_without_cleanup (__main__.Contracts.test_missing_or_ambiguous_active_window_sources_fail_without_cleanup) ... ok
+test_missing_or_multiple_apks_are_rejected_before_device_access (__main__.Contracts.test_missing_or_multiple_apks_are_rejected_before_device_access) ... ok
+test_non_ci_invocation_has_no_device_calls (__main__.Contracts.test_non_ci_invocation_has_no_device_calls) ... ok
+test_original_ownership_manifest_rejection_still_precedes_environment (__main__.Contracts.test_original_ownership_manifest_rejection_still_precedes_environment) ... ok
+test_persistent_launcher_anr_is_bounded_and_not_repeatedly_stopped (__main__.Contracts.test_persistent_launcher_anr_is_bounded_and_not_repeatedly_stopped) ... ok
+test_physical_absent_multiple_or_offline_devices_never_receive_cleanup (__main__.Contracts.test_physical_absent_multiple_or_offline_devices_never_receive_cleanup) ... ok
+test_read_failure_or_timeout_prevents_cleanup (__main__.Contracts.test_read_failure_or_timeout_prevents_cleanup) ... ok
+test_selector_properties_and_user_must_match_existing_matrix (__main__.Contracts.test_selector_properties_and_user_must_match_existing_matrix) ... ok
+test_unknown_anr_after_cleanup_is_not_hidden_or_cleaned (__main__.Contracts.test_unknown_anr_after_cleanup_is_not_hidden_or_cleaned) ... ok
+test_wrapper_environment_failure_prevents_app_start (__main__.Contracts.test_wrapper_environment_failure_prevents_app_start) ... ok
+test_wrapper_ownership_failure_prevents_environment_and_app_start (__main__.Contracts.test_wrapper_ownership_failure_prevents_environment_and_app_start) ... ok
+test_wrapper_preserves_arguments_environment_and_real_stage_order (__main__.Contracts.test_wrapper_preserves_arguments_environment_and_real_stage_order) ... ok
+test_wrapper_production_failure_is_propagated (__main__.Contracts.test_wrapper_production_failure_is_propagated) ... ok
+
+----------------------------------------------------------------------
+Ran 22 tests in 40.065s
+
+OK

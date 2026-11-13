@@ -1,0 +1,22 @@
+{
+  "kind": "recorded observation of completed connector process, not original process log",
+  "base": "63bdb965dd1bf7ebd3cd550fc5d365316a610741",
+  "processId": 20708,
+  "observedExitCode": 0,
+  "observedRuntimeSeconds": 2.96,
+  "javaCompile": "passed against Android API 35 with JDK 17",
+  "productionPolicyCasesPassed": 12,
+  "dexMinApi": 26,
+  "dexSha256": "207e994bea553d57cc193d1060f1ff7d4508b36dd5dbff7a9e17e452239ce271",
+  "diffCheck": "passed",
+  "originalJavacLogPreserved": true,
+  "consoleEncodingNote": "The PowerShell console rendered the upstream deprecation note with mojibake; original javac.log bytes are preserved.",
+  "notRun": [
+    "native Android link",
+    "APK archive",
+    "new emulator startup",
+    "real device run",
+    "model request"
+  ],
+  "reviews": "pending at capture"
+}
