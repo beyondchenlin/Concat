@@ -24,6 +24,7 @@ pub mod summary;
 pub mod tools;
 
 pub use backend::{Backend, Headless, Mode, Window};
+pub use protocol::Session;
 
 /// Serves MCP on standard input and output until the client closes its
 /// end, through the backend `mode` picks. Logs to standard error, which

@@ -134,7 +134,14 @@ impl ProjectPane {
         video.rate_den = den;
         video.color_space = sheet.color_space;
         video.canvas = sheet.canvas;
-        session.prepare_save((!name.is_empty()).then_some(name.as_str()));
+        if let Err(error) = session.prepare_save((!name.is_empty()).then_some(name.as_str())) {
+            // Keep the edited form available when the session refuses the
+            // name; neither the title nor the video settings have changed.
+            *self = sheet;
+            self.open = true;
+            studio.notify(&error, true);
+            return;
+        }
         if !name.is_empty() {
             studio.project_name = name;
         }

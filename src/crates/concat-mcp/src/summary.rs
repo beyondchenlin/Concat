@@ -77,6 +77,15 @@ pub fn view(view: &Value) -> Value {
     if let Some(created) = view.get("createdId").filter(|id| !id.is_null()) {
         summary["createdId"] = created.clone();
     }
+    // These are the current native editor's optimistic concurrency
+    // tokens, not display details. Preserve them exactly; a compact read
+    // must be usable to prepare edit.applyGuarded without a second read
+    // that could observe a different revision. Older servers omit them.
+    for key in ["sessionId", "revision"] {
+        if let Some(value) = view.get(key) {
+            summary[key] = value.clone();
+        }
+    }
     summary
 }
 
@@ -230,6 +239,7 @@ mod tests {
                 ]
             },
             "canUndo": true, "canRedo": false,
+            "sessionId": 42, "revision": 17,
             "settings": { "name": "P", "width": 1920, "height": 1080, "rateNum": 30000, "rateDen": 1001 },
             "createdId": "c2"
         });
@@ -238,6 +248,8 @@ mod tests {
         assert_eq!(summary["timeline"]["id"], "tl2");
         assert_eq!(summary["timeline"]["duration"], 6.0);
         assert_eq!(summary["createdId"], "c2");
+        assert_eq!(summary["sessionId"], 42);
+        assert_eq!(summary["revision"], 17);
         assert_eq!(summary["timelines"].as_array().map(Vec::len), Some(2));
         let clips = summary["timeline"]["clips"].as_array().expect("clips");
         assert_eq!(clips[0]["id"], "c1", "time order");

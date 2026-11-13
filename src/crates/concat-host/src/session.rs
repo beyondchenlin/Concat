@@ -14,11 +14,25 @@
 use concat_project::model::VideoSettings;
 use concat_project::{Command, DocumentSettings, Editor, Project};
 use serde::Serialize;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::projects;
 
+static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_session_id() -> Result<u64, String> {
+    NEXT_SESSION_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+        .map_err(|_| "native session identity exhausted".to_owned())
+}
+
 /// One open project: its folder, its settings and its undo history.
 pub struct Session {
+    /// Identity of this open, never reused within a native process.
+    session_id: u64,
+    /// Advances for manual edits, agent edits, undo, redo, names and view changes.
+    revision: u64,
     /// The project folder, for saving.
     path: String,
     settings: DocumentSettings,
@@ -36,6 +50,10 @@ pub struct Session {
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct EditorView {
+    /// Identity of this particular open; a path alone is not an edit target.
+    pub session_id: u64,
+    /// Revision which an agent plan must retain until native submission.
+    pub revision: u64,
     /// The whole project, as the engine holds it.
     pub project: Project,
     /// Whether there is something to undo.
@@ -125,6 +143,8 @@ impl Session {
         // the clips, with the clips named for the window to say so.
         let retired = editor.drop_retired_fields();
         Ok(Session {
+            session_id: next_session_id()?,
+            revision: 0,
             path: path.to_owned(),
             settings,
             editor,
@@ -162,9 +182,46 @@ impl Session {
         &self.retired
     }
 
+    /// A copy of this session as it stands, with no history: what renders
+    /// or reads the project off the thread that owns it - an API caller's
+    /// export of the project open in the window. Cheap, since timelines are
+    /// shared until edited.
+    pub fn snapshot(&self) -> Session {
+        Session {
+            session_id: self.session_id,
+            revision: self.revision,
+            path: self.path.clone(),
+            settings: self.settings.clone(),
+            editor: Editor::from_project(self.editor.project().clone()),
+            upgraded: Vec::new(),
+            retired: Default::default(),
+        }
+    }
+
     /// The project folder.
     pub fn path(&self) -> &str {
         &self.path
+    }
+
+    /// Identity of the current open, including when a path is reopened.
+    pub fn session_id(&self) -> u64 {
+        self.session_id
+    }
+
+    /// Current revision, shared by manual and guarded agent edits.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Reject a plan made for a closed open-session or an older edit.
+    pub fn check_revision(&self, session_id: u64, revision: u64) -> Result<(), String> {
+        if self.session_id != session_id {
+            return Err("the plan belongs to another open project session".to_owned());
+        }
+        if self.revision != revision {
+            return Err("the project changed after the plan was read".to_owned());
+        }
+        Ok(())
     }
 
     /// The session's settings: the project's name, and the frame and rate of
@@ -223,6 +280,8 @@ impl Session {
     fn view_with(&self, created_id: Option<String>) -> EditorView {
         let settings = self.settings();
         EditorView {
+            session_id: self.session_id,
+            revision: self.revision,
             project: self.editor.project().clone(),
             can_undo: self.editor.can_undo(),
             can_redo: self.editor.can_redo(),
@@ -250,10 +309,42 @@ impl Session {
         gesture: Option<&str>,
         command: Command,
     ) -> Result<EditorView, String> {
+        let next = self
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| "native project revision exhausted".to_owned())?;
         let outcome = self
             .editor
             .apply_within(gesture, command)
             .map_err(|error| error.to_string())?;
+        if outcome.applied {
+            self.revision = next;
+        }
+        Ok(self.view_with(outcome.created_id))
+    }
+
+    /// Submit a strict agent batch on the native edit thread. The caller must
+    /// hold a valid host permit and collect the window's current track locks in
+    /// that same callback. Rejection preserves the edit and its history.
+    pub fn apply_guarded(
+        &mut self,
+        command: Command,
+        locked_tracks: &HashSet<String>,
+        expected_session: u64,
+        expected_revision: u64,
+    ) -> Result<EditorView, String> {
+        self.check_revision(expected_session, expected_revision)?;
+        let next = self
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| "native project revision exhausted".to_owned())?;
+        let outcome = self
+            .editor
+            .apply_guarded(command, locked_tracks)
+            .map_err(|error| error.to_string())?;
+        if outcome.applied {
+            self.revision = next;
+        }
         Ok(self.view_with(outcome.created_id))
     }
 
@@ -265,13 +356,17 @@ impl Session {
 
     /// Steps the history back one edit.
     pub fn undo(&mut self) -> EditorView {
-        self.editor.undo();
+        if self.revision < u64::MAX && self.editor.undo() {
+            self.revision += 1;
+        }
         self.view()
     }
 
     /// Steps the history forward one edit.
     pub fn redo(&mut self) -> EditorView {
-        self.editor.redo();
+        if self.revision < u64::MAX && self.editor.redo() {
+            self.revision += 1;
+        }
         self.view()
     }
 
@@ -279,20 +374,31 @@ impl Session {
     /// write: the folder and the document. The frame is not a parameter any
     /// more - it is the active timeline's, set through [`Session::set_video`]
     /// as an edit. The disk write is the caller's, so it can happen off the
-    /// thread that owns the session; [`Session::save`] does both.
-    pub fn prepare_save(&mut self, name: Option<&str>) -> (String, serde_json::Value) {
+    /// thread that owns the session; [`Session::save`] does both. A changed
+    /// name advances the same revision as native edits, before any snapshot is
+    /// captured. An older save completion must not mark that new name saved.
+    /// Revision exhaustion refuses the rename without changing the document.
+    pub fn prepare_save(
+        &mut self,
+        name: Option<&str>,
+    ) -> Result<(String, serde_json::Value), String> {
         if let Some(name) = name {
             let trimmed = name.trim();
-            if !trimmed.is_empty() {
+            if !trimmed.is_empty() && trimmed != self.settings.name.as_str() {
+                let next = self
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| "native project revision exhausted".to_owned())?;
                 self.settings.name = trimmed.to_owned();
+                self.revision = next;
             }
         }
-        (self.path.clone(), self.editor.to_document(&self.settings))
+        Ok((self.path.clone(), self.editor.to_document(&self.settings)))
     }
 
     /// Writes the session's document to its project folder.
     pub fn save(&mut self, name: Option<&str>) -> Result<(), String> {
-        let (path, document) = self.prepare_save(name);
+        let (path, document) = self.prepare_save(name)?;
         projects::save(&path, &document)
     }
 
@@ -316,6 +422,186 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reopening_the_same_path_invalidates_a_plan() {
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().to_str().unwrap();
+        let first = Session::open(path, settings()).unwrap();
+        let second = Session::open(path, settings()).unwrap();
+        assert_ne!(first.session_id(), second.session_id());
+        assert!(
+            second
+                .check_revision(first.session_id(), first.revision())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn manual_edit_and_undo_still_invalidate_old_plans() {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut session = Session::open(scratch.path().to_str().unwrap(), settings()).unwrap();
+        let original = session.document();
+        let id = session.session_id();
+        let revision = session.revision();
+        session.apply(Command::AddTrack { bottom: false }).unwrap();
+        session.undo();
+        assert_eq!(session.document(), original);
+        assert!(session.check_revision(id, revision).is_err());
+        let before_redo = session.revision();
+        session.redo();
+        assert!(session.revision() > before_redo);
+    }
+
+    #[test]
+    fn lock_rejection_does_not_advance_a_native_session_revision() {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut session = Session::open(scratch.path().to_str().unwrap(), settings()).unwrap();
+        let track = session.project().active().tracks[0].id.clone();
+        let id = session.session_id();
+        let revision = session.revision();
+        let before = session.document();
+        let command = Command::AddTextClip {
+            track_id: Some(track.clone()),
+            above: false,
+            start: 0.0,
+            style: None,
+            duration: Some(2.0),
+            offset_y: None,
+        };
+        assert!(
+            session
+                .apply_guarded(command.clone(), &HashSet::from([track]), id, revision)
+                .is_err()
+        );
+        assert_eq!(session.revision(), revision);
+        assert_eq!(session.document(), before);
+        assert!(!session.can_undo());
+        session
+            .apply_guarded(command, &HashSet::new(), id, revision)
+            .unwrap();
+        assert!(session.revision() > revision);
+        session.undo();
+        assert_eq!(session.document(), before);
+    }
+
+    #[test]
+    fn renaming_invalidates_plans_but_unchanged_or_empty_names_do_not() {
+        let scratch = tempfile::tempdir().expect("isolated project");
+        let mut session =
+            Session::open(scratch.path().to_str().unwrap(), settings()).expect("opens");
+        let id = session.session_id();
+        let before = session.revision();
+        let (_, renamed) = session
+            .prepare_save(Some("  Renamed  "))
+            .expect("prepares the changed name");
+        assert_eq!(session.settings().name, "Renamed");
+        assert_eq!(renamed["name"], "Renamed");
+        assert_eq!(session.revision(), before + 1);
+        assert!(
+            session.check_revision(id, before).is_err(),
+            "old plans are stale"
+        );
+
+        let current = session.revision();
+        for name in [
+            None,
+            Some("Renamed"),
+            Some("  Renamed  "),
+            Some(""),
+            Some(" \t\n "),
+        ] {
+            let (_, document) = session
+                .prepare_save(name)
+                .expect("captures without renaming");
+            assert_eq!(document, renamed);
+            assert_eq!(session.revision(), current, "no new document version");
+        }
+
+        session.revision = u64::MAX;
+        assert!(session.prepare_save(Some("Cannot fit")).is_err());
+        assert_eq!(session.revision(), u64::MAX);
+        assert_eq!(
+            session.document(),
+            renamed,
+            "exhaustion does not partially rename"
+        );
+        assert!(session.prepare_save(Some("Renamed")).is_ok());
+        assert!(
+            session.prepare_save(None).is_ok(),
+            "an unchanged save still works"
+        );
+    }
+
+    #[test]
+    fn an_old_snapshot_written_after_a_rename_is_not_the_current_saved_version() {
+        let scratch = tempfile::tempdir().expect("isolated project");
+        let info = projects::create(
+            scratch.path().to_str().unwrap(),
+            "Before",
+            1920,
+            1080,
+            30,
+            1,
+            [0, 0, 0, 255],
+        )
+        .expect("creates a real project");
+        let mut session = Session::open_info(&info).expect("opens");
+        let (path, old_document) = session.prepare_save(None).expect("captures old save");
+        let old_ticket = projects::ticket();
+        let saved_session = session.session_id();
+        let saved_revision = session.revision();
+
+        session
+            .prepare_save(Some("After"))
+            .expect("renames while old save is pending");
+        // The native project panel also submits the unchanged video settings.
+        // That no-op must not erase the revision allocated by the name change.
+        session
+            .set_video(session.video())
+            .expect("unchanged video settings");
+        assert_eq!(
+            projects::save_ordered(&path, &old_document, old_ticket).expect("writes old capture"),
+            projects::Saved::Written
+        );
+        assert_eq!(
+            projects::read_document(&path).expect("reads actual disk"),
+            Some(old_document)
+        );
+        assert_eq!(
+            projects::open(&path).expect("opens actual manifest").name,
+            "Before"
+        );
+        assert_eq!(session.settings().name, "After");
+        // This is the same check the window's save completion uses before it
+        // clears the unsaved marker or announces a successful current save.
+        assert!(
+            session
+                .check_revision(saved_session, saved_revision)
+                .is_err()
+        );
+
+        let (path, new_document) = session.prepare_save(None).expect("captures current save");
+        let current_revision = session.revision();
+        assert_eq!(
+            projects::save_ordered(&path, &new_document, projects::ticket())
+                .expect("writes current capture"),
+            projects::Saved::Written
+        );
+        assert_eq!(
+            projects::read_document(&path).expect("reads current disk"),
+            Some(new_document)
+        );
+        assert_eq!(
+            projects::open(&path).expect("opens current manifest").name,
+            "After"
+        );
+        assert!(
+            session
+                .check_revision(saved_session, current_revision)
+                .is_ok()
+        );
+    }
 
     fn settings() -> DocumentSettings {
         DocumentSettings {
@@ -385,6 +671,33 @@ mod tests {
             session.project().active().tracks.len()
         );
 
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[test]
+    fn a_snapshot_is_the_project_as_it_stands_and_leaves_the_session_alone() {
+        let scratch =
+            std::env::temp_dir().join(format!("concat-snapshot-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        std::fs::create_dir_all(&scratch).expect("scratch dir");
+        let mut session = Session::open(&scratch.to_string_lossy(), settings()).expect("opens");
+        session
+            .apply(Command::AddTrack { bottom: false })
+            .expect("adds a track");
+
+        let mut snapshot = session.snapshot();
+        assert_eq!(snapshot.document(), session.document(), "the same document");
+        assert_eq!(snapshot.path(), session.path());
+        assert!(!snapshot.can_undo(), "with no history of its own");
+
+        snapshot
+            .apply(Command::AddTrack { bottom: false })
+            .expect("a snapshot edits like any session");
+        assert_ne!(
+            snapshot.project().active().tracks.len(),
+            session.project().active().tracks.len(),
+            "without reaching the session it was taken from"
+        );
         let _ = std::fs::remove_dir_all(&scratch);
     }
 

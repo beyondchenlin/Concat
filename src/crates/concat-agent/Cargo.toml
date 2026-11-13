@@ -1,0 +1,10 @@
+[package]
+name = "concat-agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Native ownership and recovery admission for the embedded agent host"
+
+[lints]
+workspace = true

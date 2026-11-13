@@ -1271,7 +1271,8 @@ struct Feed<'a> {
     path: &'a Path,
     next: Option<ffmpeg::Packet>,
     done: bool,
-    /// When the packet last written stops showing, in seconds.
+    /// The latest presentation end of any packet written, in seconds.
+    /// Decode order can end with a B-frame shown before an earlier packet.
     end: Rational,
 }
 
@@ -1340,7 +1341,7 @@ impl<'a> Feed<'a> {
         if let Some(ticks) = packet.pts().or(packet.dts())
             && let Some(end) = ffi::seconds(ticks + packet.duration(), self.from)
         {
-            self.end = end;
+            self.end = self.end.max(end);
         }
         packet.set_stream(self.stream);
         packet.rescale_ts(self.from, self.to);
@@ -1674,6 +1675,106 @@ mod tests {
             "the sound is there too, not {} packets",
             counts[1]
         );
+    }
+
+    /// A stream ends at its greatest presentation end, not at the end of
+    /// its final packet in decode order. Reordered B-frames must not cut
+    /// the sound short; sound longer than the picture must still be cut.
+    #[test]
+    fn reordered_video_packets_do_not_cut_the_audio_short() {
+        use crate::{
+            AudioDecoder, AudioOptions, DecodeOptions, Decoder, EncodeOptions, Encoder, FrameSink,
+            FrameSource, SampleFormat, VideoCodec,
+        };
+        use concat_core::frame::Frame;
+        use concat_core::time::FrameRate;
+
+        let dir = std::env::temp_dir().join(format!("concat-mux-reordered-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("creates a folder");
+        let video = dir.join("picture.mp4");
+        let tone = dir.join("tone.wav");
+        let audio = dir.join("sound.m4a");
+        let output = dir.join("joined.mp4");
+        let frames = 144;
+        {
+            // The built-in MPEG-4 encoder uses two B-frames. This does not
+            // rely on a particular GPU or hardware encoder being present.
+            let options = EncodeOptions {
+                codec: VideoCodec::Mpeg4,
+                hardware: false,
+                ..EncodeOptions::default()
+            };
+            let mut encoder = Encoder::create(&video, 64, 64, FrameRate::FILM, &options)
+                .expect("opens the software encoder");
+            let frame = Frame::black(64, 64);
+            for _ in 0..frames {
+                encoder.write_frame(&frame).expect("writes the frame");
+            }
+            encoder.finish().expect("finishes the picture");
+        }
+        {
+            let mut input = ffmpeg::format::input(&video).expect("opens the picture");
+            let mut last_end = Rational::ZERO;
+            let mut maximum_end = Rational::ZERO;
+            for item in input.packets() {
+                let (stream, packet) = item.expect("reads the picture packet");
+                let end = ffi::seconds(
+                    packet.pts().expect("has a presentation time") + packet.duration(),
+                    stream.time_base(),
+                )
+                .expect("has a valid time base");
+                last_end = end;
+                maximum_end = maximum_end.max(end);
+            }
+            assert_eq!(maximum_end, Rational::from_int(6));
+            assert!(
+                last_end < maximum_end,
+                "the fixture must end with a reordered packet: last {last_end:?}, max {maximum_end:?}"
+            );
+        }
+        tone_wav(&tone, 7.0);
+        let piece = AudioClip {
+            path: tone,
+            duration: 7.0,
+            ..clip("")
+        };
+        mix_to_file(&[piece], 7.0, &audio).expect("mixes the longer sound");
+        mux(&video, &audio, &output).expect("muxes the picture and sound");
+
+        assert_eq!(packets_of(&output)[0], frames, "keeps every picture packet");
+        {
+            let mut decoder =
+                Decoder::open(&output, &DecodeOptions::default().in_software()).expect("opens");
+            let mut decoded = 0;
+            while decoder.next_frame().expect("decodes the picture").is_some() {
+                decoded += 1;
+            }
+            assert_eq!(decoded, frames, "keeps every displayed frame");
+        }
+        {
+            let options = AudioOptions {
+                rate: MIX_RATE,
+                channels: 2,
+                format: SampleFormat::F32,
+                ..AudioOptions::default()
+            };
+            let mut decoder = AudioDecoder::open(&output, &options).expect("opens the sound");
+            let samples = decoder.collect_f32().expect("decodes all of the sound");
+            let wanted = 6 * MIX_RATE as usize;
+            let decoded = samples.len() / 2;
+            assert!(
+                (wanted..=wanted + 1024).contains(&decoded),
+                "sound must reach the picture end and exceed it by at most one AAC frame: \
+                 {decoded} samples per channel, expected {wanted}"
+            );
+            let tail = &samples[(wanted - MIX_RATE as usize / 50) * 2..wanted * 2];
+            let power = tail.iter().map(|sample| sample * sample).sum::<f32>() / tail.len() as f32;
+            assert!(
+                power > 0.01,
+                "the final 20 ms contains the tone, not silence"
+            );
+        }
+        std::fs::remove_dir_all(dir).expect("removes the isolated test files");
     }
 
     /// The export's mix keeps a file's sound with its picture whichever

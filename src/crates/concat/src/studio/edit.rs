@@ -380,6 +380,41 @@ impl Studio {
         }
     }
 
+    /// The embedded agent's sole edit-thread entry. Track locks are window
+    /// state, so collect them here immediately before native submission. A
+    /// pointer gesture or pending inspector change must finish before a plan
+    /// can be re-read; flushing it here would change the plan's base revision.
+    pub(crate) fn apply_agent(
+        &mut self,
+        command: Command,
+        expected_session: u64,
+        expected_revision: u64,
+    ) -> Result<concat_host::session::EditorView, String> {
+        if !matches!(self.gesture, Gesture::None) || self.echo.is_some() || self.commit_pending {
+            return Err("finish the current manual edit and read the project again".to_owned());
+        }
+        let locked: HashSet<String> = self
+            .lanes
+            .lane_view
+            .iter()
+            .filter(|(_, view)| view.locked)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| "no project is open".to_owned())?;
+        let before = session.revision();
+        let result =
+            session.apply_guarded(command, &locked, expected_session, expected_revision)?;
+        if result.revision != before {
+            self.end_burst();
+            self.last_commit = None;
+            self.after_change();
+        }
+        Ok(result)
+    }
+
     /// [`Studio::apply`] as one move of an inspector gesture: the same
     /// bookkeeping, but the editor folds it into the gesture's undo step
     /// and the coalescing window stays open for the next move.
@@ -505,19 +540,41 @@ impl Studio {
             return;
         };
         self.autosave.stop();
-        let (path, document) = session.prepare_save(None);
+        let (path, document) = match session.prepare_save(None) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.dirty = true;
+                self.notify(&tf("studio.couldNotSave", &[&error]), true);
+                return;
+            }
+        };
         // Capture the write order with the snapshot, not later when a
         // worker happens to pick it up.
         let ticket = projects::ticket();
-        self.dirty = false;
+        let saved_session = session.session_id();
+        let saved_revision = session.revision();
         crate::host::spawn_in_project_publishing(
             move || projects::save_ordered(&path, &document, ticket),
-            move |studio, _, _, result| match result {
-                Ok(_) if announce => studio.notify(&t("studio.projectSaved"), false),
-                Ok(_) => {}
-                Err(error) => {
-                    studio.dirty = true;
-                    studio.notify(&tf("studio.couldNotSave", &[&error]), true);
+            move |studio, _, _, result| {
+                let current = studio.session.as_ref().is_some_and(|session| {
+                    session
+                        .check_revision(saved_session, saved_revision)
+                        .is_ok()
+                });
+                match result {
+                    Ok(projects::Saved::Written) if current => {
+                        studio.dirty = false;
+                        if announce {
+                            studio.notify(&t("studio.projectSaved"), false);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        if current {
+                            studio.dirty = true;
+                        }
+                        studio.notify(&tf("studio.couldNotSave", &[&error]), true);
+                    }
                 }
             },
             |studio, app, _| studio.publish_status(app),

@@ -193,7 +193,7 @@ pub fn catalogue() -> Vec<Tool> {
         method(
             "project_open",
             "Open a project",
-            "Opens a project folder so it can be read and edited. Opening one already open returns it as it stands, unsaved edits included. Refused when the Concat window has that project open. Returns the project summary.",
+            "Opens a project folder so it can be read and edited. Opening one already open returns it as it stands, unsaved edits included. The project open in the Concat window is refused, unless the window lets scripts edit it (Settings > Automation, and `project.live` among `version`'s capabilities): then every call naming it runs in the window, where the person watches each edit land and can undo it. Returns the project summary.",
             "project.open",
             Summary,
         )
@@ -201,7 +201,7 @@ pub fn catalogue() -> Vec<Tool> {
         method(
             "project_save",
             "Save a project",
-            "Writes an open project's document to its folder; edits are only in memory until this is called. `name` renames the project as it saves.",
+            "Writes an open project's document to its folder; edits are only in memory until this is called. `name` renames the project as it saves. The project open in the window saves itself as it is edited, and is renamed there, not here.",
             "project.save",
             Raw,
         )
@@ -209,7 +209,7 @@ pub fn catalogue() -> Vec<Tool> {
         method(
             "project_close",
             "Close a project",
-            "Closes an open project. With `save: true` it is saved first; otherwise unsaved edits are dropped.",
+            "Closes an open project. With `save: true` it is saved first; otherwise unsaved edits are dropped. The project open in the window is the window's to close: leave it open.",
             "project.close",
             Raw,
         )
@@ -261,6 +261,14 @@ pub fn catalogue() -> Vec<Tool> {
             "edit.apply",
             Summary,
         ),
+        method(
+            "edit_apply_guarded",
+            "Apply an edit to the current native project",
+            "Submits a batch to the currently open native project. First read project_get or timeline_read and retain sessionId and revision; pass them as expectedSession and expectedRevision with the same path. The native editing thread rechecks ownership, the current session, revision, and every affected track lock before applying the whole batch as one undoable step. A stale plan or locked track refuses the whole batch. This tool never falls back to edit_apply or opens a private copy. After an interrupted or ambiguous call, read and reconcile before a new user-approved plan; do not retry automatically.",
+            "edit.applyGuarded",
+            Summary,
+        )
+        .destroying(),
         method(
             "edit_undo",
             "Undo",
@@ -555,8 +563,25 @@ impl Toolbox {
     /// Panics on a tool whose method or command the API does not have: a
     /// test builds this, so the panic is a failed build, not a user's.
     pub fn new() -> Toolbox {
+        Self::from_tools(catalogue())
+    }
+
+    /// The embedded agent's reviewed surface. This list is enforced when
+    /// calling as well as when listing: hidden legacy edits cannot be
+    /// reached by guessing their names. The caller supplies the current
+    /// window backend; this toolbox never discovers or creates one.
+    pub fn embedded() -> Toolbox {
+        Self::from_tools(catalogue().into_iter().filter(|tool| {
+            matches!(
+                tool.name,
+                "concat_version" | "project_get" | "timeline_read" | "edit_apply_guarded"
+            )
+        }))
+    }
+
+    fn from_tools(tools: impl IntoIterator<Item = Tool>) -> Toolbox {
         let schemas = Schemas::generate();
-        let tools = catalogue()
+        let tools = tools
             .into_iter()
             .map(|tool| {
                 let schema = input_schema(&schemas, &tool)
@@ -1002,6 +1027,11 @@ mod tests {
             (
                 "edit_apply",
                 json!({ "path": "/tmp/Cut", "command": { "op": "addTrack" } }),
+            ),
+            (
+                "edit_apply_guarded",
+                json!({ "path": "/tmp/Cut", "expectedSession": 1, "expectedRevision": 0,
+                    "command": { "op": "batch", "commands": [{ "op": "addTextClip", "start": 0.0, "duration": 1.0 }] } }),
             ),
             ("edit_undo", json!({ "path": "/tmp/Cut" })),
             ("edit_redo", json!({ "path": "/tmp/Cut" })),

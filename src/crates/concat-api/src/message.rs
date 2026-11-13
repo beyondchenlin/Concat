@@ -129,6 +129,20 @@ pub enum Request {
         /// request carries; the JSON is the command as it is.
         command: Box<Command>,
     },
+    /// Apply a strict batch to the current native window, retaining the open
+    /// session and revision read when the plan was made. The embedded host's
+    /// native ownership permit is checked independently of these wire values.
+    #[serde(rename = "edit.applyGuarded")]
+    EditApplyGuarded {
+        /// The current project folder.
+        path: String,
+        /// Identity returned by project.get for this particular open.
+        expected_session: u64,
+        /// Revision returned by project.get when planning this batch.
+        expected_revision: u64,
+        /// A batch from the strict native agent command whitelist.
+        command: Box<Command>,
+    },
     /// Steps the history back one edit.
     #[serde(rename = "edit.undo")]
     EditUndo {
@@ -353,7 +367,9 @@ pub struct VersionInfo {
     /// what the API itself provides in every build, `events`, and what
     /// only some builds do, `gpu` when frames composite on one; then what
     /// the transport around it adds, `json-rpc`, `unix-socket` and `grpc`
-    /// for each of the socket transports listening. A name absent from
+    /// for each of the socket transports listening; and `project.live`
+    /// from a window that can lend the project it has open, when its
+    /// Automation page lets scripts edit it. A name absent from
     /// the list is not served, whatever the build; a name added later is
     /// not a version bump, so a caller ignores names it does not know.
     pub capabilities: Vec<String>,

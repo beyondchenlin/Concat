@@ -461,7 +461,10 @@ mod tests {
         // Every tool's schema sits in the agent's context for the whole
         // session. Measured at about 162 KB in all once shapes became
         // editable figures (#288), 61 KB of it the whole edit vocabulary
-        // under edit_apply; cutting nested descriptions to one sentence
+        // under edit_apply. The guarded entry carries the same complete
+        // vocabulary plus its concurrency fields, so the CLI catalogue
+        // includes one further copy. The embedded profile below keeps
+        // only the guarded vocabulary. Cutting nested descriptions
         // saved only 7% and lost what agents need. A type that grows past
         // these is worth a look before it ships.
         let toolbox = crate::tools::Toolbox::new();
@@ -471,10 +474,24 @@ mod tests {
             .map(|tool| (tool["name"].to_string(), tool.to_string().len()))
             .collect();
         let total: usize = sizes.iter().map(|(_, size)| size).sum();
-        assert!(total < 180_000, "{total}: {sizes:?}");
+        assert!(total < 252_000, "{total}: {sizes:?}");
         for (name, size) in &sizes {
             assert!(*size < 72_000, "{name}: {size}");
         }
+    }
+
+    #[test]
+    fn the_embedded_list_contains_only_one_edit_vocabulary() {
+        let list = crate::tools::Toolbox::embedded().list();
+        assert_eq!(list.len(), 4);
+        let total: usize = list.iter().map(|tool| tool.to_string().len()).sum();
+        assert!(total < 80_000, "embedded tool context: {total} bytes");
+        assert_eq!(
+            list.iter()
+                .filter(|tool| tool["annotations"]["readOnlyHint"] == false)
+                .count(),
+            1,
+        );
     }
 
     #[test]
