@@ -8,6 +8,7 @@
 //! *before* the project was touched. Reopening only inspects; it never replays.
 //! This is deliberately separate from Pi's original session database.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read};
@@ -60,6 +61,22 @@ pub enum Admission {
         /// Previously persisted native editor receipt.
         receipt: Value,
     },
+    /// This call was conclusively refused without modifying the project.
+    PreviouslyRejected {
+        /// The durable identity is retained, so the call cannot run later.
+        operation_id: u64,
+        /// The original native refusal, not an invented edit receipt.
+        error: Value,
+    },
+}
+
+/// Save evidence created by this live journal, awaiting actual page delivery.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SavedOperation {
+    /// Durable native operation identity.
+    pub operation_id: u64,
+    /// The same verified disk bytes recorded in the journal.
+    pub saved: Value,
 }
 
 /// A read-only summary. It does not authorize replay or recovery.
@@ -73,6 +90,8 @@ pub struct JournalInspection {
     pub saved_not_notified: u64,
     /// Completed operations that received a native notification ack.
     pub notified: u64,
+    /// Proven zero-change native results, requiring neither save nor replay.
+    pub not_applied: u64,
 }
 
 /// Every journal error is fail-closed. None allows automatic replay.
@@ -154,7 +173,17 @@ impl From<io::Error> for JournalError {
 /// process ownership lock until every native connection has actually closed.
 pub struct OperationJournal {
     connection: Mutex<Connection>,
+    transient: Mutex<Transient>,
     permit: OperationPermit,
+}
+
+#[derive(Default)]
+struct Transient {
+    // Only a real Written callback can insert these. Losing them to a crash
+    // leaves the intent ambiguous, never falsely applied or saved.
+    early_saves: BTreeMap<(String, u64, u64), String>,
+    current_operations: BTreeSet<u64>,
+    notifications: Vec<SavedOperation>,
 }
 
 impl OperationJournal {
@@ -166,6 +195,7 @@ impl OperationJournal {
         let connection = permit.with_valid(|| open_connection(&path))??;
         Ok(Self {
             connection: Mutex::new(connection),
+            transient: Mutex::new(Transient::default()),
             permit,
         })
     }
@@ -212,12 +242,29 @@ impl OperationJournal {
             )?;
             let id = u64::try_from(id).map_err(|_| JournalError::InvalidSchema)?;
             if prior_request != request { return Err(JournalError::ConflictingInvocation); }
-            if inserted == 1 { return Ok(Admission::New(id)); }
+            if inserted == 1 {
+                self.transient.lock().map_err(|_| JournalError::Poisoned)?
+                    .current_operations.insert(id);
+                return Ok(Admission::New(id));
+            }
             match receipt {
-                Some(receipt) => Ok(Admission::AlreadyApplied {
-                    operation_id: id,
-                    receipt: serde_json::from_str(&receipt).map_err(|_| JournalError::InvalidSchema)?,
-                }),
+                Some(receipt) => {
+                    let receipt: Value = serde_json::from_str(&receipt)
+                        .map_err(|_| JournalError::InvalidSchema)?;
+                    if receipt.get("nativeOutcome").and_then(Value::as_str) == Some("not-applied") {
+                        Ok(Admission::PreviouslyRejected {
+                            operation_id: id,
+                            error: receipt.get("error").cloned().ok_or(JournalError::InvalidSchema)?,
+                        })
+                    } else if receipt.get("nativeOutcome").and_then(Value::as_str) == Some("unchanged") {
+                        Ok(Admission::AlreadyApplied {
+                            operation_id: id,
+                            receipt: receipt.get("reply").cloned().ok_or(JournalError::InvalidSchema)?,
+                        })
+                    } else {
+                        Ok(Admission::AlreadyApplied { operation_id: id, receipt })
+                    }
+                },
                 None => Err(JournalError::NeedsReconciliation { operation_id: id }),
             }
         })?
@@ -232,24 +279,98 @@ impl OperationJournal {
         revision: u64,
         reply: &Value,
     ) -> Result<(), JournalError> {
-        let operation_id =
-            i64::try_from(operation_id).map_err(|_| JournalError::InvalidTransition)?;
+        if reply.get("sessionId").and_then(Value::as_u64) != Some(session)
+            || reply.get("revision").and_then(Value::as_u64) != Some(revision)
+        {
+            return Err(JournalError::InvalidTransition);
+        }
+        let id = i64::try_from(operation_id).map_err(|_| JournalError::InvalidTransition)?;
         let reply = serde_json::to_string(reply).map_err(|_| JournalError::InvalidTransition)?;
         let connection = self.connection()?;
         self.permit.with_valid(|| -> Result<(), JournalError> {
-            let changed = connection.execute(
-                "UPDATE operations SET receipt=?1, result_session=?2, result_revision=?3 \
-                 WHERE id=?4 AND receipt IS NULL",
-                params![
-                    reply,
-                    session.to_string(),
-                    revision.to_string(),
-                    operation_id
-                ],
+            let mut transient = self.transient.lock().map_err(|_| JournalError::Poisoned)?;
+            let transaction = connection.unchecked_transaction()?;
+            let project: String = transaction.query_row(
+                "SELECT project FROM operations WHERE id=?1 AND session=?2 AND receipt IS NULL",
+                params![id, session.to_string()], |row| row.get(0),
+            ).optional()?.ok_or(JournalError::InvalidTransition)?;
+            let key = (project.clone(), session, revision);
+            let saved = transient.early_saves.get(&key).cloned();
+            let changed = transaction.execute(
+                "UPDATE operations SET receipt=?1, result_session=?2, result_revision=?3, saved=?4 \
+                 WHERE id=?5 AND receipt IS NULL",
+                params![reply, session.to_string(), revision.to_string(), saved, id],
             )?;
             if changed != 1 {
                 return Err(JournalError::InvalidTransition);
             }
+            let still_pending: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM operations WHERE project=?1 AND session=?2 AND receipt IS NULL)",
+                params![project, session.to_string()], |row| row.get(0),
+            )?;
+            transaction.commit()?;
+            transient.early_saves.remove(&key);
+            if !still_pending {
+                transient.early_saves.retain(|(path, saved_session, _), _|
+                    path != &project || *saved_session != session);
+            }
+            if let Some(saved) = saved {
+                enqueue_saved(&mut transient, operation_id, &saved)?;
+            }
+            Ok(())
+        })?
+    }
+
+    /// Set a separate terminal receipt only for a proven zero-change native
+    /// refusal. Busy, failed, or unknown outcomes remain ambiguous intents.
+    /// No saved/notified state is invented for an edit that never happened.
+    pub fn record_rejected(&self, operation_id: u64, error: &Value) -> Result<(), JournalError> {
+        if !matches!(
+            error.get("code").and_then(Value::as_str),
+            Some("refused" | "notOpen" | "invalid" | "cancelled")
+        ) {
+            return Err(JournalError::InvalidTransition);
+        }
+        let operation_id =
+            i64::try_from(operation_id).map_err(|_| JournalError::InvalidTransition)?;
+        let receipt = serde_json::json!({"nativeOutcome":"not-applied","error":error}).to_string();
+        let connection = self.connection()?;
+        self.permit.with_valid(|| -> Result<(), JournalError> {
+            let changed = connection.execute(
+                "UPDATE operations SET receipt=?1 WHERE id=?2 AND receipt IS NULL",
+                params![receipt, operation_id],
+            )?;
+            if changed != 1 {
+                return Err(JournalError::InvalidTransition);
+            }
+            Ok(())
+        })?
+    }
+
+    /// The current native editor explicitly returned the same session and
+    /// revision as this intent: the command was a no-op, so no save is due.
+    pub fn record_unchanged(
+        &self,
+        operation_id: u64,
+        session: u64,
+        revision: u64,
+        reply: &Value,
+    ) -> Result<(), JournalError> {
+        if reply.get("sessionId").and_then(Value::as_u64) != Some(session)
+            || reply.get("revision").and_then(Value::as_u64) != Some(revision)
+        {
+            return Err(JournalError::InvalidTransition);
+        }
+        let operation_id =
+            i64::try_from(operation_id).map_err(|_| JournalError::InvalidTransition)?;
+        let receipt = serde_json::json!({"nativeOutcome":"unchanged","reply":reply}).to_string();
+        let connection = self.connection()?;
+        self.permit.with_valid(|| -> Result<(), JournalError> {
+            let changed = connection.execute(
+                "UPDATE operations SET receipt=?1 WHERE id=?2 AND receipt IS NULL AND session=?3 AND expected_revision=?4",
+                params![receipt,operation_id,session.to_string(),revision.to_string()],
+            )?;
+            if changed != 1 { return Err(JournalError::InvalidTransition); }
             Ok(())
         })?
     }
@@ -265,42 +386,110 @@ impl OperationJournal {
         session: u64,
         revision: u64,
     ) -> Result<u64, JournalError> {
+        self.record_saved_checked(project_path, session, revision, None)
+    }
+
+    /// Product save callbacks must supply the exact document captured by the
+    /// native save task. Validation and hashing use the same file bytes, so a
+    /// late Written callback cannot credit a different document now at the path.
+    /// A save that wins the race before its edit receipt yields zero rows and
+    /// retains its verified evidence in this live journal. The later matching
+    /// receipt atomically joins both facts. A crash loses that candidate and
+    /// still requires reconciliation; no missing receipt is invented.
+    pub fn record_saved_document(
+        &self,
+        project_path: &str,
+        session: u64,
+        revision: u64,
+        expected_document: &Value,
+    ) -> Result<u64, JournalError> {
+        self.record_saved_checked(project_path, session, revision, Some(expected_document))
+    }
+
+    fn record_saved_checked(
+        &self,
+        project_path: &str,
+        session: u64,
+        revision: u64,
+        expected_document: Option<&Value>,
+    ) -> Result<u64, JournalError> {
         if project_path.trim().is_empty() {
             return Err(JournalError::InvalidSaveEvidence);
         }
         let path = Path::new(project_path).join("concat.json");
-        let connection = self.connection()?;
-        self.permit.with_valid(|| -> Result<u64, JournalError> {
-            let mut file = File::open(&path)?;
-            let metadata = file.metadata()?;
-            if !metadata.is_file() || metadata.len() == 0 {
+        self.permit.with_valid(|| ())?;
+        // Read-only I/O, parsing and hashing must not hold the ownership gate:
+        // a slow project disk must not block the native Stop action. The live
+        // permit retains the process lock, and the commit rechecks authority.
+        let mut file = File::open(&path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() == 0 {
+            return Err(JournalError::InvalidSaveEvidence);
+        }
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            self.permit.with_valid(|| ())?;
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..read]);
+        }
+        if metadata.len() != bytes.len() as u64 {
+            return Err(JournalError::InvalidSaveEvidence);
+        }
+        if let Some(expected) = expected_document {
+            let actual: Value =
+                serde_json::from_slice(&bytes).map_err(|_| JournalError::InvalidSaveEvidence)?;
+            if &actual != expected {
                 return Err(JournalError::InvalidSaveEvidence);
             }
-            let mut digest = Sha256::new();
-            let mut buffer = [0_u8; 64 * 1024];
-            loop {
-                let read = file.read(&mut buffer)?;
-                if read == 0 {
-                    break;
-                }
-                digest.update(&buffer[..read]);
-            }
-            let hash = format!("{:x}", digest.finalize());
-            let evidence = serde_json::json!({
-                "file": "concat.json", "sha256": hash, "bytes": metadata.len(),
-                "session": session.to_string(), "revision": revision.to_string(),
-            })
-            .to_string();
-            Ok(connection.execute(
+        }
+        let hash = format!("{:x}", Sha256::digest(&bytes));
+        let evidence = serde_json::json!({
+            "file": "concat.json", "sha256": hash, "bytes": metadata.len(),
+            "session": session.to_string(), "revision": revision.to_string(),
+        })
+        .to_string();
+        let connection = self.connection()?;
+        self.permit.with_valid(|| -> Result<u64, JournalError> {
+            let mut transient = self.transient.lock().map_err(|_| JournalError::Poisoned)?;
+            let transaction = connection.unchecked_transaction()?;
+            let ids = {
+                let mut statement = transaction.prepare(
+                    "SELECT id FROM operations WHERE project=?1 AND result_session=?2 \
+                     AND result_revision=?3 AND receipt IS NOT NULL AND saved IS NULL")?;
+                statement.query_map(params![project_path,session.to_string(),revision.to_string()],
+                    |row| row.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?
+            };
+            let changed = transaction.execute(
                 "UPDATE operations SET saved=?1 WHERE project=?2 AND result_session=?3 \
                  AND result_revision=?4 AND receipt IS NOT NULL AND saved IS NULL",
-                params![
-                    evidence,
-                    project_path,
-                    session.to_string(),
-                    revision.to_string()
-                ],
-            )? as u64)
+                params![evidence, project_path, session.to_string(), revision.to_string()],
+            )? as u64;
+            let pending: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM operations WHERE project=?1 AND session=?2 AND receipt IS NULL)",
+                params![project_path,session.to_string()], |row| row.get(0),
+            )?;
+            transaction.commit()?;
+            // Only the snapshot-aware product path may bridge this race.
+            if pending && expected_document.is_some() {
+                transient.early_saves.insert((project_path.to_owned(),session,revision),evidence.clone());
+            }
+            for id in ids {
+                enqueue_saved(&mut transient, u64::try_from(id).map_err(|_| JournalError::InvalidSchema)?, &evidence)?;
+            }
+            Ok(changed)
+        })?
+    }
+
+    /// Remove notifications produced in this live generation only. This is
+    /// neither an acknowledgement nor a query that resumes an old queue.
+    pub fn take_saved_notifications(&self) -> Result<Vec<SavedOperation>, JournalError> {
+        self.permit.with_valid(|| {
+            let mut transient = self.transient.lock().map_err(|_| JournalError::Poisoned)?;
+            Ok(std::mem::take(&mut transient.notifications))
         })?
     }
 
@@ -329,30 +518,69 @@ pub fn inspect_operations(
     owner: &SessionOwner,
     token: &OwnerToken,
 ) -> Result<JournalInspection, JournalError> {
-    owner.with_owned(token, || -> Result<JournalInspection, JournalError> {
-        let path = journal_path(owner.storage_root())?;
-        if !path.exists() { return Ok(JournalInspection::default()); }
-        let connection = Connection::open_with_flags(&path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
-        check_schema(&connection)?;
-        let counts: (i64, i64, i64, i64) = connection.query_row(
-            "SELECT \
-                coalesce(sum(CASE WHEN receipt IS NULL THEN 1 ELSE 0 END),0), \
-                coalesce(sum(CASE WHEN receipt IS NOT NULL AND saved IS NULL THEN 1 ELSE 0 END),0), \
-                coalesce(sum(CASE WHEN saved IS NOT NULL AND notified=0 THEN 1 ELSE 0 END),0), \
-                coalesce(sum(CASE WHEN notified=1 THEN 1 ELSE 0 END),0) \
-             FROM operations",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )?;
-        Ok(JournalInspection {
-            needs_project_reconciliation: u64::try_from(counts.0).map_err(|_| JournalError::InvalidSchema)?,
-            applied_not_saved: u64::try_from(counts.1).map_err(|_| JournalError::InvalidSchema)?,
-            saved_not_notified: u64::try_from(counts.2).map_err(|_| JournalError::InvalidSchema)?,
-            notified: u64::try_from(counts.3).map_err(|_| JournalError::InvalidSchema)?,
-        })
-    })?
+    inspect_operations_using(owner, token, inspect_readonly_operations)
+}
+
+fn inspect_operations_using(
+    owner: &SessionOwner,
+    token: &OwnerToken,
+    read: impl FnOnce(&Path) -> Result<JournalInspection, JournalError>,
+) -> Result<JournalInspection, JournalError> {
+    owner.with_owned(token, || ())?;
+    // Read-only scans may wait on disk, but must never delay revocation.
+    // The final check rejects any result outliving its original generation.
+    let result = read(owner.storage_root());
+    owner.with_owned(token, || ())?;
+    result
+}
+
+fn inspect_readonly_operations(root: &Path) -> Result<JournalInspection, JournalError> {
+    let path = journal_path(root)?;
+    if !path.exists() {
+        return Ok(JournalInspection::default());
+    }
+    let connection = Connection::open_with_flags(
+        &path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    check_schema(&connection)?;
+    let counts: (i64, i64, i64, i64, i64) = connection.query_row(
+        "SELECT \
+            coalesce(sum(CASE WHEN receipt IS NULL THEN 1 ELSE 0 END),0), \
+            coalesce(sum(CASE WHEN receipt IS NOT NULL AND result_session IS NOT NULL AND saved IS NULL THEN 1 ELSE 0 END),0), \
+            coalesce(sum(CASE WHEN saved IS NOT NULL AND notified=0 THEN 1 ELSE 0 END),0), \
+            coalesce(sum(CASE WHEN notified=1 THEN 1 ELSE 0 END),0), \
+            coalesce(sum(CASE WHEN receipt IS NOT NULL AND result_session IS NULL THEN 1 ELSE 0 END),0) \
+         FROM operations",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    )?;
+    Ok(JournalInspection {
+        needs_project_reconciliation: u64::try_from(counts.0)
+            .map_err(|_| JournalError::InvalidSchema)?,
+        applied_not_saved: u64::try_from(counts.1).map_err(|_| JournalError::InvalidSchema)?,
+        saved_not_notified: u64::try_from(counts.2).map_err(|_| JournalError::InvalidSchema)?,
+        notified: u64::try_from(counts.3).map_err(|_| JournalError::InvalidSchema)?,
+        not_applied: u64::try_from(counts.4).map_err(|_| JournalError::InvalidSchema)?,
+    })
+}
+
+fn enqueue_saved(
+    transient: &mut Transient,
+    operation_id: u64,
+    evidence: &str,
+) -> Result<(), JournalError> {
+    if transient.current_operations.contains(&operation_id) {
+        let saved =
+            serde_json::from_str(evidence).map_err(|_| JournalError::InvalidSaveEvidence)?;
+        transient.notifications.push(SavedOperation {
+            operation_id,
+            saved,
+        });
+    }
+    Ok(())
 }
 
 fn journal_path(root: &Path) -> Result<PathBuf, JournalError> {
@@ -466,4 +694,61 @@ fn check_schema(connection: &Connection) -> Result<(), JournalError> {
         return Err(JournalError::InvalidSchema);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod readonly_tests {
+    use super::*;
+    use std::sync::{Arc, mpsc};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn readonly_inspection_does_not_hold_ownership_while_waiting() {
+        let path = std::env::temp_dir().join(format!(
+            "bk-cat-readonly-journal-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&path).unwrap();
+        drop(open_connection(&path.join(OPERATIONS_FILE_NAME)).unwrap());
+        let before = fs::read(path.join(OPERATIONS_FILE_NAME)).unwrap();
+        let owner = Arc::new(SessionOwner::acquire(&path).unwrap());
+        let reading = Arc::clone(&owner);
+        let (entered, waiting) = mpsc::channel();
+        let (release, continue_read) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            inspect_operations_using(&reading, &reading.token(), |root| {
+                let result = inspect_readonly_operations(root);
+                entered.send(()).unwrap();
+                continue_read.recv().unwrap();
+                result
+            })
+        });
+        waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+        let retiring = Arc::clone(&owner);
+        let (sent, stopped) = mpsc::channel();
+        let stop = std::thread::spawn(move || {
+            retiring.revoke();
+            sent.send(()).unwrap();
+        });
+        let revoked = stopped.recv_timeout(Duration::from_secs(1));
+        // Release even on failure, so a regression fails rather than hanging.
+        release.send(()).unwrap();
+        stop.join().unwrap();
+        assert!(
+            revoked.is_ok(),
+            "Stop must not wait for the read-only scanner"
+        );
+        assert!(matches!(
+            worker.join().unwrap(),
+            Err(JournalError::Owner(_))
+        ));
+        assert_eq!(fs::read(path.join(OPERATIONS_FILE_NAME)).unwrap(), before);
+        owner.finish_handoff(Duration::ZERO).unwrap();
+        drop(owner);
+        fs::remove_dir_all(path).unwrap();
+    }
 }

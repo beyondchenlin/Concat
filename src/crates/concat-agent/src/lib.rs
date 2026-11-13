@@ -29,6 +29,7 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
@@ -45,6 +46,7 @@ const RECORD_SIZE: usize = 24;
 
 /// Whether this host is allowed to admit new side effects.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
 pub enum Phase {
     /// Ownership exists, but reconciliation and a user decision are required.
     RecoveryRequired,
@@ -210,19 +212,52 @@ struct Core {
     generation: u64,
     state: Mutex<State>,
     drained: Condvar,
+    // Admission can be retired without waiting for an already-running SQLite
+    // step or disk sync. The existing mutex still protects synchronous writes.
+    stop_requested: AtomicBool,
+    published_phase: AtomicU8,
+    published_operations: AtomicUsize,
 }
 
 impl Core {
+    fn request_stop(&self) {
+        self.stop_requested.store(true, Ordering::Release);
+        self.drained.notify_all();
+    }
+
+    fn check_admission(&self) -> Result<(), Error> {
+        if self.state.is_poisoned() {
+            self.request_stop();
+            return Err(Error::Poisoned);
+        }
+        if self.stop_requested.load(Ordering::Acquire) {
+            return Err(Error::Revoked);
+        }
+        Ok(())
+    }
+
+    fn publish_status(&self, state: &State) {
+        // Store the count before the phase: observing Released also observes
+        // its zero drain count. These diagnostics never grant authority.
+        self.published_operations
+            .store(state.active_operations, Ordering::Release);
+        self.published_phase
+            .store(state.phase as u8, Ordering::Release);
+    }
+
     fn state(&self) -> Result<MutexGuard<'_, State>, Error> {
         self.state.lock().map_err(|poisoned| {
+            self.request_stop();
             let mut state = poisoned.into_inner();
             state.phase = Phase::Draining;
             state.release_if_drained();
+            self.publish_status(&state);
             Error::Poisoned
         })
     }
 
     fn revoke(&self, request_release: bool) {
+        self.request_stop();
         let mut state = self
             .state
             .lock()
@@ -232,7 +267,21 @@ impl Core {
             state.release_requested |= request_release;
             state.release_if_drained();
         }
+        self.publish_status(&state);
         self.drained.notify_all();
+    }
+}
+
+/// A read-only cancellation signal for a native connection's progress handler.
+/// It cannot reset admission, acquire another generation or keep an owner alive.
+#[derive(Clone)]
+pub(crate) struct StopSignal(Weak<Core>);
+
+impl StopSignal {
+    pub(crate) fn requested(&self) -> bool {
+        self.0.upgrade().is_none_or(|core| {
+            core.stop_requested.load(Ordering::Acquire) || core.state.is_poisoned()
+        })
     }
 }
 
@@ -353,6 +402,9 @@ impl SessionOwner {
                     reconciliation: None,
                 }),
                 drained: Condvar::new(),
+                stop_requested: AtomicBool::new(false),
+                published_phase: AtomicU8::new(Phase::RecoveryRequired as u8),
+                published_operations: AtomicUsize::new(0),
             }),
         })
     }
@@ -370,13 +422,28 @@ impl SessionOwner {
         }
     }
 
-    /// Read the host's phase and drain count without granting execution.
+    /// Read diagnostics without waiting for an in-flight write or disk sync.
+    /// This published snapshot is never an execution credential.
     pub fn status(&self) -> Result<OwnerStatus, Error> {
-        let state = self.core.state()?;
+        if self.core.state.is_poisoned() {
+            self.core.request_stop();
+            return Err(Error::Poisoned);
+        }
+        let mut phase = match self.core.published_phase.load(Ordering::Acquire) {
+            0 => Phase::RecoveryRequired,
+            1 => Phase::Ready,
+            2 => Phase::Draining,
+            3 => Phase::Released,
+            _ => Phase::Draining,
+        };
+        let active_operations = self.core.published_operations.load(Ordering::Acquire);
+        if self.core.stop_requested.load(Ordering::Acquire) && phase != Phase::Released {
+            phase = Phase::Draining;
+        }
         Ok(OwnerStatus {
             generation: self.core.generation,
-            phase: state.phase,
-            active_operations: state.active_operations,
+            phase,
+            active_operations,
         })
     }
 
@@ -387,7 +454,9 @@ impl SessionOwner {
     /// schedule work in this closure. It shares the non-reentrant owner mutex.
     pub fn with_owned<T>(&self, token: &OwnerToken, read: impl FnOnce() -> T) -> Result<T, Error> {
         self.check_token(token)?;
+        self.core.check_admission()?;
         let state = self.core.state()?;
+        self.core.check_admission()?;
         if matches!(state.phase, Phase::Draining | Phase::Released) {
             return Err(Error::Revoked);
         }
@@ -419,14 +488,17 @@ impl SessionOwner {
         decision: RecoveryDecision,
     ) -> Result<(), Error> {
         self.check_token(token)?;
+        self.core.check_admission()?;
         if !reconciliation.is_complete() {
             return Err(Error::IncompleteReconciliation);
         }
         let mut state = self.core.state()?;
+        self.core.check_admission()?;
         match state.phase {
             Phase::RecoveryRequired => {
                 state.reconciliation = Some((reconciliation, decision));
                 state.phase = Phase::Ready;
+                self.core.publish_status(&state);
                 Ok(())
             }
             Phase::Ready => Err(Error::RecoveryAlreadyCompleted),
@@ -445,20 +517,33 @@ impl SessionOwner {
     /// `with_valid` method must guard each actual write and external dispatch.
     pub fn begin(&self, token: &OwnerToken) -> Result<OperationPermit, Error> {
         self.check_token(token)?;
+        self.core.check_admission()?;
         let mut state = self.core.state()?;
+        self.core.check_admission()?;
         check_ready(state.phase)?;
         state.active_operations = state.active_operations.checked_add(1).ok_or(Error::Busy)?;
+        self.core.publish_status(&state);
         Ok(OperationPermit {
             core: Arc::clone(&self.core),
             generation: self.core.generation,
         })
     }
 
-    /// Revoke admission immediately, including every outstanding delayed callback.
+    /// Permanently retire new admission without waiting for a current write.
     ///
-    /// This waits only for a callback currently inside `with_valid`, whose
-    /// synchronous side effect precedes the revocation. It never waits for all
-    /// asynchronous permits; use `finish_handoff` after stopping those operations.
+    /// Use this on a UI or platform lifecycle thread. In-flight synchronous
+    /// work remains protected by its original gate and lifetime permit until
+    /// it settles or rolls back. Storage ownership is not released here.
+    /// Close the old component and its databases before `finish_handoff`.
+    pub fn request_stop(&self) {
+        self.core.request_stop();
+    }
+
+    /// Request stop, then synchronously fence the current admitted callback.
+    ///
+    /// This preserves the original atomic-revocation contract: it waits for
+    /// the callback currently inside `with_valid`. Use `request_stop` on UI
+    /// threads; use `finish_handoff` after stopping and closing old operations.
     pub fn revoke(&self) {
         self.core.revoke(false);
     }
@@ -478,6 +563,7 @@ impl SessionOwner {
         loop {
             if state.active_operations == 0 {
                 state.release_if_drained();
+                self.core.publish_status(&state);
                 return Ok(());
             }
             let remaining = timeout.saturating_sub(started.elapsed());
@@ -514,19 +600,26 @@ impl OperationPermit {
         self.generation
     }
 
+    pub(crate) fn stop_signal(&self) -> StopSignal {
+        StopSignal(Arc::downgrade(&self.core))
+    }
+
     /// Atomically check admission and start a synchronous side effect.
     ///
-    /// Revocation cannot race between the check and this closure. The closure
-    /// should initiate a model call, perform a native edit, or persist one
+    /// Synchronous revocation cannot split this check and closure. A fast stop
+    /// request retires later admission while already admitted work settles.
+    /// The closure should initiate a model call, perform a native edit, or persist one
     /// callback; do not await an asynchronous operation while holding this gate.
     /// Never call owner/permit methods recursively from the closure: they share
     /// this mutex. Every later callback must enter `with_valid` again using the
     /// original permit, so revocation suppresses late writes and follow-up calls.
     pub fn with_valid<T>(&self, operation: impl FnOnce() -> T) -> Result<T, Error> {
-        let state = self.core.state()?;
         if self.generation != self.core.generation {
             return Err(Error::TokenMismatch);
         }
+        self.core.check_admission()?;
+        let state = self.core.state()?;
+        self.core.check_admission()?;
         check_ready(state.phase)?;
         let result = operation();
         drop(state);
@@ -539,6 +632,7 @@ impl Drop for OperationPermit {
         let mut state = match self.core.state.lock() {
             Ok(state) => state,
             Err(poisoned) => {
+                self.core.request_stop();
                 let mut state = poisoned.into_inner();
                 state.phase = Phase::Draining;
                 state
@@ -547,6 +641,7 @@ impl Drop for OperationPermit {
         debug_assert!(state.active_operations > 0);
         state.active_operations = state.active_operations.saturating_sub(1);
         state.release_if_drained();
+        self.core.publish_status(&state);
         self.core.drained.notify_all();
     }
 }

@@ -1,0 +1,89 @@
+   Compiling concat-agent v0.2.10 (E:\BK-CAT\src\crates\concat-agent)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.27s
+     Running unittests src\lib.rs (E:\BK-CAT\.build\target\debug\deps\concat_agent-9397a9a68dc7d015.exe)
+
+running 5 tests
+test tests::a_read_only_file_never_issues_a_generation ... ok
+test operations::readonly_tests::readonly_inspection_does_not_hold_ownership_while_waiting ... ok
+test sqlite::stop_tests::fast_stop_interrupts_a_real_read_and_allows_rollback ... ok
+test sqlite::stop_tests::fast_stop_interrupts_a_real_write_without_releasing_its_owner ... ok
+test sqlite::readonly_tests::readonly_inspection_does_not_hold_ownership_while_waiting ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests\operations.rs (E:\BK-CAT\.build\target\debug\deps\operations-5b070761045a5759.exe)
+
+running 9 tests
+test crash_child_phase ... ignored, owned subprocess crash fixture
+
+running 1 test
+test unchanged_native_revision_finishes_without_inventing_a_save ... ok
+test notifications_never_auto_resume_after_reopening_the_journal ... ok
+test invalid_saved_document_never_produces_save_evidence ... ok
+test proven_native_refusals_are_terminal_but_unknown_failures_are_not ... ok
+test saved_document_must_match_the_exact_written_snapshot_and_receipt ... ok
+test four_durable_transitions_are_distinct_and_repeated_work_is_never_replayed ... ok
+test early_verified_save_joins_only_the_matching_later_receipt ... ok
+
+running 1 test
+
+running 1 test
+
+running 1 test
+test actual_subprocess_crashes_require_reconciliation_without_replaying ... ok
+
+test result: ok. 8 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 9.38s
+
+     Running tests\ownership.rs (E:\BK-CAT\.build\target\debug\deps\ownership-702c954f329762c5.exe)
+
+running 20 tests
+test owner_child_process ... ignored, subprocess helper; invoked explicitly by the real multiprocess tests
+test a_new_owner_cannot_start_work_until_reviewed ... ok
+test recovery_reads_are_allowed_but_revocation_refuses_even_read_callbacks ... ok
+test an_existing_empty_journal_cannot_reuse_generation_one ... ok
+test callback_panic_fails_closed_until_the_host_is_closed ... ok
+test a_timed_out_handoff_refuses_new_owners_and_late_callbacks ... ok
+test damaged_generation_journal_refuses_ownership_without_repairing_it ... ok
+test incomplete_or_repeated_review_does_not_approve_again ... ok
+test dropping_the_host_revokes_but_keeps_the_kernel_lock_until_callbacks_drain ... ok
+test persistent_generation_increases_without_removing_the_lock_file ... ok
+test revocation_retains_ownership_until_safe_handoff_is_requested ... ok
+test same_store_and_canonical_path_alias_share_one_real_lock ... ok
+test different_stores_cannot_exchange_tokens_even_when_generations_match ... ok
+test fast_stop_and_status_do_not_wait_for_an_admitted_write_or_release_ownership ... ok
+test mobile_runtime_replacement_overlap_is_fenced_by_native_generation ... ok
+test concurrent_first_acquisition_has_one_owner_and_does_not_strand_an_empty_journal ... ok
+test desktop_second_process_is_refused_by_the_operating_system_lock ... ok
+test killed_owner_can_be_taken_over_but_never_automatically_resumes ... ok
+test malformed_complete_records_are_not_treated_as_a_fresh_store ... ok
+test native_revocation_and_a_write_are_one_ordered_boundary ... ok
+
+test result: ok. 19 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests\sqlite.rs (E:\BK-CAT\.build\target\debug\deps\sqlite-6ff2d8da64cc00a0.exe)
+
+running 16 tests
+test recovery_inspection_never_initializes_an_absent_database ... ok
+test opening_frames_cannot_grant_themselves_initialization_or_a_path ... ok
+test identities_are_checked_on_reads_writes_and_cleanup ... ok
+test a_nonterminating_query_is_bounded_without_losing_the_connection ... ok
+test unrelated_or_expired_transaction_handles_never_join_active_work ... ok
+test existing_unsupported_schema_is_read_only_inspected_and_not_migrated ... ok
+test a_version_two_marker_without_the_other_real_tables_is_never_writable ... ok
+test authorizer_rejects_external_files_pragmas_and_sql_transaction_bypasses ... ok
+test sqlite_automatic_rollback_cannot_turn_an_old_transaction_into_implicit_writes ... ok
+test single_statement_methods_refuse_a_second_statement_before_the_first_write ... ok
+test all_portable_value_types_round_trip_without_integer_precision_loss ... ok
+test existing_same_named_metadata_views_are_never_executed_or_replaced ... ok
+test revocation_refuses_queries_and_commit_but_allows_matching_rollback_and_close ... ok
+test dropping_a_revoked_connection_rolls_back_before_releasing_ownership ... ok
+test pinned_pi_schema_initializes_and_real_data_survives_handoff ... ok
+test a_version_two_store_with_a_fake_tasks_view_is_never_writable ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+   Doc-tests concat_agent
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
