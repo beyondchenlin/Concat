@@ -1,0 +1,22 @@
+[
+  {
+    "file": "src/crates/concat-android/java/BKCatRuntime.java",
+    "bytes": 24812,
+    "sha256": "19ed510663419677c68b7aaee990f784df6a50f43833a39de75af7ab5181f937"
+  },
+  {
+    "file": "src/crates/concat-android/java/BKCatRuntimePolicy.java",
+    "bytes": 3546,
+    "sha256": "b3b2baa0a7981dfb88201c177faa06df46bc0a165fb62fbdb94f4bdddb1007ea"
+  },
+  {
+    "file": "src/crates/concat-android/tests/BKCatRuntimePolicyTest.java",
+    "bytes": 10597,
+    "sha256": "3c5f0607601da2aedbdd7faef36c8ac316a7244d5d4bfde54ac3e61372a8873b"
+  },
+  {
+    "file": "src/crates/concat-android/scripts/verify-runtime-java.ps1",
+    "bytes": 3234,
+    "sha256": "28e747238e06651a9b8f5fede5df5fc5f489bb9f29e39ff0c99b792fb76fe59a"
+  }
+]

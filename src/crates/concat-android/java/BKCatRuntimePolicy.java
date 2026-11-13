@@ -53,4 +53,42 @@ public final class BKCatRuntimePolicy {
         active = false;
         return previous;
     }
+
+    /**
+     * One initial, never-opened component may await foreground focus for a
+     * bounded interval. A retired component has no path back to WAIT or OPEN.
+     * The production UI handler supplies Android's monotonic uptime clock.
+     */
+    public static final class InitialCreation {
+        public static final long TIMEOUT_MILLIS = 10_000L;
+        public enum Decision { WAIT, OPEN, OPENED, EXPIRED, RETIRED }
+
+        private final long deadlineMillis;
+        private boolean opened;
+        private boolean retired;
+
+        public InitialCreation(long startedAtMillis) {
+            if (startedAtMillis < 0
+                    || startedAtMillis > Long.MAX_VALUE - TIMEOUT_MILLIS) {
+                throw new IllegalArgumentException("Invalid monotonic start time");
+            }
+            deadlineMillis = startedAtMillis + TIMEOUT_MILLIS;
+        }
+
+        public long deadlineMillis() { return deadlineMillis; }
+
+        public synchronized Decision poll(boolean foreground, long nowMillis) {
+            if (retired) return Decision.RETIRED;
+            if (opened) return Decision.OPENED;
+            if (nowMillis >= deadlineMillis) {
+                retired = true;
+                return Decision.EXPIRED;
+            }
+            if (!foreground) return Decision.WAIT;
+            opened = true;
+            return Decision.OPEN;
+        }
+
+        public synchronized void retire() { retired = true; }
+    }
 }

@@ -1,0 +1,213 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { Theme } from "../theme/theme.slint";
+import { Glyph } from "../icons.slint";
+import { Sheet, Button, Field } from "../primitives/modal.slint";
+import { Select } from "../primitives/select.slint";
+import { PaneScroll } from "../workspace/pane.slint";
+
+/// Non-secret form data only. No credential value belongs in this model.
+export struct ModelChannelDraftData {
+    label: string,
+    protocol: int,
+    endpoint: string,
+    model: string,
+    timeout-seconds: string,
+    max-output-tokens: string,
+}
+
+export global AgentSettingsUi {
+    in-out property <bool> open;
+    in-out property <bool> busy;
+    in-out property <bool> can-modify;
+    in-out property <bool> has-saved-channel;
+    in-out property <[string]> channel-labels: ["新建渠道"];
+    in-out property <int> channel-index;
+    in-out property <ModelChannelDraftData> draft;
+    in-out property <string> active-name: "尚未选择渠道";
+    in-out property <string> configuration-version;
+    in-out property <string> credential-status;
+    in-out property <string> message;
+    in-out property <string> error;
+    callback open-requested();
+    callback close-requested();
+    callback reload-requested();
+    callback channel-chosen(index: int);
+    callback save-requested(draft: ModelChannelDraftData);
+    callback activate-requested(draft: ModelChannelDraftData);
+    callback delete-requested(draft: ModelChannelDraftData);
+    // A password crosses this callback directly to native secure storage. It
+    // is never assigned to a persistent/global UI property or conversation.
+    callback credential-save-requested(draft: ModelChannelDraftData, secret: string);
+    callback credential-delete-requested(draft: ModelChannelDraftData);
+}
+
+component Caption inherits Text {
+    color: Theme.fg;
+    font-size: Theme.fs;
+    wrap: word-wrap;
+}
+
+/// One scrolling form on a phone; a centered readable form on a desktop.
+export component AgentSettingsDialog inherits Sheet {
+    in property <bool> phone;
+    open: AgentSettingsUi.open;
+    title: "模型渠道与凭据";
+    glyph: Glyph.settings;
+    dismissable: !AgentSettingsUi.busy;
+    closed => { AgentSettingsUi.close-requested(); }
+
+    PaneScroll {
+        vertical-stretch: 1;
+        finger: root.phone;
+        VerticalLayout {
+            padding-top: 16px;
+            padding-bottom: 24px;
+            padding-left: Math.max(16px, (root.width - 680px) / 2);
+            padding-right: Math.max(16px, (root.width - 680px) / 2);
+            spacing: 12px;
+
+            Caption {
+                text: "当前渠道：" + AgentSettingsUi.active-name;
+                font-weight: Theme.weight-title;
+            }
+            Caption {
+                text: "保存配置或凭据不会授权联网。费用授权与真实模型联调尚未完成，发送保持禁用。";
+                color: Theme.fg-muted;
+            }
+            if AgentSettingsUi.error != "": Caption {
+                text: AgentSettingsUi.error;
+                color: Theme.danger;
+            }
+            if AgentSettingsUi.message != "": Caption {
+                text: AgentSettingsUi.message;
+                color: Theme.fg-muted;
+            }
+            if AgentSettingsUi.busy: Caption {
+                text: "正在核验本机状态或等待旧运行组件安全退出…";
+            }
+            if !AgentSettingsUi.busy: Button {
+                label: "重新读取配置与凭据状态";
+                clicked => { AgentSettingsUi.reload-requested(); }
+            }
+
+            // Recreating this bounded form after each native operation also
+            // drops the temporary password input. It is never populated from
+            // the vault or copied into the model-channel draft.
+            if AgentSettingsUi.open && !AgentSettingsUi.busy && AgentSettingsUi.can-modify: VerticalLayout {
+                spacing: 10px;
+                Caption { text: "编辑渠道"; }
+                Select {
+                    options: AgentSettingsUi.channel-labels;
+                    current: AgentSettingsUi.channel-index;
+                    changed(index) => { AgentSettingsUi.channel-chosen(index); }
+                }
+                Caption { text: "渠道名称"; }
+                Field {
+                    value: AgentSettingsUi.draft.label;
+                    max-length: 80;
+                    edited(text) => { AgentSettingsUi.draft.label = text; }
+                }
+                Caption { text: "服务协议"; }
+                Select {
+                    options: ["请选择协议", "OpenAI（开放兼容聊天协议）", "OpenAI（响应协议）", "Anthropic（消息协议）"];
+                    current: AgentSettingsUi.draft.protocol;
+                    changed(index) => { AgentSettingsUi.draft.protocol = index; }
+                }
+                Caption { text: "服务基址（填写完整地址及基路径）"; }
+                Field {
+                    value: AgentSettingsUi.draft.endpoint;
+                    technical: true;
+                    max-length: 2048;
+                    edited(text) => { AgentSettingsUi.draft.endpoint = text; }
+                }
+                Caption { text: "修改主机、端口或基路径后，需要为新地址重新保存凭据。"; color: Theme.fg-muted; }
+                Caption { text: "模型标识"; }
+                Field {
+                    value: AgentSettingsUi.draft.model;
+                    technical: true;
+                    max-length: 256;
+                    edited(text) => { AgentSettingsUi.draft.model = text; }
+                }
+                Caption { text: "请求超时（秒，1至600，最多三位小数）"; }
+                Field {
+                    value: AgentSettingsUi.draft.timeout-seconds;
+                    technical: true;
+                    max-length: 7;
+                    edited(text) => { AgentSettingsUi.draft.timeout-seconds = text; }
+                }
+                Caption { text: "单次输出上限（词元，1至1000000）"; }
+                Field {
+                    value: AgentSettingsUi.draft.max-output-tokens;
+                    technical: true;
+                    max-length: 7;
+                    edited(text) => { AgentSettingsUi.draft.max-output-tokens = text; }
+                }
+                Caption { text: "输出上限不代表价格或费用预算。"; color: Theme.fg-muted; }
+                Button {
+                    label: "保存渠道配置";
+                    primary: true;
+                    large: true;
+                    block: root.phone;
+                    clicked => { AgentSettingsUi.save-requested(AgentSettingsUi.draft); }
+                }
+                if AgentSettingsUi.has-saved-channel: HorizontalLayout {
+                    spacing: 8px;
+                    Button {
+                        label: "设为当前渠道";
+                        block: root.phone;
+                        clicked => { AgentSettingsUi.activate-requested(AgentSettingsUi.draft); }
+                    }
+                    Button {
+                        label: "删除此渠道";
+                        danger: true;
+                        block: root.phone;
+                        clicked => { AgentSettingsUi.delete-requested(AgentSettingsUi.draft); }
+                    }
+                }
+                Rectangle { height: 1px; background: Theme.line; }
+                Caption { text: "系统安全凭据"; font-weight: Theme.weight-title; }
+                Caption { text: AgentSettingsUi.credential-status; color: Theme.fg-muted; }
+                Caption { text: "密钥只存入当前渠道与服务地址对应的系统安全存储，普通配置文件只保存上述非秘密字段。"; color: Theme.fg-muted; }
+                if AgentSettingsUi.has-saved-channel: VerticalLayout {
+                    spacing: 10px;
+                    Rectangle {
+                        min-height: 36px;
+                        max-height: 36px;
+                        background: Theme.field;
+                        border-radius: Theme.r;
+                        border-color: key-input.has-focus ? Theme.accent : Theme.line;
+                        border-width: 1px;
+                        clip: true;
+                        key-input := TextInput {
+                            x: 10px;
+                            y: (parent.height - self.height) / 2;
+                            width: parent.width - 20px;
+                            height: self.preferred-height;
+                            input-type: InputType.password;
+                            single-line: true;
+                            color: Theme.fg;
+                            font-size: Theme.fs;
+                            selection-background-color: Theme.accent;
+                        }
+                    }
+                    Button {
+                        label: "保存或替换系统凭据";
+                        enabled: key-input.text != "";
+                        block: root.phone;
+                        clicked => {
+                            let entered = key-input.text;
+                            key-input.text = "";
+                            AgentSettingsUi.credential-save-requested(AgentSettingsUi.draft, entered);
+                        }
+                    }
+                    Button {
+                        label: "删除对应系统凭据";
+                        danger: true;
+                        block: root.phone;
+                        clicked => { key-input.text = ""; AgentSettingsUi.credential-delete-requested(AgentSettingsUi.draft); }
+                    }
+                }
+            }
+        }
+    }
+}

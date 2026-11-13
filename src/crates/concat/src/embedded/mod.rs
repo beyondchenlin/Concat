@@ -740,6 +740,11 @@ pub(crate) fn connect_from_ui() -> Result<(), String> {
 }
 
 /// No API key, model provider or fee authorization is inferred by startup.
+#[cfg(any(
+    target_os = "windows",
+    target_os = "android",
+    feature = "bk-cat-native-probe"
+))]
 pub(crate) fn start_for_window() {
     if let Err(error) = connect_from_ui() {
         log::error!("bk-cat-agent: state=failed");

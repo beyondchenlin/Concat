@@ -1,0 +1,45 @@
+{
+    "schema":  1,
+    "old_head":  "35ca9cfa2303c84f76a1bc4960848fd38d50ba02",
+    "old_tested_merge":  "420a70e15f4ef9bcffdcfaca21325c4f3917194a",
+    "local_parent":  "ce62b4ebf544f3dbed705276b0cdfe60705acd47",
+    "reviewed_patch_sha256":  "1fc94f24be9e606d73365496a9a6a8c786cb103dd7844e4fcc1bd52ff548a035",
+    "sources":  [
+                    {
+                        "path":  "src/crates/concat-android/java/BKCatRuntime.java",
+                        "sha256":  "60fc78e65b18649c8ffd45ae304d829cd591a2e84df177ccb62bd2b81aac5ad1"
+                    },
+                    {
+                        "path":  "src/crates/concat-android/java/BKCatRuntimePolicy.java",
+                        "sha256":  "2c72bd280cabb40bc64436832c532048ab0755e4ee8d20e1710ac753019cf85d"
+                    },
+                    {
+                        "path":  "src/crates/concat-android/tests/BKCatRuntimePolicyTest.java",
+                        "sha256":  "3533ec876d13575d6a8ee38cd488402843c91df6fc10b4468433431cbec81151"
+                    }
+                ],
+    "original_artifacts":  [
+                               {
+                                   "file":  "api30-original.zip",
+                                   "artifact_id":  14044532515,
+                                   "sha256":  "20b78e66cdca5154b53836cd07ba349ac55929fba8b48b1d1a0f54fc1483a5bb"
+                               },
+                               {
+                                   "file":  "api35-original.zip",
+                                   "artifact_id":  14044661968,
+                                   "sha256":  "3558708e66ce7a8c1b7f69fed530eb784e9b0cdab85807a698a1181488bda3a4"
+                               }
+                           ],
+    "validation":  {
+                       "platform_java":  "passed",
+                       "platform_api":  35,
+                       "java_target":  8,
+                       "policy_groups_passed":  10,
+                       "dex_min_api":  26,
+                       "dex":  "passed",
+                       "repaired_emulator_execution":  "not-run",
+                       "production_60_second_acceptance":  "not-run"
+                   },
+    "platform_original_logs_sha256":  "acadf84281e8f7052a1e51a96da69fac324151ebc70bbf910cc2b85e04b1da14",
+    "readable_logs":  "UTF-8 with normalized line endings and trailing whitespace; original log bytes retained in platform-logs-original.zip"
+}

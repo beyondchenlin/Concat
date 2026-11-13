@@ -48,6 +48,8 @@ pub struct AgentPane {
     pub task: AgentTask,
     /// A user-facing failure reported by the real runtime or native bridge.
     pub error: String,
+    /// Actual configuration or secure-store failure; never a secret value.
+    pub configuration_error: String,
     /// Read-only recovery evidence from the current, authenticated component.
     pub recovery_summary: String,
     pub can_recover: bool,
@@ -123,7 +125,12 @@ impl AgentPane {
         };
         let mut data = AgentStatusData {
             missing: missing.clone().into(),
-            error: self.error.as_str().into(),
+            error: if self.error.is_empty() {
+                self.configuration_error.as_str()
+            } else {
+                self.error.as_str()
+            }
+            .into(),
             model: model.into(),
             can_review: self.can_review,
             can_continue: self.can_recover,
@@ -173,7 +180,7 @@ impl AgentPane {
                 data.title = "会话已关闭".into();
                 data.detail = "再次使用前需要重新核对当前工程和会话。".into();
             }
-            Phase::Ready if !self.error.is_empty() => {
+            Phase::Ready if !self.error.is_empty() || !self.configuration_error.is_empty() => {
                 data.title = "任务失败".into();
                 data.detail = "处理错误后再提交，草稿保留在输入框中。".into();
             }

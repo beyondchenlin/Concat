@@ -149,6 +149,8 @@ pub struct Shell {
     pub embedded: RefCell<Option<Arc<crate::embedded::EmbeddedRuntime>>>,
     /// Presentation is separate from Studio so stop never borrows an editor.
     pub agent_pane: RefCell<crate::panes::agent::AgentPane>,
+    /// Non-secret model settings, separately owned from the editor and runtime.
+    pub agent_settings: RefCell<crate::panes::agent_settings::AgentSettingsPane>,
     /// The window's state.
     pub studio: RefCell<Studio>,
     /// The live models, handed to Slint once and never replaced.

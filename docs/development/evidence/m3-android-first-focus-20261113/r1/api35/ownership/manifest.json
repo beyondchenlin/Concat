@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "source_sha": "b584d2f05c805ef0bdcdeba58632747bd9d9ce3e",
+  "target": "x86_64-linux-android",
+  "ndk_api": 26,
+  "test_source": "src/crates/concat-agent/tests/ownership.rs",
+  "binary": "ownership-tests",
+  "sha256": "a27cea698fff77b76b521ff083224bf0a208045d88767e92f80925252aab47a6",
+  "rustc": "rustc 1.93.1 (01f6ddf75 2026-02-11)"
+}

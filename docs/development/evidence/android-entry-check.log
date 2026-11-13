@@ -1,0 +1,13 @@
+This verifies shell orchestration and early fail-closed checks; no emulator or model is invoked.
+test_ownership_failure_prevents_startup_and_preserves_exit (__main__.EntryContract.test_ownership_failure_prevents_startup_and_preserves_exit) ... ok
+test_real_ownership_script_rejects_wrong_source_before_startup (__main__.EntryContract.test_real_ownership_script_rejects_wrong_source_before_startup) ... ok
+test_real_startup_script_rejects_ambiguous_apks_before_adb (__main__.EntryContract.test_real_startup_script_rejects_ambiguous_apks_before_adb) ... ok
+test_real_startup_script_rejects_missing_apk_before_adb (__main__.EntryContract.test_real_startup_script_rejects_missing_apk_before_adb) ... ok
+test_single_sh_entry_runs_stages_in_order_with_exact_arguments_and_environment (__main__.EntryContract.test_single_sh_entry_runs_stages_in_order_with_exact_arguments_and_environment) ... ok
+test_source_matches_reviewed_remote_bytes (__main__.EntryContract.test_source_matches_reviewed_remote_bytes) ... ok
+test_startup_failure_is_not_masked (__main__.EntryContract.test_startup_failure_is_not_masked) ... ok
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.280s
+
+OK

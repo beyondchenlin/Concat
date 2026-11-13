@@ -1,0 +1,158 @@
+diff --git a/.build/credentials-before-lifecycle/native.rs b/src/crates/concat-android/src/credentials.rs
+index 1f9765b1..6c366da6 100644
+--- a/.build/credentials-before-lifecycle/native.rs
++++ b/src/crates/concat-android/src/credentials.rs
+@@ -7,15 +7,18 @@ use std::sync::Arc;
+ 
+ use concat_agent::credentials::{
+     CredentialError, CredentialScope, CredentialStore, MAX_SECRET_BYTES, Secret,
+-    install_platform_store,
++    install_platform_store, platform_store,
+ };
+ use jni::objects::{Global, JByteArray, JClass, JObject};
+-use jni::{Env, jni_sig, jni_str};
++use jni::{Env, JavaVM, jni_sig, jni_str};
+ use slint::android::AndroidApp;
+ use zeroize::Zeroizing;
+ 
++/// Application-global references only. Never retain the Activity/AndroidApp:
++/// a credential store survives same-process activity reconstruction.
+ struct AndroidCredentialStore {
+-    app: AndroidApp,
++    context: Global<JObject<'static>>,
++    class: Global<JClass<'static>>,
+ }
+ 
+ impl AndroidCredentialStore {
+@@ -27,16 +30,19 @@ impl AndroidCredentialStore {
+             &Global<JClass<'static>>,
+         ) -> jni::errors::Result<T>,
+     ) -> Result<T, CredentialError> {
+-        super::java::with_credentials_class(&self.app, |env, activity, class| {
+-            let result = action(env, activity, class);
+-            // A linkage/provider exception must not be printed by JNI detach,
+-            // retained across subsequent calls, or included in a UI message.
+-            if env.exception_check() {
+-                env.exception_clear();
+-            }
+-            result
+-        })
+-        .map_err(|_| CredentialError::Unavailable)
++        JavaVM::singleton()
++            .and_then(|vm| {
++                vm.attach_current_thread(|env| {
++                    let result = action(env, self.context.as_ref(), &self.class);
++                    // Never describe a provider exception or leave it pending
++                    // for a later call or JVM thread detach.
++                    if env.exception_check() {
++                        env.exception_clear();
++                    }
++                    result
++                })
++            })
++            .map_err(|_| CredentialError::Unavailable)
+     }
+ }
+ 
+@@ -51,14 +57,14 @@ fn status(code: i32) -> Result<(), CredentialError> {
+ 
+ impl CredentialStore for AndroidCredentialStore {
+     fn read(&self, scope: &CredentialScope) -> Result<Option<Secret>, CredentialError> {
+-        let bytes = self.call(|env, activity, class| {
++        let bytes = self.call(|env, context, class| {
+             let key = env.new_string(scope.key_id())?;
+             let answer = env
+                 .call_static_method(
+                     class,
+                     jni_str!("read"),
+-                    jni_sig!("(Landroid/app/Activity;Ljava/lang/String;)[B"),
+-                    &[activity.into(), (&key).into()],
++                    jni_sig!("(Landroid/content/Context;Ljava/lang/String;)[B"),
++                    &[context.into(), (&key).into()],
+                 )?
+                 .l()?;
+             let array = env.cast_local::<JByteArray>(answer)?;
+@@ -67,7 +73,6 @@ impl CredentialStore for AndroidCredentialStore {
+                 return Err(jni::errors::Error::NullPtr("invalid credential response"));
+             }
+             let copied = env.convert_byte_array(&array).map(Zeroizing::new);
+-            // Clear Java's response even when copying to Rust failed.
+             if env.exception_check() {
+                 env.exception_clear();
+             }
+@@ -90,7 +95,7 @@ impl CredentialStore for AndroidCredentialStore {
+     }
+ 
+     fn write(&self, scope: &CredentialScope, secret: &Secret) -> Result<(), CredentialError> {
+-        let result = self.call(|env, activity, class| {
++        let result = self.call(|env, context, class| {
+             let key = env.new_string(scope.key_id())?;
+             let bytes = secret.expose_secret().as_bytes();
+             let array = env.byte_array_from_slice(bytes)?;
+@@ -98,8 +103,8 @@ impl CredentialStore for AndroidCredentialStore {
+                 .call_static_method(
+                     class,
+                     jni_str!("write"),
+-                    jni_sig!("(Landroid/app/Activity;Ljava/lang/String;[B)I"),
+-                    &[activity.into(), (&key).into(), (&array).into()],
++                    jni_sig!("(Landroid/content/Context;Ljava/lang/String;[B)I"),
++                    &[context.into(), (&key).into(), (&array).into()],
+                 )
+                 .and_then(|answer| answer.i());
+             if env.exception_check() {
+@@ -113,13 +118,13 @@ impl CredentialStore for AndroidCredentialStore {
+     }
+ 
+     fn delete(&self, scope: &CredentialScope) -> Result<(), CredentialError> {
+-        let result = self.call(|env, activity, class| {
++        let result = self.call(|env, context, class| {
+             let key = env.new_string(scope.key_id())?;
+             env.call_static_method(
+                 class,
+                 jni_str!("delete"),
+-                jni_sig!("(Landroid/app/Activity;Ljava/lang/String;)I"),
+-                &[activity.into(), (&key).into()],
++                jni_sig!("(Landroid/content/Context;Ljava/lang/String;)I"),
++                &[context.into(), (&key).into()],
+             )?
+             .i()
+         })?;
+@@ -127,9 +132,34 @@ impl CredentialStore for AndroidCredentialStore {
+     }
+ }
+ 
+-/// Called after the backend establishes its JavaVM and before the window.
++/// Capture the application context once after JavaVM initialization. Further
++/// activity entries keep the same adapter and need no reference to the old one.
+ pub fn install(app: &AndroidApp) -> Result<(), CredentialError> {
+-    super::java::with_credentials_class(app, |_, _, _| Ok(()))
+-        .map_err(|_| CredentialError::Unavailable)?;
+-    install_platform_store(Arc::new(AndroidCredentialStore { app: app.clone() }))
++    if platform_store().is_ok() {
++        return Ok(());
++    }
++    let (context, class) = super::java::with_credentials_class(app, |env, activity, class| {
++        let result = (|| {
++            let context = env
++                .call_method(
++                    activity,
++                    jni_str!("getApplicationContext"),
++                    jni_sig!("()Landroid/content/Context;"),
++                    &[],
++                )?
++                .l()?;
++            if context.is_null() {
++                return Err(jni::errors::Error::NullPtr(
++                    "application context unavailable",
++                ));
++            }
++            Ok((env.new_global_ref(context)?, env.new_global_ref(class)?))
++        })();
++        if env.exception_check() {
++            env.exception_clear();
++        }
++        result
++    })
++    .map_err(|_| CredentialError::Unavailable)?;
++    install_platform_store(Arc::new(AndroidCredentialStore { context, class })).map(|_| ())
+ }

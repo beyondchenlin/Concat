@@ -245,6 +245,8 @@ jobs:
           path: |
             src/target/nextest/ci/*.xml
             src/nextest-*.log
+            src/build-tests.log
+            src/clippy*.log
           if-no-files-found: ignore
 
   # The window and the engine built where they ship. Linux is the job
@@ -378,8 +380,11 @@ jobs:
       # here on its own. Each step has its own timeout, so a red run says
       # whether the compile was slow, a test failed, or a test hung, and a
       # test that hangs is killed by nextest after its slow-timeout and
-      # reported by name (src/.config/nextest.toml). Two compile jobs: the
-      # runner has the memory for two, and one took most of an hour.
+      # reported by name (src/.config/nextest.toml). Compile one target at
+      # a time: the window's generated UI is compiled as both a library
+      # and a test. Two concurrent rustc processes exhausted this runner's
+      # memory on run 43458706224 before any tests could start. This changes
+      # compilation concurrency only; the complete test selection remains.
       - name: Build the tests (Windows)
         id: build-tests
         if: runner.os == 'Windows'
@@ -388,7 +393,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo nextest run --workspace --no-run --build-jobs 2 2>&1 | tee build-tests.log
+          cargo nextest run --workspace --no-run --build-jobs 1 2>&1 | tee build-tests.log
       - name: Run the tests (Windows)
         if: runner.os == 'Windows'
         timeout-minutes: 30
@@ -396,7 +401,7 @@ jobs:
         shell: bash
         run: |
           status=0
-          cargo nextest run --workspace --build-jobs 2 --profile ci \
+          cargo nextest run --workspace --build-jobs 1 --profile ci \
             -E 'not test(=every_edit_still_exports)' 2>&1 | tee nextest-workspace.log || status=$?
           mv target/nextest/ci/junit.xml target/nextest/ci/junit-workspace.xml 2>/dev/null || true
           exit "$status"
@@ -412,7 +417,7 @@ jobs:
         shell: bash
         run: |
           status=0
-          cargo nextest run -p concat-host --test export --build-jobs 2 --profile ci --no-capture \
+          cargo nextest run -p concat-host --test export --build-jobs 1 --profile ci --no-capture \
             -E 'test(=every_edit_still_exports)' 2>&1 | tee nextest-every-edit.log || status=$?
           mv target/nextest/ci/junit.xml target/nextest/ci/junit-every-edit.xml 2>/dev/null || true
           exit "$status"
@@ -431,4 +436,6 @@ jobs:
           path: |
             src/target/nextest/ci/*.xml
             src/nextest-*.log
+            src/build-tests.log
+            src/check*.log
           if-no-files-found: ignore

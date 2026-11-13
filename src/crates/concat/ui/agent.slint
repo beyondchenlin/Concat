@@ -2,6 +2,7 @@
 
 import { Theme } from "theme/theme.slint";
 import { ScriptUi, ScriptWorkspace } from "script.slint";
+import { AgentSettingsUi } from "dialogs/model-settings.slint";
 import { Focus } from "util.slint";
 import { Button } from "primitives/modal.slint";
 import { ResizeBox } from "primitives/resize-box.slint";
@@ -133,6 +134,11 @@ export component AgentNavigation inherits Rectangle {
 
 export component AgentTaskStatus inherits VerticalLayout {
     spacing: 5px;
+    Button {
+        label: "模型设置";
+        enabled: !AgentSettingsUi.busy;
+        clicked => { AgentSettingsUi.open-requested(); }
+    }
     Text {
         text: AgentUi.status.title;
         color: AgentUi.status.error == "" ? Theme.fg : Theme.danger;
