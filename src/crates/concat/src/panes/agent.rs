@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//! Native presentation for the embedded conversation. This owns no model
-//! client, scheduler, persistence or editable project. The platform host
-//! publishes real Pi conversation entries and task events after validating
-//! their host generation and current project; an empty view stays empty.
-
-use std::rc::Rc;
+//! Native readiness, recovery and task presentation for the embedded runtime.
+//! This owns no model client, scheduler, persistence or editable project.
+//! Conversation-entry publication awaits the model-configuration integration;
+//! until it is available, the conversation view stays empty.
 
 use concat_agent::{OwnerStatus, Phase};
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::ComponentHandle;
 
-use crate::ui::{AgentMessageData, AgentStatusData, AgentUi, App};
+use crate::ui::{AgentStatusData, AgentUi, App};
 
 /// Facts supplied by the native platform host. Never store credentials in
 /// this presenter or in a Slint property; only their availability belongs here.
@@ -192,14 +190,6 @@ impl AgentPane {
     /// storage or the current project and is safe in read-only recovery.
     pub fn publish(&self, app: &App, owner: Result<OwnerStatus, String>) {
         app.global::<AgentUi>().set_status(self.data(owner));
-    }
-
-    /// A display copy of actual entries from the current conversation. The
-    /// caller must reject messages from a retired generation/project before
-    /// reaching this method. No initial assistant reply is inserted here.
-    pub fn publish_messages(app: &App, entries: Vec<AgentMessageData>) {
-        app.global::<AgentUi>()
-            .set_messages(ModelRc::from(Rc::new(VecModel::from(entries))));
     }
 }
 
