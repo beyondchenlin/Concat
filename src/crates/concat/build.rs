@@ -177,8 +177,8 @@ fn bundle_agent_resources() {
     let profile = std::env::var("PROFILE").unwrap_or_default();
     let product_release = matches!(target.as_str(), "windows" | "android")
         && matches!(profile.as_str(), "release" | "app");
-    let required = product_release
-        || std::env::var("BK_CAT_REQUIRE_AGENT_ASSETS").as_deref() == Ok("1");
+    let required =
+        product_release || std::env::var("BK_CAT_REQUIRE_AGENT_ASSETS").as_deref() == Ok("1");
     assert!(
         complete || !required,
         "build src/agent-runtime with the pinned Pi reference before packaging BK CAT"
