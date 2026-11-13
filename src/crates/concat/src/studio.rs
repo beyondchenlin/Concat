@@ -1013,6 +1013,8 @@ pub struct Studio {
 
     // ── the edit ──
     pub session: Option<Session>,
+    /// Independent versioned writing state; never a second timeline.
+    pub script: crate::panes::script::ScriptPane,
     /// A clone of the project a gesture is mutating. `project()` reads it
     /// while it exists; a command replaces it.
     pub echo: Option<Project>,
@@ -2717,6 +2719,7 @@ impl Studio {
             prefs,
             library: Default::default(),
             session: None,
+            script: Default::default(),
             echo: None,
             empty: Project::new(),
             dirty: false,

@@ -35,6 +35,8 @@ use std::time::{Duration, Instant};
 
 /// Durable native edit intent, receipt, disk-save and notification states.
 pub mod operations;
+/// Independent project script versions and explicit cutting-plan input bindings.
+pub mod scripts;
 /// Original Pi session storage through a generation-fenced native SQLite port.
 pub mod sqlite;
 

@@ -1,0 +1,48 @@
+   Compiling concat-agent v0.2.10 (E:\BK-CAT\.build\worktrees\continue-script-versions-20261113\src\crates\concat-agent)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.04s
+     Running unittests src\lib.rs (C:\Users\ai\AppData\Local\Temp\bk-cat-script-versions-20261113-core\target\debug\deps\concat_agent-9397a9a68dc7d015.exe)
+
+running 7 tests
+test scripts::initialization_tests::first_open_crash_child ... ignored, invoked by the real first-creation process-crash test
+test tests::a_read_only_file_never_issues_a_generation ... ok
+
+running 1 test
+test operations::readonly_tests::readonly_inspection_does_not_hold_ownership_while_waiting ... ok
+test sqlite::stop_tests::fast_stop_interrupts_a_real_write_without_releasing_its_owner ... ok
+test sqlite::stop_tests::fast_stop_interrupts_a_real_read_and_allows_rollback ... ok
+
+running 1 test
+test scripts::initialization_tests::first_creation_crashes_do_not_poison_the_fixed_database_path ... ok
+test sqlite::readonly_tests::readonly_inspection_does_not_hold_ownership_while_waiting ... ok
+
+test result: ok. 6 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests\scripts.rs (C:\Users\ai\AppData\Local\Temp\bk-cat-script-versions-20261113-core\target\debug\deps\scripts-3340228e83a78267.exe)
+
+running 19 tests
+test script_crash_child ... ignored, invoked by the real process-crash parent test
+test storage_objects_and_invalid_identities_fail_closed ... ok
+test late_generation_remains_a_persisted_candidate_without_overwriting_manual_text ... ok
+test read_only_connection_refuses_save_without_clearing_the_draft ... ok
+test corrupted_or_unrecognized_existing_files_are_never_reinitialized ... ok
+test selection_updates_preserve_unsaved_edits_and_reject_old_snapshots ... ok
+test edit_then_restore_same_text_still_invalidates_a_generation_request ... ok
+
+running 1 test
+test explicit_candidate_acceptance_is_a_draft_until_a_separate_save ... ok
+test immutable_rows_are_protected_even_from_accidental_direct_sql_updates ... ok
+test project_identity_and_document_identity_prevent_cross_project_binding ... ok
+test failure_after_version_insert_rolls_back_the_entire_save ... ok
+test a_saved_intervening_edit_keeps_old_candidate_visible_but_ineligible ... ok
+test chinese_paragraphs_and_old_selected_version_survive_reopen_and_further_edits ... ok
+test corrupted_head_or_revision_cannot_hide_saved_history ... ok
+test changed_content_with_old_digest_is_refused_on_read_and_plan_resolution ... ok
+test concurrent_snapshots_allow_exactly_one_writer_without_losing_the_other_draft ... ok
+test simultaneous_first_open_publishes_one_complete_database_for_both_projects ... ok
+
+running 1 test
+test crash_before_commit_rolls_back_and_crash_after_commit_retains_the_saved_version ... ok
+test real_database_busy_failure_preserves_the_draft_then_allows_an_explicit_retry ... ok
+
+test result: ok. 18 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.39s
+
