@@ -1,0 +1,14 @@
+{
+  "name": "bk-cat-agent-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "engines": { "node": ">=22.19.0" },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "test:original": "node --test test/original-components.test.mjs",
+    "typecheck": "node scripts/typecheck.mjs",
+    "build": "node scripts/build.mjs"
+  }
+}

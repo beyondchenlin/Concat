@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/earendil-works/pi.git",
+  "commit": "d36266e06669c6991a7c9509d1da04d18d30378d",
+  "packageVersion": "1.5.2",
+  "packages": ["ai", "durable", "mcp", "chord", "schema", "telemetry", "codemode"],
+  "sqliteSchemaVersion": 2,
+  "mcpProtocolVersion": "2025-11-25",
+  "license": "MIT"
+}
