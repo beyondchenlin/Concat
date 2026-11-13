@@ -27,7 +27,7 @@ use rusqlite::{Batch, Connection, OpenFlags, OptionalExtension, params_from_iter
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::{OperationPermit, OwnerToken, SessionOwner};
+use crate::{OperationPermit, OwnerToken, SessionOwner, StopSignal};
 
 /// One application-owned file under the canonical ownership directory.
 pub const DATABASE_FILE_NAME: &str = "pi-session.sqlite3";
@@ -235,12 +235,24 @@ struct AuthorizationState {
     configuration: AtomicBool,
     alter_table: AtomicBool,
     progress: AtomicU32,
+    cleanup: AtomicBool,
+    stop: Option<StopSignal>,
 }
 
 impl AuthorizationState {
     fn new_statement(&self) {
         self.alter_table.store(false, Ordering::Relaxed);
         self.progress.store(0, Ordering::Relaxed);
+    }
+
+    fn should_interrupt(&self) -> bool {
+        // An interrupted transaction must still be able to roll back. Cleanup
+        // is a native-only control path; SQL from the page cannot enable it.
+        if self.cleanup.load(Ordering::Acquire) {
+            return false;
+        }
+        self.stop.as_ref().is_some_and(StopSignal::requested)
+            || self.progress.fetch_add(1, Ordering::Relaxed) >= MAX_PROGRESS_CALLBACKS
     }
 }
 
@@ -318,7 +330,10 @@ impl NativeSqlite {
             })
             .map_err(|_| SqliteError::ResourceLimit)?;
         let permit = owner.begin(token)?;
-        let authorization = Arc::new(AuthorizationState::default());
+        let authorization = Arc::new(AuthorizationState {
+            stop: Some(permit.stop_signal()),
+            ..AuthorizationState::default()
+        });
         let connection = permit.with_valid(|| {
             open_connection(owner.storage_root(), options, Arc::clone(&authorization))
         })??;
@@ -695,12 +710,7 @@ fn install_authorization(
     connection.authorizer(Some(move |context: AuthContext<'_>| {
         authorize(context, &state)
     }))?;
-    connection.progress_handler(
-        1000,
-        Some(move || {
-            authorization.progress.fetch_add(1, Ordering::Relaxed) >= MAX_PROGRESS_CALLBACKS
-        }),
-    )?;
+    connection.progress_handler(1000, Some(move || authorization.should_interrupt()))?;
     Ok(())
 }
 
@@ -821,15 +831,23 @@ fn control(
     state: &AuthorizationState,
     sql: &'static str,
 ) -> Result<(), SqliteError> {
-    struct Reset<'a>(&'a AtomicBool);
+    struct Reset<'a> {
+        control: &'a AtomicBool,
+        cleanup: &'a AtomicBool,
+    }
     impl Drop for Reset<'_> {
         fn drop(&mut self) {
-            self.0.store(false, Ordering::Relaxed);
+            self.cleanup.store(false, Ordering::Release);
+            self.control.store(false, Ordering::Relaxed);
         }
     }
     state.new_statement();
     state.control.store(true, Ordering::Relaxed);
-    let _reset = Reset(&state.control);
+    state.cleanup.store(sql == "ROLLBACK", Ordering::Release);
+    let _reset = Reset {
+        control: &state.control,
+        cleanup: &state.cleanup,
+    };
     connection.execute_batch(sql)?;
     Ok(())
 }
@@ -982,13 +1000,26 @@ pub struct StorageInspection {
 
 /// Inspect the fixed store in `RecoveryRequired` without initialization,
 /// migration, writable storage, or scheduler entry. The read-only connection
-/// opens and closes synchronously inside `with_owned`; it never escapes that
-/// ownership gate and therefore needs no retained asynchronous operation permit.
+/// opens and closes synchronously outside the ownership gate so Stop cannot
+/// wait on disk. Short checks before and after reject stale generation results.
 pub fn inspect_storage(
     owner: &SessionOwner,
     token: &OwnerToken,
 ) -> Result<StorageInspection, SqliteError> {
-    owner.with_owned(token, || inspect_owned_storage(owner.storage_root()))?
+    inspect_storage_using(owner, token, inspect_owned_storage)
+}
+
+fn inspect_storage_using(
+    owner: &SessionOwner,
+    token: &OwnerToken,
+    read: impl FnOnce(&Path) -> Result<StorageInspection, SqliteError>,
+) -> Result<StorageInspection, SqliteError> {
+    owner.with_owned(token, || ())?;
+    // A potentially slow read-only schema/count scan is outside the owner
+    // gate. Revocation stays immediate; stale evidence is rejected below.
+    let result = read(owner.storage_root());
+    owner.with_owned(token, || ())?;
+    result
 }
 
 fn inspect_owned_storage(root: &Path) -> Result<StorageInspection, SqliteError> {
@@ -1096,4 +1127,269 @@ fn states(connection: &Connection, sql: &str) -> Result<BTreeMap<String, u64>, S
         result.insert(state, value as u64);
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod readonly_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn readonly_inspection_does_not_hold_ownership_while_waiting() {
+        let path = std::env::temp_dir().join(format!(
+            "bk-cat-readonly-session-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&path).unwrap();
+        let setup = Connection::open(path.join(DATABASE_FILE_NAME)).unwrap();
+        setup
+            .execute_batch(include_str!("../tests/fixtures/pi-schema-1.5.2.sql"))
+            .unwrap();
+        drop(setup);
+        let before = fs::read(path.join(DATABASE_FILE_NAME)).unwrap();
+        let owner = Arc::new(SessionOwner::acquire(&path).unwrap());
+        let reading = Arc::clone(&owner);
+        let (entered, waiting) = mpsc::channel();
+        let (release, continue_read) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            inspect_storage_using(&reading, &reading.token(), |root| {
+                let result = inspect_owned_storage(root);
+                entered.send(()).unwrap();
+                continue_read.recv().unwrap();
+                result
+            })
+        });
+        waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+        let retiring = Arc::clone(&owner);
+        let (sent, stopped) = mpsc::channel();
+        let stop = std::thread::spawn(move || {
+            retiring.revoke();
+            sent.send(()).unwrap();
+        });
+        let revoked = stopped.recv_timeout(Duration::from_secs(1));
+        release.send(()).unwrap();
+        stop.join().unwrap();
+        assert!(
+            revoked.is_ok(),
+            "Stop must not wait for the read-only scanner"
+        );
+        assert!(matches!(
+            worker.join().unwrap(),
+            Err(SqliteError::Ownership(_))
+        ));
+        assert_eq!(fs::read(path.join(DATABASE_FILE_NAME)).unwrap(), before);
+        owner.finish_handoff(Duration::ZERO).unwrap();
+        drop(owner);
+        fs::remove_dir_all(path).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod stop_tests {
+    use super::*;
+    use crate::{Error, Phase, Reconciliation, RecoveryDecision};
+    use std::sync::mpsc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn frame(database: &NativeSqlite, method: SqliteMethod, sql: &str) -> SqliteRequest {
+        SqliteRequest {
+            method,
+            owner_handle: database.owner_handle.clone(),
+            generation: database.generation.clone(),
+            database_id: Some(database.database_id.clone()),
+            transaction_id: database.active_transaction.clone(),
+            expected_schema_version: None,
+            allow_initialize_empty_store: None,
+            sql: Some(sql.into()),
+            params: None,
+        }
+    }
+
+    fn stopped_statement_rolls_back(write: bool) {
+        let root = std::env::temp_dir().join(format!(
+            "bk-cat-sqlite-stop-{}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            write
+        ));
+        fs::create_dir(&root).unwrap();
+        let owner = Arc::new(SessionOwner::acquire(&root).unwrap());
+        owner
+            .confirm_recovery(
+                &owner.token(),
+                Reconciliation {
+                    project_identity: "isolated-stop-project".into(),
+                    project_revision: "1".into(),
+                    session_revision: "empty".into(),
+                },
+                RecoveryDecision::DiscardInterrupted,
+            )
+            .unwrap();
+        let mut database = NativeSqlite::open(
+            &owner,
+            &owner.token(),
+            "test-native-owner",
+            SqliteOpenOptions {
+                expected_schema_version: PI_SCHEMA_VERSION,
+                allow_initialize_empty_store: true,
+            },
+        )
+        .unwrap();
+        let values = (0..128)
+            .map(|value| format!("({value})"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let setup = frame(
+            &database,
+            SqliteMethod::Exec,
+            &format!(
+                "CREATE TABLE stop_source(n INTEGER); INSERT INTO stop_source VALUES {values};              CREATE TABLE stop_sink(v INTEGER); INSERT INTO stop_sink VALUES (-1);"
+            ),
+        );
+        database.handle(&setup).unwrap();
+        let transaction = database.begin().unwrap();
+        let pending = frame(
+            &database,
+            SqliteMethod::Run,
+            "INSERT INTO stop_sink VALUES (-2)",
+        );
+        database.handle(&pending).unwrap();
+
+        let (entered, receive_entered) = mpsc::channel();
+        let (release, receive_release) = mpsc::channel();
+        let cleanup_steps = Arc::new(AtomicU32::new(0));
+        let counted_cleanup = Arc::clone(&cleanup_steps);
+        let authorization = Arc::clone(&database.authorization);
+        let mut ticks = 0;
+        // Pause a real SQLite VM step while the original owner gate is held.
+        // The decision is the production progress predicate; no SQL outcome is mocked.
+        database
+            .connection
+            .as_mut()
+            .unwrap()
+            .progress_handler(
+                1,
+                Some(move || {
+                    ticks += 1;
+                    if ticks == 1000 {
+                        entered.send(()).unwrap();
+                        receive_release.recv().unwrap();
+                    }
+                    if authorization.cleanup.load(Ordering::Acquire) {
+                        counted_cleanup.fetch_add(1, Ordering::Relaxed);
+                    }
+                    authorization.should_interrupt()
+                }),
+            )
+            .unwrap();
+        let statement = if write {
+            frame(
+                &database,
+                SqliteMethod::Run,
+                "INSERT INTO stop_sink SELECT a.n + b.n FROM stop_source a CROSS JOIN stop_source b",
+            )
+        } else {
+            frame(
+                &database,
+                SqliteMethod::Get,
+                "SELECT sum(a.n + b.n) AS total FROM stop_source a CROSS JOIN stop_source b",
+            )
+        };
+        let worker = std::thread::spawn(move || {
+            let result = database.handle(&statement);
+            (database, result)
+        });
+        receive_entered
+            .recv_timeout(Duration::from_secs(5))
+            .expect("real query entered VM");
+        let retiring = Arc::clone(&owner);
+        let (stopped, receive_stopped) = mpsc::channel();
+        let stop = std::thread::spawn(move || {
+            retiring.request_stop();
+            let status = retiring.status().unwrap();
+            let refused = matches!(retiring.begin(&retiring.token()), Err(Error::Revoked));
+            stopped.send((status, refused)).unwrap();
+        });
+        let stop_result = receive_stopped.recv_timeout(Duration::from_secs(1));
+        let competing_refused = matches!(SessionOwner::acquire(&root), Err(Error::Busy));
+        release.send(()).unwrap();
+        stop.join().unwrap();
+        let (mut database, result) = worker.join().unwrap();
+        let (status, refused) = stop_result.expect("stop/status must not wait for SQLite");
+        assert_eq!(status.phase, Phase::Draining);
+        assert_eq!(status.active_operations, 1);
+        assert!(refused && competing_refused);
+        assert!(
+            matches!(
+                result,
+                Err(SqliteError::Database(rusqlite::Error::SqliteFailure(error, _)))
+                    if error.code == rusqlite::ErrorCode::OperationInterrupted
+            ),
+            "the actual SQLite statement must be interrupted"
+        );
+        let late = frame(
+            &database,
+            SqliteMethod::Run,
+            "INSERT INTO stop_sink VALUES (-3)",
+        );
+        assert!(database.handle(&late).is_err(), "no post-stop write");
+        assert!(
+            database.commit(Some(&transaction)).is_err(),
+            "no post-stop commit"
+        );
+        database
+            .rollback(Some(&transaction))
+            .expect("cleanup remains legal after stop");
+        if !write {
+            assert!(
+                cleanup_steps.load(Ordering::Relaxed) > 0,
+                "the real rollback must execute with the stop-aware progress hook installed"
+            );
+        }
+        assert!(matches!(SessionOwner::acquire(&root), Err(Error::Busy)));
+        database.close().unwrap();
+        assert!(
+            matches!(SessionOwner::acquire(&root), Err(Error::Busy)),
+            "closing SQLite alone cannot authorize a replacement component"
+        );
+        owner.finish_handoff(Duration::ZERO).unwrap();
+
+        let persisted = Connection::open_with_flags(
+            root.join(DATABASE_FILE_NAME),
+            OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let (count, value): (i64, i64) = persisted
+            .query_row("SELECT count(*), min(v) FROM stop_sink", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(
+            (count, value),
+            (1, -1),
+            "all uncommitted work must be absent"
+        );
+        drop(persisted);
+        drop(database);
+        drop(owner);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fast_stop_interrupts_a_real_read_and_allows_rollback() {
+        stopped_statement_rolls_back(false);
+    }
+
+    #[test]
+    fn fast_stop_interrupts_a_real_write_without_releasing_its_owner() {
+        stopped_statement_rolls_back(true);
+    }
 }

@@ -585,3 +585,87 @@ fn owner_child_process() {
         .expect("wait for parent");
     drop(owner);
 }
+
+#[test]
+fn fast_stop_and_status_do_not_wait_for_an_admitted_write_or_release_ownership() {
+    let directory = TestDirectory::new();
+    let owner = Arc::new(SessionOwner::acquire(directory.path()).expect("owner"));
+    approve(&owner);
+    let operation = owner.begin(&owner.token()).expect("running operation");
+    let late = owner.begin(&owner.token()).expect("queued callback");
+    let (entered, receive_entered) = mpsc::channel();
+    let (release, receive_release) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        operation
+            .with_valid(|| {
+                entered.send(()).expect("write entered");
+                receive_release.recv().expect("finish admitted write");
+            })
+            .expect("already admitted write settles under its original gate");
+        operation
+    });
+    receive_entered
+        .recv_timeout(Duration::from_secs(5))
+        .expect("write started");
+    let retiring = Arc::clone(&owner);
+    let (reported, receive_reported) = mpsc::channel();
+    let stopping = std::thread::spawn(move || {
+        // Status must be nonblocking both before and after a stop request.
+        let before = retiring.status().expect("status while write is running");
+        retiring.request_stop();
+        let after = retiring.status().expect("stopped status");
+        let token = retiring.token();
+        let refused = matches!(retiring.begin(&token), Err(Error::Revoked))
+            && matches!(retiring.with_owned(&token, || ()), Err(Error::Revoked))
+            && matches!(late.with_valid(|| ()), Err(Error::Revoked))
+            && matches!(
+                retiring.confirm_recovery(&token, review(), RecoveryDecision::DiscardInterrupted),
+                Err(Error::Revoked)
+            );
+        reported
+            .send((before, after, refused))
+            .expect("stop returned before write");
+        // Do not drop the queued permit while the other operation holds the gate.
+        late
+    });
+    let observed = receive_reported.recv_timeout(Duration::from_secs(1));
+    let competing_owner_refused =
+        matches!(SessionOwner::acquire(directory.path()), Err(Error::Busy));
+    // Always release the injected pause before asserting, including failure.
+    release.send(()).expect("release write");
+    let operation = worker.join().expect("write thread");
+    let late = stopping.join().expect("stop thread");
+    let (before, after, refused) = observed.expect("UI stop/status waited for an admitted write");
+    assert_eq!(before.phase, Phase::Ready);
+    assert_eq!(after.phase, Phase::Draining);
+    assert_eq!(after.active_operations, 2);
+    assert!(
+        refused,
+        "every later admission must see the permanent stop request"
+    );
+    assert!(
+        competing_owner_refused,
+        "stop cannot release a live writer's OS lock"
+    );
+    assert!(matches!(operation.with_valid(|| ()), Err(Error::Revoked)));
+    drop(operation);
+    drop(late);
+    assert_eq!(owner.status().expect("drained status").active_operations, 0);
+    assert!(matches!(
+        SessionOwner::acquire(directory.path()),
+        Err(Error::Busy)
+    ));
+    owner
+        .finish_handoff(Duration::ZERO)
+        .expect("old runtime and writes fully closed");
+    assert_eq!(
+        owner.status().expect("released status").phase,
+        Phase::Released
+    );
+    let next = SessionOwner::acquire(directory.path()).expect("new owner after real handoff");
+    assert_eq!(
+        next.status().expect("new status").phase,
+        Phase::RecoveryRequired
+    );
+    assert!(next.token().generation() > owner.token().generation());
+}

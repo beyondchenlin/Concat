@@ -270,3 +270,257 @@ fn actual_subprocess_crashes_require_reconciliation_without_replaying() {
         }
     }
 }
+
+#[test]
+fn saved_document_must_match_the_exact_written_snapshot_and_receipt() {
+    let folder = Directory::new();
+    let owner = SessionOwner::acquire(folder.path()).unwrap();
+    approve(&owner);
+    let journal = OperationJournal::open(&owner, &owner.token()).unwrap();
+    let path = folder.path().to_str().unwrap();
+    let id = prepare(&journal, path);
+    let expected = json!({"native-project":"expected-save","clips":["a","b"]});
+    fs::write(
+        folder.path().join("concat.json"),
+        serde_json::to_vec(&expected).unwrap(),
+    )
+    .unwrap();
+
+    journal
+        .record_receipt(id, 7, 2, &json!({"sessionId":7,"revision":2}))
+        .unwrap();
+    let newer = json!({"native-project":"newer-save","clips":["different"]});
+    fs::write(
+        folder.path().join("concat.json"),
+        serde_json::to_vec(&newer).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        journal.record_saved_document(path, 7, 2, &expected),
+        Err(JournalError::InvalidSaveEvidence)
+    ));
+    assert_eq!(
+        inspect_operations(&owner, &owner.token())
+            .unwrap()
+            .applied_not_saved,
+        1
+    );
+
+    // The JSON value, rather than incidental key order or whitespace, is
+    // compared. Its exact bytes are the bytes included in the saved digest.
+    fs::write(
+        folder.path().join("concat.json"),
+        b"{ \"clips\": [\"a\", \"b\"], \"native-project\": \"expected-save\" }",
+    )
+    .unwrap();
+    assert_eq!(
+        journal
+            .record_saved_document(path, 7, 3, &expected)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        journal
+            .record_saved_document(path, 7, 2, &expected)
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        inspect_operations(&owner, &owner.token())
+            .unwrap()
+            .saved_not_notified,
+        1
+    );
+}
+
+#[test]
+fn invalid_saved_document_never_produces_save_evidence() {
+    let folder = Directory::new();
+    let owner = SessionOwner::acquire(folder.path()).unwrap();
+    approve(&owner);
+    let journal = OperationJournal::open(&owner, &owner.token()).unwrap();
+    let path = folder.path().to_str().unwrap();
+    let id = prepare(&journal, path);
+    journal
+        .record_receipt(id, 7, 2, &json!({"sessionId":7,"revision":2}))
+        .unwrap();
+    fs::write(folder.path().join("concat.json"), b"truncated {").unwrap();
+    assert!(matches!(
+        journal.record_saved_document(path, 7, 2, &json!({})),
+        Err(JournalError::InvalidSaveEvidence)
+    ));
+    assert_eq!(
+        inspect_operations(&owner, &owner.token())
+            .unwrap()
+            .applied_not_saved,
+        1
+    );
+}
+
+#[test]
+fn early_verified_save_joins_only_the_matching_later_receipt() {
+    for saved_session in [7, 8] {
+        for saved_revision in [2, 3] {
+            let folder = Directory::new();
+            let owner = SessionOwner::acquire(folder.path()).unwrap();
+            approve(&owner);
+            let journal = OperationJournal::open(&owner, &owner.token()).unwrap();
+            let path = folder.path().to_str().unwrap();
+            let id = prepare(&journal, path);
+            let document = json!({"clips":["first","second"]});
+            fs::write(
+                folder.path().join("concat.json"),
+                serde_json::to_vec(&document).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                journal
+                    .record_saved_document(path, saved_session, saved_revision, &document)
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                inspect_operations(&owner, &owner.token())
+                    .unwrap()
+                    .needs_project_reconciliation,
+                1
+            );
+            assert!(journal.take_saved_notifications().unwrap().is_empty());
+            journal
+                .record_receipt(id, 7, 2, &json!({"sessionId":7,"revision":2}))
+                .unwrap();
+            let inspection = inspect_operations(&owner, &owner.token()).unwrap();
+            let notifications = journal.take_saved_notifications().unwrap();
+            if (saved_session, saved_revision) == (7, 2) {
+                assert_eq!(inspection.applied_not_saved, 0);
+                assert_eq!(inspection.saved_not_notified, 1);
+                assert_eq!(notifications.len(), 1);
+                assert_eq!(notifications[0].operation_id, id);
+                assert_eq!(notifications[0].saved["revision"], "2");
+                assert_eq!(
+                    inspection.notified, 0,
+                    "taking a notification is not delivery"
+                );
+                assert!(journal.take_saved_notifications().unwrap().is_empty());
+            } else {
+                assert_eq!(inspection.applied_not_saved, 1);
+                assert_eq!(inspection.saved_not_notified, 0);
+                assert!(notifications.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn notifications_never_auto_resume_after_reopening_the_journal() {
+    let folder = Directory::new();
+    let owner = SessionOwner::acquire(folder.path()).unwrap();
+    approve(&owner);
+    let journal = OperationJournal::open(&owner, &owner.token()).unwrap();
+    let path = folder.path().to_str().unwrap();
+    let id = prepare(&journal, path);
+    journal
+        .record_receipt(id, 7, 2, &json!({"sessionId":7,"revision":2}))
+        .unwrap();
+    let document = json!({"clips":["first","second"]});
+    fs::write(
+        folder.path().join("concat.json"),
+        serde_json::to_vec(&document).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        journal
+            .record_saved_document(path, 7, 2, &document)
+            .unwrap(),
+        1
+    );
+    drop(journal);
+    owner.finish_handoff(std::time::Duration::ZERO).unwrap();
+    let next = SessionOwner::acquire(folder.path()).unwrap();
+    assert_eq!(
+        inspect_operations(&next, &next.token())
+            .unwrap()
+            .saved_not_notified,
+        1
+    );
+    approve(&next);
+    let reopened = OperationJournal::open(&next, &next.token()).unwrap();
+    assert!(reopened.take_saved_notifications().unwrap().is_empty());
+    assert_eq!(
+        inspect_operations(&next, &next.token()).unwrap().notified,
+        0
+    );
+}
+
+#[test]
+fn proven_native_refusals_are_terminal_but_unknown_failures_are_not() {
+    let folder = Directory::new();
+    let owner = SessionOwner::acquire(folder.path()).unwrap();
+    approve(&owner);
+    let journal = OperationJournal::open(&owner, &owner.token()).unwrap();
+    let path = folder.path().to_str().unwrap();
+    let id = prepare(&journal, path);
+    assert!(
+        journal
+            .record_rejected(id, &json!({"code":"busy","message":"outcome unknown"}))
+            .is_err()
+    );
+    assert!(
+        journal
+            .record_rejected(id, &json!({"code":"failed","message":"reply lost"}))
+            .is_err()
+    );
+    assert_eq!(
+        inspect_operations(&owner, &owner.token())
+            .unwrap()
+            .needs_project_reconciliation,
+        1
+    );
+    let refusal = json!({"code":"refused","message":"the subtitle track is locked"});
+    journal.record_rejected(id, &refusal).unwrap();
+    assert!(journal.record_notified(id).is_err());
+    assert!(journal.take_saved_notifications().unwrap().is_empty());
+    drop(journal);
+    owner.finish_handoff(std::time::Duration::ZERO).unwrap();
+    let next = SessionOwner::acquire(folder.path()).unwrap();
+    let inspection = inspect_operations(&next, &next.token()).unwrap();
+    assert_eq!(inspection.needs_project_reconciliation, 0);
+    assert_eq!(inspection.applied_not_saved, 0);
+    assert_eq!(inspection.saved_not_notified, 0);
+    assert_eq!(inspection.notified, 0);
+    assert_eq!(inspection.not_applied, 1);
+    approve(&next);
+    let reopened = OperationJournal::open(&next, &next.token()).unwrap();
+    assert_eq!(
+        reopened
+            .prepare(&invocation(), &request(path), path, 7, 1)
+            .unwrap(),
+        Admission::PreviouslyRejected {
+            operation_id: id,
+            error: refusal
+        }
+    );
+}
+
+#[test]
+fn unchanged_native_revision_finishes_without_inventing_a_save() {
+    let folder = Directory::new();
+    let owner = SessionOwner::acquire(folder.path()).unwrap();
+    approve(&owner);
+    let journal = OperationJournal::open(&owner, &owner.token()).unwrap();
+    let path = folder.path().to_str().unwrap();
+    let id = prepare(&journal, path);
+    assert!(
+        journal
+            .record_unchanged(id, 7, 2, &json!({"sessionId":7,"revision":2}))
+            .is_err()
+    );
+    journal
+        .record_unchanged(id, 7, 1, &json!({"sessionId":7,"revision":1}))
+        .unwrap();
+    let inspection = inspect_operations(&owner, &owner.token()).unwrap();
+    assert_eq!(inspection.not_applied, 1);
+    assert_eq!(inspection.applied_not_saved, 0);
+    assert_eq!(inspection.saved_not_notified, 0);
+    assert!(journal.take_saved_notifications().unwrap().is_empty());
+}
