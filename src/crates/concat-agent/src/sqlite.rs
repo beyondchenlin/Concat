@@ -553,11 +553,7 @@ impl NativeSqlite {
                     }
                 }
                 SqliteMethod::Get | SqliteMethod::All => {
-                    let names: Vec<String> = statement
-                        .column_names()
-                        .into_iter()
-                        .map(str::to_owned)
-                        .collect();
+                    let names: Vec<String> = statement.column_names().map(str::to_owned).collect();
                     let mut rows = statement.query(params_from_iter(params.iter()))?;
                     let mut result = Vec::new();
                     let mut size = 0_usize;
@@ -786,7 +782,10 @@ fn authorize(context: AuthContext<'_>, state: &AuthorizationState) -> Authorizat
             }
         }
         AuthAction::Select | AuthAction::Recursive => Allow,
-        AuthAction::AlterTable { database_name, .. } if database_name == "main" => {
+        AuthAction::AlterTable {
+            database_name: "main",
+            ..
+        } => {
             state.alter_table.store(true, Ordering::Relaxed);
             Allow
         }
