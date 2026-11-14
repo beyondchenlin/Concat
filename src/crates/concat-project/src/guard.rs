@@ -15,13 +15,16 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use crate::commands::{Command, CommandError, IdMint, Outcome, apply};
-use crate::model::{Project, Timeline};
+use crate::commands::{
+    Command, CommandError, IdMint, Outcome, apply, exact_destination, exact_time_range,
+};
+use crate::model::{ClipKind, Project, Timeline};
 
 /// Operations admitted by this first automation editing boundary. Text adds
 /// require an explicit existing track; removal must not ripple. All other
 /// native operations remain available to manual editing, but not this boundary.
 pub const GUARDED_OPERATIONS: &[&str] = &[
+    "addMediaClipExact",
     "addTextClip",
     "moveClips",
     "updateClip",
@@ -29,8 +32,10 @@ pub const GUARDED_OPERATIONS: &[&str] = &[
     "batch",
 ];
 
-const MAX_BATCH_DEPTH: usize = 16;
-const MAX_BATCH_OPERATIONS: usize = 1024;
+/// Maximum nested batch depth, shared with native preflight work.
+pub const MAX_BATCH_DEPTH: usize = 16;
+/// Maximum command nodes, including containers, shared with native preflight.
+pub const MAX_BATCH_OPERATIONS: usize = 1024;
 
 /// A refusal leaves the live project, id mint, undo and redo untouched.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -142,12 +147,38 @@ fn check_targets(
     let mut touched = Vec::new();
     match command {
         Command::AddTextClip {
-            track_id: Some(id), ..
-        } => touched.push(track(timeline, id)?.to_owned()),
+            track_id: Some(id),
+            start,
+            duration,
+            ..
+        } => {
+            touched.push(track(timeline, id)?.to_owned());
+            let duration = duration.ok_or(GuardError::Unsupported {
+                operation: "addTextClip without an explicit duration",
+            })?;
+            exact_time_range(*start, duration)?;
+            exact_destination(timeline, id, ClipKind::Text, *start, duration)?;
+        }
         Command::AddTextClip { track_id: None, .. } => {
             return Err(GuardError::Unsupported {
                 operation: "addTextClip without an explicit track",
             });
+        }
+        Command::AddMediaClipExact {
+            media_id, track_id, ..
+        } => {
+            touched.push(track(timeline, track_id)?.to_owned());
+            let count = project
+                .media
+                .iter()
+                .filter(|media| media.id == *media_id)
+                .count();
+            if count == 0 {
+                return Err(CommandError::MediaGone.into());
+            }
+            if count != 1 {
+                return Err(GuardError::InvalidProject);
+            }
         }
         Command::MoveClips { moves } => {
             let mut seen = HashSet::new();
@@ -159,6 +190,16 @@ fn check_targets(
                 }
                 touched.push(clip_track(timeline, &wanted.clip_id)?.to_owned());
                 touched.push(track(timeline, &wanted.track_id)?.to_owned());
+                let clip = timeline
+                    .clip(&wanted.clip_id)
+                    .ok_or(GuardError::InvalidProject)?;
+                exact_time_range(wanted.start, clip.duration)?;
+            }
+            // Manual moves resolve collisions by shifting the whole group to
+            // the nearest gap. A reviewed plan must land at the exact requested
+            // times; use the same resolver only to prove it would not move them.
+            if timeline.resolve_moves(moves).as_deref() != Some(moves.as_slice()) {
+                return Err(CommandError::ExactOverlap.into());
             }
         }
         Command::UpdateClip { clip_id, .. } => {
@@ -278,3 +319,6 @@ pub(crate) fn apply_staged(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod exact_tests;

@@ -120,6 +120,7 @@ struct State {
 /// Slow work is serialised on the private worker. The UI approval lock is
 /// separate and short-lived: no UI action waits for the editor or disk.
 pub(crate) struct NativeSession {
+    pub(crate) tasks: super::tasks::NativeTasks,
     bridge: Arc<AgentBridge>,
     handle: String,
     generation: String,
@@ -164,6 +165,7 @@ impl NativeSession {
                 "this native generation already belongs to a runtime component".to_owned()
             })?;
         Ok(Self {
+            tasks: super::tasks::NativeTasks::new(Arc::clone(&bridge)),
             generation: bridge.token.generation().to_string(),
             bridge,
             handle,
@@ -260,6 +262,41 @@ impl NativeSession {
             return Err("native component is closed".into());
         }
         match method.as_str() {
+            "task.bind" => {
+                allow_bound_keys(&payload, &["taskId", "conversationId"])?;
+                if !state.granted {
+                    return Err("任务绑定尚未完成原生恢复确认。".into());
+                }
+                let conversation = payload["conversationId"]
+                    .as_u64()
+                    .ok_or("原版会话编号无效。")?;
+                self.tasks
+                    .bind(text_field(&payload, "taskId")?, conversation)?;
+                Ok(Value::Null)
+            }
+            "network.open" => {
+                allow_bound_keys(
+                    &payload,
+                    &["networkPermit", "url", "methodName", "headers", "body"],
+                )?;
+                let request = serde_json::from_value(json!({"url":payload["url"],"methodName":payload["methodName"],"headers":payload["headers"],"body":payload["body"]}))
+                    .map_err(|_| "原生模型请求格式无效。")?;
+                self.tasks
+                    .open(text_field(&payload, "networkPermit")?, request)
+            }
+            "network.read" => {
+                allow_bound_keys(&payload, &["networkPermit", "streamId"])?;
+                self.tasks
+                    .network(text_field(&payload, "networkPermit")?)?
+                    .read(text_field(&payload, "streamId")?)
+            }
+            "network.cancel" => {
+                allow_bound_keys(&payload, &["networkPermit", "streamId"])?;
+                self.tasks
+                    .network(text_field(&payload, "networkPermit")?)?
+                    .cancel_stream(text_field(&payload, "streamId")?)?;
+                Ok(Value::Null)
+            }
             "recovery.read" => {
                 allow_bound_keys(&payload, &[])?;
                 self.snapshot_locked(&state)
@@ -297,7 +334,7 @@ impl NativeSession {
             }
             "mcp.send" => {
                 allow_bound_keys(&payload, &["message", "invocation"])?;
-                let message = payload
+                let mut message = payload
                     .get("message")
                     .filter(|value| value.is_object())
                     .ok_or_else(|| "one internal protocol object is required".to_owned())?
@@ -326,12 +363,24 @@ impl NativeSession {
                             .into(),
                     );
                 }
+                self.tasks
+                    .authorize_tool(&mut message, invocation.as_ref())?;
                 self.bridge
                     .handle_with_invocation(message, invocation)
                     .map(|reply| reply.unwrap_or(Value::Null))
             }
             _ => Err("unreviewed native port method".into()),
         }
+    }
+
+    /// A network reader can be cancelled without waiting behind its own read.
+    pub(crate) fn cancel_network_frame(&self, payload: &Value) -> Result<Value, String> {
+        self.check_bound(payload)?;
+        allow_bound_keys(payload, &["networkPermit", "streamId"])?;
+        self.tasks
+            .network(text_field(payload, "networkPermit")?)?
+            .cancel_stream(text_field(payload, "streamId")?)?;
+        Ok(Value::Null)
     }
 
     /// Worker-only: gather current evidence without creating a writable store.
@@ -600,6 +649,7 @@ impl NativeSession {
     /// A failed close/drain retains the revoked lock; no newer component wins.
     pub(crate) fn shutdown(&self) -> Result<(), String> {
         self.bridge.stop();
+        self.tasks.abandon();
         {
             let mut state = self.state()?;
             self.close_resources(&mut state)?;
@@ -612,6 +662,7 @@ impl NativeSession {
 impl Drop for NativeSession {
     fn drop(&mut self) {
         self.bridge.stop();
+        self.tasks.abandon();
         // This is only a fail-closed fallback. Explicit shutdown owns the
         // platform-destruction acknowledgement and final handoff.
         let state = self
@@ -760,6 +811,7 @@ mod tests {
             )
             .unwrap();
             let project = Arc::new(Mutex::new(Some(CurrentProject {
+                project_id: "native-test-project".into(),
                 path: project_path.to_str().unwrap().to_owned(),
                 session_id: 7,
                 revision: 1,

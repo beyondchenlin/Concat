@@ -13,6 +13,33 @@ use concat_agent::scripts::{SCRIPT_DATABASE_FILE_NAME, ScriptDraft, ScriptError,
 use rusqlite::{Connection, params};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn native_editor_epoch_survives_async_draft_reconstruction() {
+    let root = Directory::new();
+    let store = ScriptStore::open(root.path()).unwrap();
+    let snapshot = store.create("project", "原稿").unwrap();
+    let before = ScriptDraft::from_editor(snapshot.clone(), "未保存手稿".into(), 14).unwrap();
+    let candidate = store
+        .record_candidate(&before.generation_ticket(), "独立候选")
+        .unwrap();
+    let mut after = ScriptDraft::from_editor(snapshot.clone(), "未保存手稿".into(), 16).unwrap();
+    assert!(matches!(
+        store.apply_candidate(&mut after, &candidate.candidate_id),
+        Err(ScriptError::StaleCandidate)
+    ));
+    assert_eq!(after.text(), "未保存手稿");
+    let mut unchanged = ScriptDraft::from_editor(snapshot, "未保存手稿".into(), 14).unwrap();
+    store
+        .apply_candidate(&mut unchanged, &candidate.candidate_id)
+        .unwrap();
+    assert_eq!(unchanged.text(), "独立候选");
+    assert_eq!(store.versions("project").unwrap().len(), 1);
+    assert!(
+        ScriptDraft::from_editor(unchanged.snapshot().clone(), "原稿".into(), u64::MAX).is_err()
+    );
+}
+
 struct Directory(PathBuf);
 impl Directory {
     fn new() -> Self {

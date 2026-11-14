@@ -8,4 +8,6 @@ export type { SqliteFrame, SqliteWire, SqliteWireValue } from "./sqlite-port.ts"
 export { NativeWireClient, messageNativePorts, NATIVE_CHANNEL } from "./native-wire.ts";
 export type { NativeMessageBridge } from "./native-wire.ts";
 export type { ModelConfiguration } from "./models.ts";
+export { nativeModelConfiguration } from "./model-configuration.ts";
+export type { NativeModelConfiguration } from "./model-configuration.ts";
 export type { NativePorts, OwnerLease, RecoverySnapshot, RecoveryApproval, ExecutionGrant } from "./ports.ts";

@@ -22,6 +22,7 @@ use crate::model::{
 mod audio;
 mod clips;
 pub use clips::{PlayheadSide, consolidation_clips, delete_to_playhead, why_not_merge};
+pub(crate) use clips::{exact_destination, exact_time_range};
 mod media;
 mod properties;
 mod timelines;
@@ -44,6 +45,36 @@ pub(crate) use crate::model::ranges::{
     MAX_OFFSET, MAX_SCALE, MAX_SPEED, MAX_STRETCH, MIN_CLIP_DURATION, MIN_SCALE, MIN_SPEED,
     MIN_STRETCH, wrap_rotation,
 };
+
+/// The two source-backed clip kinds admitted by an exact editing plan.
+/// Stills have editorial lengths and use a separately reviewed operation.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExactMediaKind {
+    /// Moving pictures, with their existing embedded audio behavior.
+    Video,
+    /// An independent sound file, such as music or a voice recording.
+    Audio,
+}
+
+impl ExactMediaKind {
+    /// The expected kind of the imported source file.
+    pub fn media_kind(self) -> MediaKind {
+        match self {
+            Self::Video => MediaKind::Video,
+            Self::Audio => MediaKind::Audio,
+        }
+    }
+
+    /// The clip kind placed on the native timeline.
+    pub fn clip_kind(self) -> ClipKind {
+        match self {
+            Self::Video => ClipKind::Video,
+            Self::Audio => ClipKind::Audio,
+        }
+    }
+}
 
 /// Which end of a clip a trim drags. The two are not symmetric: see
 /// [`Command::TrimClip`].
@@ -327,6 +358,27 @@ pub enum Command {
         /// False for programmatic adds, true for a drop from the bin.
         #[serde(default)]
         ripple: bool,
+    },
+    /// Places an exact, unit-speed range of an imported audio or video file.
+    /// Unlike manual placement, this never chooses a gap, shifts another
+    /// clip, floors a negative time, or invents an unknown source duration.
+    /// The host must additionally probe the real file and recheck its identity
+    /// before admitting the current-session, current-revision guarded batch.
+    AddMediaClipExact {
+        /// The already imported source; this operation cannot import a path.
+        media_id: String,
+        /// An existing, unlocked lane, empty or containing this clip kind only.
+        /// Native lanes remain untyped; this is a strict plan admission check.
+        track_id: String,
+        /// Must match the imported file and the actual native media probe.
+        kind: ExactMediaKind,
+        /// Exact start on the timeline, in seconds.
+        start: f64,
+        /// Inclusive source in-point, in seconds at normal playback speed.
+        source_start: f64,
+        /// Exclusive source out-point, within the real known source duration.
+        /// The placed duration is exactly sourceEnd minus sourceStart.
+        source_end: f64,
     },
     /// [`Command::AddClip`] without naming a lane: lands on the lowest
     /// track with nothing in the clip's span, falling back to the bottom
@@ -1051,6 +1103,23 @@ pub enum CommandError {
     /// one stored would poison every duration and key that touched it.
     #[error("A number in that edit is not finite.")]
     NotANumber,
+    /// An exact plan must fit the native timing range without any clamp.
+    #[error(
+        "The exact clip range is negative, too short, or outside the supported timeline range."
+    )]
+    ExactRange,
+    /// A real source duration is required; a placeholder or fallback is not evidence.
+    #[error("The exact clip requires an imported source with a known valid duration.")]
+    ExactSourceUnknown,
+    /// The source range would read past the imported file's known end.
+    #[error("The exact clip range exceeds the source duration.")]
+    ExactSourceRange,
+    /// The plan expected a different source kind, or chose a mixed-role lane.
+    #[error("The exact clip kind does not match its source or destination lane.")]
+    ExactKind,
+    /// Exact placement cannot silently move a clip to another gap.
+    #[error("The exact clip overlaps another clip on its destination lane.")]
+    ExactOverlap,
 }
 
 /// Mints ids. Owned by the editor so restored projects advance it past every
@@ -1173,6 +1242,12 @@ impl Command {
             Command::AddClip { start, .. }
             | Command::AddClipAtFirstFree { start, .. }
             | Command::AddClipsInSequence { start, .. } => bad([*start]),
+            Command::AddMediaClipExact {
+                start,
+                source_start,
+                source_end,
+                ..
+            } => bad([*start, *source_start, *source_end]),
             Command::AddShapeClip {
                 start,
                 duration,
@@ -1368,6 +1443,7 @@ pub fn apply(
         | Command::UpdateMediaPath { .. }
         | Command::SetMediaColorRange { .. }) => media::apply(project, mint, command),
         command @ (Command::AddClip { .. }
+        | Command::AddMediaClipExact { .. }
         | Command::AddClipAtFirstFree { .. }
         | Command::AddClipsInSequence { .. }
         | Command::AddTextClip { .. }

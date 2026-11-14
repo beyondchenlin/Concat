@@ -36,6 +36,8 @@ const inputs = Object.keys(result.metafile.inputs).map(normalized);
 for (const required of [
   "packages/durable/src/harness/harness.ts", "packages/durable/src/storage/sqlite/storage.ts",
   "packages/ai/src/models.ts", "packages/mcp/src/client.ts",
+  "packages/ai/src/api/openai-completions.ts", "packages/ai/src/api/openai-responses.ts",
+  "packages/ai/src/api/anthropic-messages.ts",
 ]) {
   if (!inputs.some((path) => path === required || path.endsWith(`/${required}`))) {
     throw new Error(`Browser bundle omitted original Pi component ${required}`);

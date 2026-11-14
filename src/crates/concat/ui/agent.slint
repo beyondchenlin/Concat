@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { Theme } from "theme/theme.slint";
+import { AgentCallAuthorization } from "agent-call.slint";
 import { ScriptUi, ScriptWorkspace } from "script.slint";
 import { AgentSettingsUi } from "dialogs/model-settings.slint";
 import { Focus } from "util.slint";
@@ -58,6 +59,7 @@ export global AgentUi {
     };
 
     callback send-requested(text: string);
+    callback edit-requested(text: string);
     callback stop-requested();
     callback review-requested();
     callback continue-requested();
@@ -208,6 +210,7 @@ export component AgentChat inherits Rectangle {
         padding: root.phone ? 8px : 14px;
         spacing: 8px;
         AgentTaskStatus { }
+        AgentCallAuthorization { }
 
         // The view contains only native-published conversation records. A
         // blocked send never manufactures a user or assistant message.
@@ -317,12 +320,20 @@ export component AgentChat inherits Rectangle {
                 clicked => { AgentUi.stop-requested(); }
             }
             Button {
-                label: "发送";
+                label: "只读对话";
                 primary: true;
                 enabled: AgentUi.status.can-send && AgentUi.draft != "";
                 min-height: root.phone ? 40px : 32px;
                 max-height: root.phone ? 40px : 32px;
                 clicked => { AgentUi.send-requested(AgentUi.draft); }
+            }
+            Button {
+                label: "按所选稿剪辑";
+                primary: true;
+                enabled: AgentUi.status.can-send && AgentUi.draft != "";
+                min-height: root.phone ? 40px : 32px;
+                max-height: root.phone ? 40px : 32px;
+                clicked => { AgentUi.edit-requested(AgentUi.draft); }
             }
         }
     }

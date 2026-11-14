@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { Theme } from "theme/theme.slint";
-import { Button } from "primitives/modal.slint";
+import { Button, Field, CopyChip } from "primitives/modal.slint";
 import { ResizeBox } from "primitives/resize-box.slint";
 import { ThinScrollbar } from "primitives/scrollbar.slint";
+import { PaneScroll } from "workspace/pane.slint";
+import { AgentCallAuthorization } from "agent-call.slint";
 
 export struct ScriptVersionData {
     identity: string,
@@ -29,6 +31,14 @@ export global ScriptUi {
     in-out property <bool> dirty;
     in-out property <bool> can-save;
     in-out property <bool> can-select;
+    in-out property <string> generation-instruction;
+    in-out property <bool> can-generate;
+    in-out property <bool> generating;
+    in-out property <[ScriptVersionData]> candidates;
+    in-out property <bool> has-candidate;
+    in-out property <string> candidate-text;
+    in-out property <string> candidate-notice;
+    in-out property <bool> can-accept-candidate;
     callback open-requested();
     callback edited(text: string);
     callback save-requested();
@@ -39,12 +49,21 @@ export global ScriptUi {
     callback select-requested();
     callback legacy-view-requested(identity: string);
     callback copy-legacy-requested();
+    callback generate-requested(instruction: string, rewrite: bool);
+    callback stop-generation-requested();
+    callback candidate-view-requested(identity: string);
+    callback candidate-accept-requested();
+    callback candidate-dismiss-requested();
 }
 
 export component ScriptWorkspace inherits Rectangle {
     background: Theme.panel;
     border-radius: Theme.r-lg;
-    VerticalLayout {
+    PaneScroll {
+      width: parent.width;
+      height: parent.height;
+      finger: root.width < 600px;
+      VerticalLayout {
         padding: 12px;
         spacing: 8px;
         HorizontalLayout {
@@ -63,7 +82,7 @@ export component ScriptWorkspace inherits Rectangle {
             }
             Button {
                 label: ScriptUi.dirty ? "保留草稿并读取" : "重新读取";
-                enabled: !ScriptUi.busy;
+                enabled: !ScriptUi.busy && !ScriptUi.generating;
                 clicked => { ScriptUi.reload-requested(); }
             }
         }
@@ -78,6 +97,37 @@ export component ScriptWorkspace inherits Rectangle {
             color: Theme.danger;
             font-size: Theme.fs;
             wrap: word-wrap;
+        }
+        Text {
+            text: "文案要求";
+            color: Theme.fg;
+            font-size: Theme.fs;
+        }
+        Field {
+            value: ScriptUi.generation-instruction;
+            placeholder: "主题、受众、时长，或需要怎样改写";
+            max-length: 2048;
+            edited(text) => { ScriptUi.generation-instruction = text; }
+        }
+        AgentCallAuthorization {}
+        HorizontalLayout {
+            spacing: 6px;
+            if ScriptUi.generating: Button {
+                label: "停止生成";
+                clicked => { ScriptUi.stop-generation-requested(); }
+            }
+            Button {
+                label: "生成候选";
+                enabled: ScriptUi.can-generate && ScriptUi.generation-instruction != "";
+                horizontal-stretch: 1;
+                clicked => { ScriptUi.generate-requested(ScriptUi.generation-instruction, false); }
+            }
+            Button {
+                label: "改写当前草稿";
+                enabled: ScriptUi.can-generate && ScriptUi.generation-instruction != "" && ScriptUi.text != "";
+                horizontal-stretch: 1;
+                clicked => { ScriptUi.generate-requested(ScriptUi.generation-instruction, true); }
+            }
         }
         if ScriptUi.has-legacy: Rectangle {
             min-height: 220px;
@@ -168,6 +218,74 @@ export component ScriptWorkspace inherits Rectangle {
                 clicked => { ScriptUi.save-requested(); }
             }
         }
+        if ScriptUi.candidates.length > 0: VerticalLayout {
+            spacing: 6px;
+            Text {
+                text: "生成候选";
+                color: Theme.fg;
+                font-size: Theme.fs;
+                font-weight: Theme.weight-title;
+            }
+            candidate-list := Flickable {
+                min-height: 42px;
+                max-height: 84px;
+                content-width: self.width;
+                content-height: candidate-rows.preferred-height;
+                candidate-rows := VerticalLayout {
+                    width: candidate-list.width;
+                    height: self.preferred-height;
+                    spacing: 4px;
+                    for candidate in ScriptUi.candidates: Button {
+                        label: candidate.label;
+                        primary: candidate.viewed;
+                        clicked => { ScriptUi.candidate-view-requested(candidate.identity); }
+                    }
+                }
+            }
+            if ScriptUi.has-candidate: VerticalLayout {
+                spacing: 6px;
+                Text {
+                    text: ScriptUi.candidate-notice;
+                    color: Theme.fg-muted;
+                    font-size: Theme.fs;
+                    wrap: word-wrap;
+                }
+                candidate-preview := Flickable {
+                    min-height: 100px;
+                    max-height: 180px;
+                    content-width: self.width;
+                    content-height: candidate-words.preferred-height;
+                    candidate-words := TextInput {
+                        width: candidate-preview.width;
+                        height: self.preferred-height;
+                        text: ScriptUi.candidate-text;
+                        read-only: true;
+                        single-line: false;
+                        wrap: word-wrap;
+                        color: Theme.fg;
+                        font-size: Theme.fs-input;
+                        selection-background-color: Theme.accent;
+                        selection-foreground-color: Theme.on-accent;
+                        accessible-label: "候选文案，仅查看，不会覆盖手稿";
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    CopyChip { text: ScriptUi.candidate-text; }
+                    Button {
+                        label: "暂不采用";
+                        clicked => { ScriptUi.candidate-dismiss-requested(); }
+                    }
+                    Button {
+                        label: "接受为草稿";
+                        primary: true;
+                        enabled: ScriptUi.can-accept-candidate;
+                        horizontal-stretch: 1;
+                        clicked => { ScriptUi.candidate-accept-requested(); }
+                    }
+                }
+            }
+        }
         HorizontalLayout {
             Text {
                 text: ScriptUi.selected-label;
@@ -185,6 +303,7 @@ export component ScriptWorkspace inherits Rectangle {
         }
         Rectangle {
             min-height: 70px;
+            max-height: 210px;
             vertical-stretch: 1;
             clip: true;
             version-scroll := Flickable {
@@ -217,5 +336,6 @@ export component ScriptWorkspace inherits Rectangle {
                 scrolled(to) => { version-scroll.content-y = -to; }
             }
         }
+      }
     }
 }

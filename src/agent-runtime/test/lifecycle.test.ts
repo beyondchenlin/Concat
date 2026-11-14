@@ -47,7 +47,7 @@ function fixture() {
 
 const actions: SchedulingAction[] = [
   "createConversation", "submit", "waitSubmission", "abortSubmission", "resume", "abortTask", "signal",
-  "waitForTask", "waitForIdle", "compact", "abortConversation", "resetConversation",
+  "waitForTask", "waitForIdle", "compact", "abortConversation", "resetConversation", "nativeSubmit", "nativeWait",
 ];
 
 test("startup only acquires ownership and reads recovery; every scheduling entry stays closed", async () => {
@@ -70,6 +70,19 @@ test("confirmation opens Pi once but does not resume or call a model", async () 
   assert.equal(f.log.at(-1), "run:submit");
   await f.runtime.stop();
   assert.deepEqual(f.log.slice(-3), ["revoke", "engine-close", "release"]);
+});
+
+test("a recovery grant alone is not network permission and task permissions never survive completion or stop", () => {
+  const f = fixture();
+  const gate = new ExecutionGate(); gate.acquiring(); gate.owned(f.lease);
+  gate.activating(f.lease, { generation: "1", snapshotId: "snapshot", allowInitializeEmptyStore: false }); gate.ready(f.lease);
+  assert.throws(() => gate.networkPermit(f.lease), /no approved/);
+  gate.authorizeNetwork(f.lease, "task-one"); assert.equal(gate.networkPermit(f.lease), "task-one");
+  assert.throws(() => gate.authorizeNetwork(f.lease, "task-two"), /another task/);
+  gate.finishNetwork("wrong-task"); assert.equal(gate.networkPermit(f.lease), "task-one");
+  gate.finishNetwork("task-one"); assert.throws(() => gate.networkPermit(f.lease), /no approved/);
+  gate.authorizeNetwork(f.lease, "task-two"); gate.stop();
+  assert.throws(() => gate.networkPermit(f.lease)); assert.throws(() => gate.authorizeNetwork(f.lease, "task-three"));
 });
 
 test("stale approval and discard with interrupted work never open writable Pi", async () => {

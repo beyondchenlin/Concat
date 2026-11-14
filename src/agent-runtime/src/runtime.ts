@@ -8,7 +8,7 @@ import type {
 
 const ACTIONS = new Set<SchedulingAction>([
   "createConversation", "submit", "waitSubmission", "abortSubmission", "resume", "abortTask",
-  "signal", "waitForTask", "waitForIdle", "compact", "abortConversation", "resetConversation",
+  "signal", "waitForTask", "waitForIdle", "compact", "abortConversation", "resetConversation", "nativeSubmit", "nativeWait",
 ]);
 
 /**

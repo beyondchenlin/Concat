@@ -14,6 +14,7 @@ export class ExecutionGate {
   #phase: RuntimePhase = "new";
   #lease: OwnerLease | undefined;
   #grant: ExecutionGrant | undefined;
+  #networkPermit: string | undefined;
   readonly #abort = new AbortController();
 
   get phase(): RuntimePhase { return this.#phase; }
@@ -48,6 +49,7 @@ export class ExecutionGate {
       throw new RuntimeRefused("recovery approval does not belong to this host generation");
     }
     this.#grant = Object.freeze({ ...grant });
+    this.#networkPermit = grant.networkPermit;
     this.#phase = "activating";
   }
 
@@ -71,13 +73,24 @@ export class ExecutionGate {
 
   networkPermit(lease: OwnerLease): string {
     this.assertReady(lease);
-    if (!this.#grant?.networkPermit) throw new RuntimeRefused("no approved model channel and budget");
-    return this.#grant.networkPermit;
+    if (!this.#networkPermit) throw new RuntimeRefused("no approved model channel and budget");
+    return this.#networkPermit;
+  }
+
+  authorizeNetwork(lease: OwnerLease, permit: string): void {
+    this.assertReady(lease);
+    if (!permit || permit.length > 256 || this.#networkPermit) throw new RuntimeRefused("native task permission is missing or another task is active");
+    this.#networkPermit = permit;
+  }
+
+  finishNetwork(permit: string): void {
+    if (this.#networkPermit === permit) this.#networkPermit = undefined;
   }
 
   stop(): void {
     if (this.#phase === "closed" || this.#phase === "stopping") return;
     this.#phase = "stopping";
+    this.#networkPermit = undefined;
     this.#abort.abort(new RuntimeRefused("native runtime stopped"));
   }
 

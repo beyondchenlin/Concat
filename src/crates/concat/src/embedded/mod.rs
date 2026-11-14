@@ -14,7 +14,9 @@ use serde_json::{Value, json};
 
 use crate::agent::AgentBridge;
 use crate::agent::native::{NativeSession, STORAGE_ID};
+use crate::agent::tasks::{SubmissionIntent, TaskMode};
 use crate::host::Shell;
+use slint::ComponentHandle;
 
 mod resources;
 pub use resources::RuntimeResources;
@@ -154,6 +156,10 @@ pub(crate) struct RuntimeView {
     pub snapshot: Option<Value>,
     pub error: String,
     pub closed: bool,
+    pub configuration: Option<Value>,
+    pub presentation: Option<Value>,
+    pub task_running: bool,
+    pub task_title: String,
 }
 
 #[derive(Clone, Copy)]
@@ -161,11 +167,41 @@ enum CommandKind {
     Start,
     Inspect,
     Confirm,
+    Submit,
+    Observe,
 }
 enum Work {
     Frame(Value),
     SavedScan,
+    Submit,
     Closed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AcceptedSubmission {
+    task: String,
+    conversation: u64,
+    submission: u64,
+}
+
+impl AcceptedSubmission {
+    fn parse(value: &Value) -> Result<Self, String> {
+        let integer = |field: &str| {
+            value[field]
+                .as_u64()
+                .filter(|id| *id <= 9_007_199_254_740_991)
+                .ok_or("原版任务编号无效。".to_owned())
+        };
+        Ok(Self {
+            task: value["taskId"]
+                .as_str()
+                .filter(|id| !id.is_empty() && id.len() <= 256)
+                .ok_or("原生任务编号无效。")?
+                .to_owned(),
+            conversation: integer("conversationId")?,
+            submission: integer("submissionId")?,
+        })
+    }
 }
 
 /// One web component, one already-owned native session. Queues carry messages,
@@ -180,9 +216,12 @@ pub(crate) struct EmbeddedRuntime {
     pending: Mutex<BTreeMap<String, CommandKind>>,
     seen: Mutex<BTreeSet<String>>,
     next: AtomicU64,
-    revoked: AtomicBool,
+    revoked: Arc<AtomicBool>,
     platform_closed: AtomicBool,
     scan_queued: AtomicBool,
+    submission: Mutex<Option<SubmissionIntent>>,
+    observed_conversation: Mutex<Option<u64>>,
+    accepted_submission: Mutex<Option<AcceptedSubmission>>,
 }
 
 impl EmbeddedRuntime {
@@ -286,6 +325,7 @@ impl EmbeddedRuntime {
                 }
                 match work {
                     Work::Frame(envelope) => runtime.handle(envelope),
+                    Work::Submit => runtime.prepare_submission(),
                     Work::SavedScan => {
                         runtime.scan_queued.store(false, Ordering::Release);
                         match runtime.native.take_saved_notifications() {
@@ -323,9 +363,12 @@ impl EmbeddedRuntime {
             pending: Mutex::new(BTreeMap::new()),
             seen: Mutex::new(BTreeSet::new()),
             next: AtomicU64::new(1),
-            revoked: AtomicBool::new(false),
+            revoked: Arc::new(AtomicBool::new(false)),
             platform_closed: AtomicBool::new(false),
             scan_queued: AtomicBool::new(false),
+            submission: Mutex::new(None),
+            observed_conversation: Mutex::new(None),
+            accepted_submission: Mutex::new(None),
         });
         let weak_message = Arc::downgrade(&runtime);
         let weak_stopping = Arc::downgrade(&runtime);
@@ -408,6 +451,19 @@ impl EmbeddedRuntime {
             self.stop();
             return;
         }
+        if method == Some("network.cancel") {
+            let result = self.native.cancel_network_frame(&envelope["payload"]);
+            let reply = match result {
+                Ok(value) => json!({"id":envelope["id"],"result":value}),
+                Err(message) => {
+                    json!({"id":envelope["id"],"error":{"code":"refused","message":message}})
+                }
+            };
+            if let Err(error) = self.post(reply) {
+                self.fail(&error);
+            }
+            return;
+        }
         if self.incoming.try_send(Work::Frame(envelope)).is_err() {
             self.fail("聊天消息队列超过上限，已停止执行。");
         }
@@ -437,10 +493,11 @@ impl EmbeddedRuntime {
                         self.fail("运行组件重复启动。");
                         return;
                     }
-                    if let Err(error) = self.command(
-                        json!({"method":"runtime.start","storageId":STORAGE_ID}),
-                        CommandKind::Start,
-                    ) {
+                    let start = self.native.tasks.model_configuration().and_then(|configuration| {
+                        if let Ok(mut view) = self.view.lock() { view.configuration = Some(configuration.clone()); }
+                        self.command(json!({"method":"runtime.start","storageId":STORAGE_ID,"modelConfiguration":configuration}), CommandKind::Start)
+                    });
+                    if let Err(error) = start {
                         self.fail(&error);
                     }
                 }
@@ -461,9 +518,16 @@ impl EmbeddedRuntime {
                         view.phase = phase.to_owned();
                     }
                 }
-                // Conversation events are only rendered after an explicit
-                // native conversation selection is wired; no synthetic entries.
-                "conversation.changed" => {}
+                "conversation.presentation" => {
+                    if let Err(error) = self.accept_presentation(&envelope) {
+                        self.fail(&error);
+                        return;
+                    }
+                }
+                "task.completed" => {
+                    self.complete_submission(&envelope);
+                    return;
+                }
                 "operation.failed" => {
                     self.fail(
                         envelope["message"]
@@ -523,6 +587,15 @@ impl EmbeddedRuntime {
             } else {
                 Err("native request was replayed or exceeded its admission limit".into())
             };
+            if envelope
+                .pointer("/payload/method")
+                .and_then(Value::as_str)
+                .is_some_and(|method| method.starts_with("network."))
+                && let Err(message) = &result
+                && let Ok(mut view) = self.view.lock()
+            {
+                view.error = message.clone();
+            }
             // A tool-level error still travels in a successful protocol
             // response. An uncertain native edit revokes the owner inside
             // that response, so the page must lose its entire component now.
@@ -567,6 +640,10 @@ impl EmbeddedRuntime {
                 .pointer("/error/message")
                 .and_then(Value::as_str)
                 .unwrap_or("聊天运行组件拒绝了操作。");
+            if matches!(kind, CommandKind::Submit) {
+                self.fail("模型任务提交未得到明确确认，已停止调用；输入保留，请重新核对会话。");
+                return;
+            }
             if let Ok(mut view) = self.view.lock() {
                 view.error = message.to_owned();
             }
@@ -588,6 +665,39 @@ impl EmbeddedRuntime {
         {
             view.error.clear();
         }
+        if matches!(kind, CommandKind::Confirm) {
+            match self.native.tasks.latest() {
+                Ok(Some(conversation)) => {
+                    if let Ok(mut observed) = self.observed_conversation.lock() {
+                        *observed = Some(conversation);
+                    }
+                    if let Err(error) = self.command(
+                        json!({"method":"runtime.observe","conversationId":conversation}),
+                        CommandKind::Observe,
+                    ) {
+                        self.fail(&error);
+                        return;
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.fail(&error);
+                    return;
+                }
+            }
+        }
+        if matches!(kind, CommandKind::Submit) {
+            if let Err(error) = self.accept_submission(result) {
+                self.fail(&error);
+                return;
+            }
+        }
+        if matches!(kind, CommandKind::Observe) {
+            if let Err(error) = self.accept_presentation(result) {
+                self.fail(&error);
+                return;
+            }
+        }
         self.publish();
     }
 
@@ -604,6 +714,233 @@ impl EmbeddedRuntime {
             .as_ref()
             .ok_or("native platform is not ready")?
             .post_message(&serialized)
+    }
+
+    fn queue_submission(&self, intent: SubmissionIntent) -> Result<(), String> {
+        if self.revoked.load(Ordering::Acquire) || self.view().phase != "ready" {
+            return Err("请先连接会话并完成原生恢复核对。".into());
+        }
+        if let Some(generation) = &intent.generation {
+            generation.bind_component_revocation(Arc::clone(&self.revoked))?;
+        }
+        let title = match intent.mode {
+            TaskMode::Chat => "正在对话",
+            TaskMode::Script => "正在生成文案候选",
+            TaskMode::Edit => "正在执行所选文案剪辑",
+        };
+        {
+            let mut submission = self.submission.lock().map_err(|_| "本次任务状态不可用。")?;
+            if submission.is_some() {
+                return Err("已有任务正在执行，请完成或停止后再发送。".into());
+            }
+            *submission = Some(intent);
+        }
+        if let Ok(mut view) = self.view.lock() {
+            view.task_running = true;
+            view.task_title = title.into();
+            view.error.clear();
+        }
+        if self.incoming.try_send(Work::Submit).is_err() {
+            self.submission
+                .lock()
+                .map_err(|_| "本次任务状态不可用。")?
+                .take();
+            if let Ok(mut view) = self.view.lock() {
+                view.task_running = false;
+            }
+            return Err("聊天任务队列已满，本次未发送。".into());
+        }
+        self.publish();
+        Ok(())
+    }
+
+    fn prepare_submission(&self) {
+        let intent = self
+            .submission
+            .lock()
+            .ok()
+            .and_then(|intent| intent.clone());
+        let Some(intent) = intent else {
+            return;
+        };
+        let result = self
+            .native
+            .tasks
+            .prepare(&intent)
+            .and_then(|payload| self.command(payload, CommandKind::Submit));
+        if let Err(error) = result {
+            self.native.tasks.abandon();
+            if let Ok(mut submission) = self.submission.lock() {
+                submission.take();
+            }
+            if let Some(generation) = intent.generation {
+                deliver_generation(generation, Err(error.clone()));
+            }
+            if let Ok(mut view) = self.view.lock() {
+                view.error = error;
+                view.task_running = false;
+            }
+            self.publish();
+        }
+    }
+
+    fn accept_submission(&self, result: &Value) -> Result<(), String> {
+        let accepted = AcceptedSubmission::parse(result)?;
+        let intent = self
+            .submission
+            .lock()
+            .map_err(|_| "本次任务状态不可用。")?
+            .clone()
+            .ok_or("原版运行组件返回了无对应任务的提交结果。")?;
+        if result["taskId"] != intent.id
+            || result["submissionId"]
+                .as_u64()
+                .is_none_or(|id| id > 9_007_199_254_740_991)
+        {
+            return Err("原版任务提交编号无效。".into());
+        }
+        let conversation = result["conversationId"]
+            .as_u64()
+            .ok_or("原版任务会话编号缺失。")?;
+        if !self.native.tasks.may_present(conversation, None) {
+            return Err("原版任务会话未得到原生绑定。".into());
+        }
+        *self
+            .observed_conversation
+            .lock()
+            .map_err(|_| "当前会话状态不可用。")? = Some(conversation);
+        let mut receipt = self
+            .accepted_submission
+            .lock()
+            .map_err(|_| "任务接受回执不可用。")?;
+        if receipt.is_some() {
+            return Err("任务重复返回接受回执。".into());
+        }
+        *receipt = Some(accepted);
+        drop(receipt);
+        let component = self.component.clone();
+        if intent.mode != TaskMode::Script {
+            let _ = slint::invoke_from_event_loop(move || {
+                Shell::with(|shell, app| {
+                    if shell
+                        .embedded
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|runtime| runtime.component() == component)
+                        && app.global::<crate::ui::AgentUi>().get_draft().as_str() == intent.input
+                    {
+                        app.global::<crate::ui::AgentUi>().set_draft("".into());
+                    }
+                });
+            });
+        }
+        Ok(())
+    }
+
+    fn accept_presentation(&self, value: &Value) -> Result<(), String> {
+        let conversation = value["conversationId"]
+            .as_u64()
+            .ok_or("会话显示缺少原版编号。")?;
+        let observed = *self
+            .observed_conversation
+            .lock()
+            .map_err(|_| "当前会话状态不可用。")?;
+        // A detached observation can have one already queued frame. It is
+        // ignored instead of replacing another project's/task's presentation.
+        if !self.native.tasks.may_present(conversation, observed) {
+            return Ok(());
+        }
+        let messages = value["messages"]
+            .as_array()
+            .ok_or("会话显示记录格式无效。")?;
+        if messages.len() > 100
+            || messages.iter().any(|message| {
+                !matches!(
+                    message["role"].as_str(),
+                    Some("user" | "assistant" | "tool")
+                ) || message["text"]
+                    .as_str()
+                    .is_none_or(|text| text.len() > 128 * 1024)
+            })
+            || value["partialText"]
+                .as_str()
+                .is_none_or(|text| text.len() > 256 * 1024)
+            || !value["busy"].is_boolean()
+        {
+            return Err("会话显示内容超过已审核的范围。".into());
+        }
+        self.view
+            .lock()
+            .map_err(|_| "会话显示状态不可用。")?
+            .presentation = Some(value.clone());
+        Ok(())
+    }
+
+    fn complete_submission(&self, event: &Value) {
+        let result = (|| -> Result<(), String> {
+            let completed = AcceptedSubmission::parse(event)?;
+            if self
+                .accepted_submission
+                .lock()
+                .map_err(|_| "任务接受回执不可用。")?
+                .as_ref()
+                != Some(&completed)
+            {
+                return Err("任务终态与原版接受回执不一致，结果未写入。".into());
+            }
+            let id = event["taskId"].as_str().ok_or("任务完成编号缺失。")?;
+            let conversation = event["conversationId"]
+                .as_u64()
+                .ok_or("任务完成会话编号缺失。")?;
+            let successful = match event["status"].as_str() {
+                Some("done") => true,
+                Some("unanswered") => false,
+                _ => return Err("任务没有返回明确终态。".into()),
+            };
+            let text = event["text"]
+                .as_str()
+                .filter(|text| text.len() <= 1024 * 1024)
+                .ok_or("任务回答无效或超过本次上限。")?;
+            let intent = self
+                .submission
+                .lock()
+                .map_err(|_| "本次任务状态不可用。")?
+                .clone()
+                .filter(|intent| intent.id == id)
+                .ok_or("任务完成不属于当前原生请求。")?;
+            self.native.tasks.finish(id, conversation)?;
+            self.accepted_submission
+                .lock()
+                .map_err(|_| "任务接受回执不可用。")?
+                .take();
+            self.submission
+                .lock()
+                .map_err(|_| "本次任务状态不可用。")?
+                .take();
+            if let Some(generation) = intent.generation {
+                deliver_generation(
+                    generation,
+                    if successful {
+                        Ok(text.to_owned())
+                    } else {
+                        Err("文案生成没有成功完成，已保留原手稿；请查看模型错误后重新发送。".into())
+                    },
+                );
+            }
+            let mut view = self.view.lock().map_err(|_| "本次任务状态不可用。")?;
+            view.task_running = false;
+            if successful {
+                view.error.clear();
+            } else if view.error.is_empty() {
+                view.error = "模型任务未完成；请检查渠道、额度与当前工程后重新发送。".into();
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.fail(&error);
+        } else {
+            self.publish();
+        }
     }
 
     fn command(&self, payload: Value, kind: CommandKind) -> Result<(), String> {
@@ -674,15 +1011,26 @@ impl EmbeddedRuntime {
         // Native execution loses authority synchronously, before any page or
         // database cleanup. A late JavaScript callback cannot keep it alive.
         self.bridge.stop();
+        self.native.tasks.cancel();
         let first = !self.revoked.swap(true, Ordering::AcqRel);
+        if let Ok(mut accepted) = self.accepted_submission.lock() {
+            accepted.take();
+        }
         log::info!("bk-cat-agent: state=stopping");
         if let Ok(mut view) = self.view.lock() {
             view.phase = "stopping".into();
+            view.task_running = false;
             // The platform's generic closed acknowledgement must not overwrite
             // the actionable startup error that caused native retirement.
             if !reason.is_empty() && (first || view.error.is_empty()) {
                 view.error = reason.to_owned();
             }
+        }
+        if let Ok(mut submission) = self.submission.lock()
+            && let Some(intent) = submission.take()
+            && let Some(generation) = intent.generation
+        {
+            deliver_generation(generation, Err("文案生成已停止，未覆盖手稿。".into()));
         }
         self.publish();
     }
@@ -736,12 +1084,189 @@ impl EmbeddedRuntime {
 impl Drop for EmbeddedRuntime {
     fn drop(&mut self) {
         self.bridge.stop();
+        self.native.tasks.cancel();
         if let Ok(platform) = self.platform.lock()
             && let Some(platform) = platform.as_ref()
         {
             platform.close();
         }
     }
+}
+
+fn deliver_generation(
+    request: crate::panes::script::GenerationRequest,
+    result: Result<String, String>,
+) {
+    // Always marshal to the UI, including stop while Studio is already borrowed.
+    let _ = slint::invoke_from_event_loop(move || {
+        crate::panes::script::complete_generation(request, result)
+    });
+}
+
+/// Re-check native task/script authority in the actual editing callback.
+pub(crate) fn validate_current_edit(
+    studio: &crate::studio::Studio,
+    session: u64,
+    revision: u64,
+) -> Result<(), String> {
+    let mut result = Ok(());
+    Shell::with(|shell, _| {
+        if let Some(runtime) = shell.embedded.borrow().as_ref() {
+            result = runtime
+                .native
+                .tasks
+                .validate_edit(studio, session, revision);
+        }
+    });
+    // A direct trusted native bridge without a web component retains its
+    // original owner/session guards (including the isolated native probe).
+    // Every production page reaches NativeSession's task guard first.
+    result
+}
+
+pub(crate) fn authorize_call_from_ui() {
+    Shell::with(|shell, app| {
+        let runtime = shell.embedded.borrow().clone();
+        let mut pane = shell.agent_pane.borrow_mut();
+        let ready = runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.view().phase == "ready" && !runtime.view().task_running)
+            && pane.readiness.credentials_ready
+            && !pane.readiness.provider.is_empty()
+            && !pane.readiness.model.is_empty();
+        if ready {
+            pane.readiness.calls_authorized = !pane.readiness.calls_authorized;
+            pane.error.clear();
+            if let Some(runtime) = runtime
+                && let Ok(mut view) = runtime.view.lock()
+            {
+                view.error.clear();
+            }
+        } else {
+            pane.readiness.calls_authorized = false;
+            pane.error = "请先配置本项目渠道和系统凭据，并连接、核对当前会话。".into();
+        }
+        pane.publish(
+            &app,
+            shell
+                .agent
+                .borrow()
+                .as_ref()
+                .ok_or_else(|| "会话暂不可用。".into())
+                .and_then(|bridge| bridge.status()),
+        );
+    });
+}
+
+pub(crate) fn submit_chat_from_ui(input: String, edit: bool) -> Result<(), String> {
+    submit_from_ui(
+        input,
+        if edit { TaskMode::Edit } else { TaskMode::Chat },
+        false,
+    )
+}
+
+pub(crate) fn submit_script_generation(instruction: String, rewrite: bool) -> Result<(), String> {
+    submit_from_ui(instruction, TaskMode::Script, rewrite)
+}
+
+fn submit_from_ui(input: String, mode: TaskMode, rewrite: bool) -> Result<(), String> {
+    let mut result = Err("原生窗口不可用。".to_owned());
+    Shell::with(|shell, app| {
+        result = (|| {
+            let runtime = shell
+                .embedded
+                .borrow()
+                .clone()
+                .ok_or("请先连接聊天会话。")?;
+            let bridge = shell.agent.borrow().clone().ok_or("当前会话不可用。")?;
+            let text = shell
+                .agent_pane
+                .borrow()
+                .validate_submission(bridge.status(), &input)?;
+            let mut studio = shell.studio.borrow_mut();
+            let session = studio.session.as_ref().ok_or("请先打开原生工程。")?;
+            let project = crate::live::CurrentProject {
+                path: session.path().to_owned(),
+                project_id: session.project_identity().to_owned(),
+                session_id: session.session_id(),
+                revision: session.revision(),
+            };
+            let generation = if mode == TaskMode::Script {
+                Some(studio.script.begin_generation(
+                    project.session_id,
+                    project.revision,
+                    &text,
+                    rewrite,
+                )?)
+            } else {
+                None
+            };
+            let selected = if mode == TaskMode::Edit {
+                if !studio.script.selection_settled() {
+                    return Err("请等待文案保存和选版操作完成。".into());
+                }
+                Some(
+                    studio
+                        .script
+                        .selected_binding()
+                        .ok_or("请先在文案工作区明确选择本次剪辑版本。")?,
+                )
+            } else {
+                None
+            };
+            let id = match &generation {
+                Some(generation) => generation.request_id().to_owned(),
+                None => random_capability()?,
+            };
+            let prompt = generation
+                .as_ref()
+                .map_or(text, |generation| generation.prompt().to_owned());
+            let intent = SubmissionIntent {
+                id,
+                project,
+                mode,
+                input: prompt,
+                selected,
+                generation,
+            };
+            if let Err(error) = runtime.queue_submission(intent) {
+                if mode == TaskMode::Script {
+                    studio.script.cancel_generation();
+                }
+                return Err(error);
+            }
+            // Sending consumes the one native authorization. Saving settings,
+            // loading a conversation or completing a task never replenishes it.
+            shell.agent_pane.borrow_mut().readiness.calls_authorized = false;
+            studio.script.publish(&app);
+            Ok(())
+        })();
+    });
+    result
+}
+
+pub(crate) fn stop_from_ui() {
+    Shell::with(|shell, app| {
+        shell.agent_pane.borrow_mut().readiness.calls_authorized = false;
+        shell.studio.borrow_mut().script.cancel_generation();
+        if let Some(bridge) = shell.agent.borrow().as_ref() {
+            bridge.stop();
+        }
+        if let Some(runtime) = shell.embedded.borrow().as_ref() {
+            runtime.stop();
+        }
+        shell.studio.borrow().script.publish(&app);
+        shell.agent_pane.borrow().publish(
+            &app,
+            shell
+                .agent
+                .borrow()
+                .as_ref()
+                .ok_or_else(|| "会话暂不可用。".into())
+                .and_then(|bridge| bridge.status()),
+        );
+    });
 }
 
 fn authenticate(raw: &str, component: &str) -> Result<Value, String> {
@@ -1232,6 +1757,83 @@ mod tests {
             drop(self.bridge);
             std::fs::remove_dir_all(self.root).unwrap();
         }
+    }
+
+    #[test]
+    fn task_terminal_requires_the_exact_original_acceptance_receipt() {
+        // Drive the real authenticated native mailbox with synthetic original
+        // receipts. No model, platform credential store or network is involved.
+        for (receipt, changed_field) in [
+            (false, None),
+            (true, Some("submissionId")),
+            (true, Some("conversationId")),
+            (true, Some("taskId")),
+        ] {
+            let fixture = StartupFixture::new(Duration::from_secs(30));
+            if receipt {
+                *fixture.runtime.accepted_submission.lock().unwrap() = Some(AcceptedSubmission {
+                    task: "native-task".into(),
+                    conversation: 71,
+                    submission: 83,
+                });
+            }
+            let mut event = json!({"event":"task.completed","taskId":"native-task",
+                "conversationId":71,"submissionId":83,"status":"done","text":"candidate"});
+            if let Some(field) = changed_field {
+                event[field] = if field == "taskId" {
+                    json!("old-native-task")
+                } else {
+                    json!(99)
+                };
+            }
+            fixture.message(event);
+            fixture.wait_for(|view| view.error.contains("接受回执不一致"));
+            assert!(fixture.runtime.revoked.load(Ordering::Acquire));
+            assert!(
+                fixture
+                    .runtime
+                    .accepted_submission
+                    .lock()
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(fixture.posted.lock().unwrap().is_empty());
+            assert!(!fixture.runtime.view().closed);
+            assert_eq!(
+                fixture.bridge.status().unwrap().phase,
+                concat_agent::Phase::Draining
+            );
+            fixture.finish();
+        }
+    }
+
+    #[test]
+    fn stopped_task_discards_its_receipt_and_ignores_late_terminal_frames() {
+        let fixture = StartupFixture::new(Duration::from_secs(30));
+        *fixture.runtime.accepted_submission.lock().unwrap() = Some(AcceptedSubmission {
+            task: "stopped-native-task".into(),
+            conversation: 71,
+            submission: 83,
+        });
+        fixture.runtime.stop();
+        assert!(
+            fixture
+                .runtime
+                .accepted_submission
+                .lock()
+                .unwrap()
+                .is_none()
+        );
+        let before = fixture.runtime.view();
+        fixture.message(
+            json!({"event":"task.completed","taskId":"stopped-native-task",
+            "conversationId":71,"submissionId":83,"status":"done","text":"late candidate"}),
+        );
+        assert_eq!(fixture.runtime.view().error, before.error);
+        assert_eq!(fixture.closes.load(Ordering::Acquire), 1);
+        assert!(fixture.posted.lock().unwrap().is_empty());
+        assert!(!fixture.runtime.view().closed);
+        fixture.finish();
     }
 
     #[test]

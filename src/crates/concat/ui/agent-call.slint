@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { Theme } from "theme/theme.slint";
+import { Button } from "primitives/modal.slint";
+
+// A native presentation, never a page-supplied network capability.
+export global AgentCallUi {
+    in property <bool> allowed;
+    in property <bool> can-authorize;
+    in property <string> limits: "每次任务最多4次模型请求；输出上限取当前渠道设置，费用按服务商计费。";
+    callback authorize-requested();
+}
+
+export component AgentCallAuthorization inherits VerticalLayout {
+    spacing: 4px;
+    Text {
+        text: AgentCallUi.limits;
+        color: Theme.fg-muted;
+        font-size: Theme.fs-sm;
+        wrap: word-wrap;
+    }
+    Button {
+        label: AgentCallUi.allowed ? "已允许本次调用 · 点击撤回" : "允许本次调用";
+        enabled: AgentCallUi.can-authorize;
+        primary: AgentCallUi.allowed;
+        clicked => { AgentCallUi.authorize-requested(); }
+    }
+}

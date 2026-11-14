@@ -457,49 +457,14 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     panes::script::install(&app);
     let agent_ui = app.global::<AgentUi>();
     agent_ui.on_send_requested(|draft| {
-        Shell::with(|shell, app| {
-            let owner = shell
-                .agent
-                .borrow()
-                .as_ref()
-                .ok_or_else(|| "会话暂不可用，仍可使用手动编辑。".to_owned())
-                .and_then(|bridge| bridge.status());
-            let mut pane = shell.agent_pane.borrow_mut();
-            pane.error = match pane.validate_submission(owner, &draft) {
-                Ok(_) => "模型渠道、调用凭据与费用限额尚未配置，草稿已保留。".to_owned(),
-                Err(error) => error,
-            };
-            pane.publish(
-                &app,
-                shell
-                    .agent
-                    .borrow()
-                    .as_ref()
-                    .ok_or_else(|| "会话暂不可用，仍可使用手动编辑。".to_owned())
-                    .and_then(|bridge| bridge.status()),
-            );
-        });
+        embedded::show_ui_error(embedded::submit_chat_from_ui(draft.to_string(), false));
     });
-    agent_ui.on_stop_requested(|| {
-        Shell::with(|shell, app| {
-            // Revoke synchronously before any asynchronous runtime cleanup.
-            if let Some(bridge) = shell.agent.borrow().as_ref() {
-                bridge.stop();
-            }
-            if let Some(runtime) = shell.embedded.borrow().as_ref() {
-                runtime.stop();
-            }
-            shell.agent_pane.borrow().publish(
-                &app,
-                shell
-                    .agent
-                    .borrow()
-                    .as_ref()
-                    .ok_or_else(|| "会话暂不可用，仍可使用手动编辑。".to_owned())
-                    .and_then(|bridge| bridge.status()),
-            );
-        });
+    agent_ui.on_edit_requested(|draft| {
+        embedded::show_ui_error(embedded::submit_chat_from_ui(draft.to_string(), true));
     });
+    agent_ui.on_stop_requested(embedded::stop_from_ui);
+    app.global::<ui::AgentCallUi>()
+        .on_authorize_requested(embedded::authorize_call_from_ui);
     agent_ui.on_review_requested(|| {
         let mut result = Err("聊天运行组件尚未连接。".to_owned());
         Shell::with(|shell, _| {

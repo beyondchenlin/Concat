@@ -27,7 +27,7 @@ for (const [name, expected] of Object.entries(manifest.files)) {
 let forbiddenFetch = 0;
 const sandbox = vm.createContext({
   AbortController, AbortSignal, DOMException, URL, URLSearchParams,
-  Request, Response, Headers, TextDecoder, TextEncoder, Uint8Array,
+  Request, Response, Headers, ReadableStream, TextDecoder, TextEncoder, Uint8Array,
   setTimeout, clearTimeout, queueMicrotask, performance, crypto: webcrypto, btoa, atob,
   fetch: () => { forbiddenFetch++; throw new Error("Direct browser network is forbidden in this test"); },
 });
@@ -113,7 +113,7 @@ test("built browser bootstrap answers native commands and opens no writable stor
     waiting.set(id, { resolve, reject }); receive({ channel: "bk-cat-runtime-v1", id, payload });
   });
   vm.runInContext(readFileSync(resolve(packageRoot, "dist/bootstrap.js"), "utf8"), sandbox, { filename: "bootstrap.js" });
-  assert.ok(sent.some((message) => message.event === "runtime.loaded" && message.modelTransport === "unconfigured"));
+  assert.ok(sent.some((message) => message.event === "runtime.loaded" && message.modelTransport === "native-scoped-stream"));
   try {
     const started = await command("native-start", { method: "runtime.start", storageId: "bootstrap-isolated" });
     assert.equal(started.schemaVersion, "empty");
@@ -178,13 +178,14 @@ function sqliteFixture(file, generation) {
   return { calls, wire, revoke: () => { revoked = true; }, isClosed: () => !connection };
 }
 
-function fixture(file, generation) {
+function fixture(file, generation, configured, transport) {
   const sqlite = sqliteFixture(file, generation);
   const mcpCalls = [];
   let granted = false;
   let networkCalls = 0;
   let credentialReads = 0;
   let snapshotReads = 0;
+  const taskBindings = [];
   const lease = { storageId: "isolated-pi", generation: String(generation), handle: `owner-${generation}` };
   const snapshot = () => ({
     snapshotId: `reconciled-${generation}`, projectSession: "1", projectRevision: "0", sessionRevision: "0",
@@ -204,7 +205,7 @@ function fixture(file, generation) {
     recovery: { async read() { snapshotReads++; return snapshot(); } },
     sqlite: { async open(...args) { assert.equal(granted, true); return api.nativeSqlitePort(sqlite.wire).open(...args); } },
     mcp: {
-      async send(_lease, message) {
+      async send(_lease, message, _signal, invocation) {
         mcpCalls.push(message);
         if (message.method === "initialize") {
           assert.equal(message.params.protocolVersion, "2025-11-25");
@@ -214,10 +215,23 @@ function fixture(file, generation) {
         if (message.method === "tools/list") return { jsonrpc: "2.0", id: message.id, result: { tools: [
           "concat_version", "project_get", "timeline_read", "edit_apply_guarded",
         ].map((name) => ({ name, description: "Protocol fixture only", inputSchema: { type: "object", properties: {} } })) } };
+        if (transport && message.method === "tools/call") {
+          assert.equal(message.params.name, "project_get", "only the fixture's real read path is implemented");
+          assert.ok(taskBindings.some((binding) => binding.conversationId === invocation.conversationId));
+          return { jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: "Explicit read-only project fixture" }] } };
+        }
         throw new Error(`Unexpected model/native tool call ${message.method}`);
       },
     },
-    network: { async fetch() { networkCalls++; throw new Error("No model service is authorized"); } },
+    network: { async fetch(...args) {
+      networkCalls++;
+      if (transport) {
+        assert.ok(taskBindings.length, "native task binds before original model scheduling");
+        return transport(...args);
+      }
+      throw new Error("No model service is authorized");
+    } },
+    tasks: { async bind(_lease, taskId, conversationId) { taskBindings.push({ taskId, conversationId }); } },
   };
   const configuration = { providers: [], credentials: {
     async read() { credentialReads++; throw new Error("No credentials are configured"); },
@@ -225,8 +239,8 @@ function fixture(file, generation) {
     async modify() { throw new Error("No credential modification"); },
     async delete() { throw new Error("No credential deletion"); },
   } };
-  const runtime = new api.AgentRuntime(lease.storageId, ports, api.piEngineFactory(configuration));
-  return { runtime, sqlite, mcpCalls, snapshotReads: () => snapshotReads, networkCalls: () => networkCalls, credentialReads: () => credentialReads };
+  const runtime = new api.AgentRuntime(lease.storageId, ports, api.piEngineFactory(configured ?? configuration));
+  return { runtime, sqlite, mcpCalls, taskBindings, snapshotReads: () => snapshotReads, networkCalls: () => networkCalls, credentialReads: () => credentialReads };
 }
 
 test("built pinned original Harness persists real conversation records in SQLite and reopens only after explicit reconciliation", { timeout: 15000 }, async () => {
@@ -284,6 +298,224 @@ test("built pinned original Harness persists real conversation records in SQLite
   } finally {
     await first.runtime.stop().catch(() => {});
     await second?.runtime.stop().catch(() => {});
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+const nativeConfiguration = (protocol = "openai-completions") => ({
+  id: "native-channel", version: "7", configurationVersion: "9", protocol,
+  endpoint: "https://model.invalid/custom", model: "explicit-model", requestTimeoutMs: 10000, maxOutputTokens: 128,
+});
+
+function completionResponse(parts) {
+  const chunks = parts.map((part) => `data: ${JSON.stringify({
+    id: "fixture-completion", object: "chat.completion.chunk", created: 1, model: "explicit-model",
+    choices: [{ index: 0, delta: part.delta ?? {}, finish_reason: part.finish ?? null }],
+  })}\n\n`).join("") + "data: [DONE]\n\n";
+  return new Response(chunks, { headers: { "content-type": "text/event-stream" } });
+}
+
+test("configured original provider submits, persists a real generated answer and reopens it without another request", { timeout: 15000 }, async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), "bkcat-native-model-"));
+  const file = resolve(directory, "session.sqlite3");
+  const configured = api.nativeModelConfiguration(nativeConfiguration());
+  const requests = [];
+  const first = fixture(file, 1, configured, async (_lease, permit, input, init) => {
+    assert.equal(permit, "only-this-task");
+    const request = new Request(input, init);
+    const body = JSON.parse(await request.text()); requests.push(body);
+    assert.equal(request.url, "https://model.invalid/custom/chat/completions");
+    assert.equal(body.model, "explicit-model"); assert.equal(body.stream, true);
+    assert.equal(body.max_tokens ?? body.max_completion_tokens, 128);
+    assert.equal(body.tools.some((tool) => tool.function?.name === "edit_apply_guarded"), false);
+    return completionResponse([{ delta: { role: "assistant", content: "独立候选正文" } }, { finish: "stop" }]);
+  });
+  let second;
+  try {
+    const snapshot = await first.runtime.start();
+    await first.runtime.confirmRecovery({ snapshotId: snapshot.snapshotId, decision: "continue", approvalId: "native-recovery" });
+    assert.equal(first.networkCalls(), 0, "opening a configured runtime does not authorize or contact its model");
+    const admitted = await first.runtime.dispatch("nativeSubmit", {
+      taskId: "native-task-1", networkPermit: "only-this-task", input: "生成一个短视频文案", mode: "script",
+    });
+    const final = await first.runtime.dispatch("nativeWait", { taskId: "native-task-1" });
+    assert.equal(final.status, "done"); assert.equal(final.text, "独立候选正文");
+    assert.equal(final.submissionId, admitted.submissionId); assert.equal(final.conversationId, admitted.conversationId);
+    assert.equal(first.taskBindings.length, 1); assert.equal(requests.length, 1);
+    await first.runtime.stop();
+    const stored = readFileSync(file);
+    second = fixture(file, 2, configured, async () => { throw new Error("reopen must not contact model"); });
+    const next = await second.runtime.start();
+    assert.deepEqual(readFileSync(file), stored);
+    await second.runtime.confirmRecovery({ snapshotId: next.snapshotId, decision: "continue", approvalId: "native-reopen" });
+    const observed = await second.runtime.observeConversation(admitted.conversationId, () => {});
+    assert.ok(observed.value.entries.some((entry) => entry.model?.some((message) => message.role === "assistant" && message.content?.some((part) => part.type === "text" && part.text === "独立候选正文"))));
+    observed.detach();
+    assert.equal(second.networkCalls(), 0); assert.equal(forbiddenFetch, 0);
+    await second.runtime.stop();
+  } finally {
+    await first.runtime.stop().catch(() => {}); await second?.runtime.stop().catch(() => {});
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("original model tool round carries native-bound Pi invocation and stays read-only for script generation", { timeout: 15000 }, async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), "bkcat-model-tools-"));
+  let requests = 0;
+  const f = fixture(resolve(directory, "session.sqlite3"), 1, api.nativeModelConfiguration(nativeConfiguration()), async () => {
+    requests++;
+    if (requests === 1) return completionResponse([
+      { delta: { role: "assistant", tool_calls: [{ index: 0, id: "read-project", type: "function", function: { name: "project_get", arguments: "{}" } }] } },
+      { finish: "tool_calls" },
+    ]);
+    return completionResponse([{ delta: { role: "assistant", content: "读取工程后的候选正文" } }, { finish: "stop" }]);
+  });
+  try {
+    const snapshot = await f.runtime.start();
+    await f.runtime.confirmRecovery({ snapshotId: snapshot.snapshotId, decision: "continue", approvalId: "native-recovery" });
+    await f.runtime.dispatch("nativeSubmit", { taskId: "native-read-task", networkPermit: "read-permit", input: "读取工程并生成文案", mode: "script" });
+    const completed = await f.runtime.dispatch("nativeWait", { taskId: "native-read-task" });
+    assert.equal(completed.status, "done"); assert.equal(completed.text, "读取工程后的候选正文");
+    assert.equal(requests, 2);
+    assert.equal(f.mcpCalls.filter((message) => message.method === "tools/call").length, 1);
+    assert.equal(forbiddenFetch, 0);
+  } finally { await f.runtime.stop().catch(() => {}); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("all three original adapters use the explicit service base and output ceiling with no implicit model retry", { timeout: 20000 }, async () => {
+  for (const [protocol, suffix, outputField, override] of [
+    ["openai-completions", "/chat/completions", "max_completion_tokens"],
+    ["openai-responses", "/responses", "max_output_tokens"],
+    ["anthropic-messages", "/v1/messages?beta=true", "max_tokens"],
+    ["openai-responses", "/responses", "max_output_tokens", { id: "openai", endpoint: "https://api.openai.com/v1" }],
+    ["openai-completions", "/chat/completions", "max_completion_tokens", { endpoint: "https://model.invalid/custom///" }],
+  ]) {
+    const directory = mkdtempSync(resolve(tmpdir(), "bkcat-original-adapter-"));
+    const captured = [];
+    const configuration = { ...nativeConfiguration(protocol), ...override };
+    const f = fixture(resolve(directory, "session.sqlite3"), 1, api.nativeModelConfiguration(configuration), async (_lease, _permit, input, init) => {
+      const request = new Request(input, init);
+      captured.push({ url: request.url, body: JSON.parse(await request.text()) });
+      throw new Error("native model request refused by deterministic fixture");
+    });
+    try {
+      const snapshot = await f.runtime.start();
+      await f.runtime.confirmRecovery({ snapshotId: snapshot.snapshotId, decision: "continue", approvalId: "native-recovery" });
+      await f.runtime.dispatch("nativeSubmit", { taskId: `task-${protocol}`, networkPermit: "one-permit", input: "测试渠道", mode: "chat" });
+      const done = await f.runtime.dispatch("nativeWait", { taskId: `task-${protocol}` });
+      assert.equal(done.status, "unanswered"); assert.equal(done.text, "");
+      assert.equal(captured.length, 1, protocol);
+      assert.equal(captured[0].url, `${configuration.endpoint.replace(/\/+$/, "")}${suffix}`);
+      assert.equal(captured[0].body.model, "explicit-model");
+      assert.equal(captured[0].body.stream, true);
+      assert.equal(captured[0].body[outputField] ?? captured[0].body.max_tokens, 128);
+      const allowed = {
+        "openai-completions": ["model", "messages", "stream", "stream_options", "store", "max_tokens", "max_completion_tokens", "temperature", "tools", "tool_choice"],
+        "openai-responses": ["model", "input", "stream", "store", "max_output_tokens", "temperature", "tools", "tool_choice"],
+        "anthropic-messages": ["model", "messages", "system", "stream", "max_tokens", "temperature", "tools", "tool_choice", "thinking"],
+      };
+      assert.deepEqual(Object.keys(captured[0].body).filter((key) => !allowed[protocol].includes(key)), [], "original request must stay inside the reviewed native field contract");
+      assert.equal(captured[0].body.service_tier, undefined);
+      assert.equal(captured[0].body.provider, undefined);
+      assert.equal(captured[0].body.fallbacks, undefined);
+      assert.equal(captured[0].body.thread, undefined);
+      const toolNames = captured[0].body.tools.map((tool) => {
+        if (protocol === "openai-completions") { assert.equal(tool.type, "function"); return tool.function.name; }
+        if (protocol === "openai-responses") { assert.equal(tool.type, "function"); return tool.name; }
+        assert.equal(tool.type, undefined); assert.equal(tool.defer_loading, undefined); return tool.name;
+      });
+      assert.deepEqual(toolNames.sort(), ["concat_version", "project_get", "timeline_read"]);
+    } finally { await f.runtime.stop().catch(() => {}); rmSync(directory, { recursive: true, force: true }); }
+  }
+});
+
+test("native configuration refuses secrets, unsafe addresses and lossy revisions before opening a provider", () => {
+  const valid = nativeConfiguration();
+  for (const extra of [
+    { apiKey: "not-a-place-for-secrets" }, { endpoint: "https://user:password@model.invalid/" },
+    { endpoint: "https://model.invalid/v1?api_key=secret" }, { endpoint: "http://public.invalid" },
+    { endpoint: "https://model.invalid/v1?" }, { endpoint: "https://model.invalid/v1#" },
+    { endpoint: "https://model.invalid:0/v1" }, { endpoint: " https://model.invalid/v1" },
+    { version: 9007199254740992 }, { configurationVersion: "18446744073709551616" },
+    { maxOutputTokens: 0 }, { requestTimeoutMs: 0 }, { protocol: "ambient-oauth" },
+  ]) assert.throws(() => api.nativeModelConfiguration({ ...valid, ...extra }));
+  assert.equal(api.nativeModelConfiguration(valid).pricingKnown, false);
+  assert.equal(api.nativeModelConfiguration({ ...valid, endpoint: "http://127.0.0.2/v1" }).native.endpoint, "http://127.0.0.2/v1");
+});
+
+test("built production bootstrap submits through native task binding, streams through wire and emits only the original durable answer", { timeout: 15000 }, async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), "bkcat-bootstrap-production-"));
+  const sqlite = sqliteFixture(resolve(directory, "session.sqlite3"), 1);
+  const waiting = new Map(); const listeners = new Set(); const sent = [];
+  let detached; let bound = false; let opens = 0; let cursor = 0;
+  let settle;
+  const completed = new Promise((resolve) => { settle = resolve; });
+  const response = await completionResponse([{ delta: { role: "assistant", content: "经生产入口保存的候选" } }, { finish: "stop" }]).text();
+  const bytes = new TextEncoder().encode(response);
+  const receive = (message) => { for (const listener of [...listeners]) listener({ data: JSON.stringify(message) }); };
+  sandbox.addEventListener = (type, listener) => { if (type === "pagehide") detached = listener; };
+  sandbox.BKCatNative = {
+    addEventListener(_type, listener) { listeners.add(listener); },
+    removeEventListener(_type, listener) { listeners.delete(listener); },
+    postMessage(serialized) {
+      const frame = JSON.parse(serialized); sent.push(frame);
+      if (frame.event === "task.completed") settle(frame);
+      if (frame.id && !frame.payload) {
+        const pending = waiting.get(frame.id);
+        if (pending) { waiting.delete(frame.id); if (frame.error) pending.reject(new Error(frame.error.message)); else pending.resolve(frame.result); }
+      }
+      if (!frame.id || !frame.payload) return;
+      void Promise.resolve().then(async () => {
+        const payload = frame.payload;
+        if (payload.method === "ownership.acquire") return { storageId: "isolated-pi", generation: "1", handle: "owner-1" };
+        if (payload.method === "recovery.read") return { snapshotId: "native-reviewed", projectSession: "1", projectRevision: "0", sessionRevision: "0", schemaVersion: "empty", hasInterruptedWork: false };
+        if (payload.method === "ownership.confirm") return { generation: "1", snapshotId: "native-reviewed", allowInitializeEmptyStore: true };
+        if (payload.method.startsWith("sqlite.")) return sqlite.wire.send(payload);
+        if (payload.method === "mcp.send") {
+          const message = payload.message;
+          if (message.method === "notifications/initialized") return null;
+          if (message.method === "initialize") return { jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "fixture-native", version: "1" } } };
+          if (message.method === "tools/list") return { jsonrpc: "2.0", id: message.id, result: { tools: ["concat_version", "project_get", "timeline_read", "edit_apply_guarded"].map((name) => ({ name, inputSchema: { type: "object", properties: {} } })) } };
+          throw new Error("unexpected tool call");
+        }
+        if (payload.method === "task.bind") { assert.equal(payload.taskId, "production-task"); bound = true; return null; }
+        if (payload.method === "network.open") {
+          assert.equal(bound, true); assert.equal(payload.networkPermit, "production-permit");
+          assert.equal(payload.methodName, "POST"); assert.equal(payload.url, "https://model.invalid/custom/chat/completions");
+          assert.equal(payload.headers.some(([name]) => ["authorization", "x-api-key", "cookie"].includes(name)), false);
+          opens++; return { streamId: "native-stream", status: 200, headers: [["content-type", "text/event-stream"]] };
+        }
+        if (payload.method === "network.read") {
+          const part = bytes.slice(cursor, cursor + 29); cursor += part.length;
+          return { chunk: Buffer.from(part).toString("base64"), done: cursor === bytes.length };
+        }
+        if (payload.method === "network.cancel") return null;
+        if (payload.method === "ownership.revoke") { sqlite.revoke(); return null; }
+        if (payload.method === "ownership.drainAndRelease") { assert.equal(sqlite.isClosed(), true); return null; }
+        throw new Error(`unexpected production frame ${payload.method}`);
+      }).then((result) => receive({ channel: "bk-cat-runtime-v1", id: frame.id, result }),
+        (error) => receive({ channel: "bk-cat-runtime-v1", id: frame.id, error: { message: error.message } }));
+    },
+  };
+  const command = (id, payload) => new Promise((resolve, reject) => {
+    waiting.set(id, { resolve, reject }); receive({ channel: "bk-cat-runtime-v1", id, payload });
+  });
+  vm.runInContext(readFileSync(resolve(packageRoot, "dist/bootstrap.js"), "utf8"), sandbox, { filename: "bootstrap-production.js" });
+  try {
+    await command("production-start", { method: "runtime.start", storageId: "isolated-pi", modelConfiguration: nativeConfiguration() });
+    await command("production-recovery", { method: "runtime.confirmRecovery", approval: { snapshotId: "native-reviewed", decision: "continue", approvalId: "native-action" } });
+    assert.equal(opens, 0, "restoring settings and the original store alone never starts a model request");
+    const admitted = await command("production-submit", { method: "runtime.submit", taskId: "production-task", networkPermit: "production-permit", mode: "script", input: "生成一段短视频文案" });
+    const final = await completed;
+    assert.equal(final.taskId, "production-task"); assert.equal(final.submissionId, admitted.submissionId);
+    assert.equal(final.status, "done"); assert.equal(final.text, "经生产入口保存的候选");
+    assert.equal(opens, 1); assert.equal(forbiddenFetch, 0);
+    assert.ok(sent.some((frame) => frame.event === "conversation.presentation" && frame.messages.some((message) => message.role === "user" && message.text === "生成一段短视频文案")));
+    assert.ok(sent.findIndex((frame) => frame.payload?.method === "task.bind") < sent.findIndex((frame) => frame.payload?.method === "network.open"));
+    await command("production-stop", { method: "runtime.stop" });
+  } finally {
+    await command("production-final-stop", { method: "runtime.stop" }).catch(() => {});
+    detached?.(); delete sandbox.BKCatNative;
     rmSync(directory, { recursive: true, force: true });
   }
 });

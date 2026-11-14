@@ -2,13 +2,13 @@
 
 //! Native readiness, recovery and task presentation for the embedded runtime.
 //! This owns no model client, scheduler, persistence or editable project.
-//! Conversation-entry publication awaits the model-configuration integration;
-//! until it is available, the conversation view stays empty.
+//! Visible messages are bounded projections of the original persisted session.
 
 use concat_agent::{OwnerStatus, Phase};
-use slint::ComponentHandle;
+use slint::{ComponentHandle, ModelRc, VecModel};
+use std::rc::Rc;
 
-use crate::ui::{AgentStatusData, AgentUi, App};
+use crate::ui::{AgentCallUi, AgentMessageData, AgentStatusData, AgentUi, App};
 
 /// Facts supplied by the native platform host. Never store credentials in
 /// this presenter or in a Slint property; only their availability belongs here.
@@ -56,11 +56,61 @@ pub struct AgentPane {
     pub can_review: bool,
     pub runtime_loading: bool,
     pub runtime_loaded: bool,
+    messages: Vec<AgentMessageData>,
+    call_limits: String,
 }
 
 impl AgentPane {
     pub(crate) fn apply_runtime(&mut self, runtime: &crate::embedded::RuntimeView) {
         self.readiness.runtime_ready = runtime.phase == "ready" && !runtime.closed;
+        if !self.readiness.runtime_ready {
+            self.readiness.calls_authorized = false;
+        }
+        self.task.running = runtime.task_running;
+        self.task.title = runtime.task_title.clone();
+        self.task.detail = if runtime.task_running {
+            "正在接收真实模型与原生工具执行结果。".into()
+        } else {
+            String::new()
+        };
+        if let Some(configuration) = &runtime.configuration {
+            self.call_limits =
+                configuration["maxOutputTokens"]
+                    .as_u64()
+                    .map_or_else(String::new, |limit| {
+                        format!(
+                            "本次最多4次模型请求，每次输出最多{limit}个词元；费用按服务商计费。"
+                        )
+                    });
+        }
+        self.messages.clear();
+        if let Some(presentation) = &runtime.presentation {
+            if let Some(messages) = presentation["messages"].as_array() {
+                self.messages.extend(messages.iter().filter_map(|message| {
+                    let author = match message["role"].as_str()? {
+                        "user" => "我",
+                        "assistant" => "助手",
+                        "tool" => "执行结果",
+                        _ => return None,
+                    };
+                    Some(AgentMessageData {
+                        author: author.into(),
+                        body: message["text"].as_str()?.into(),
+                        pending: false,
+                    })
+                }));
+            }
+            if let Some(partial) = presentation["partialText"]
+                .as_str()
+                .filter(|text| !text.is_empty())
+            {
+                self.messages.push(AgentMessageData {
+                    author: "助手".into(),
+                    body: partial.into(),
+                    pending: true,
+                });
+            }
+        }
         self.runtime_loading = matches!(
             runtime.phase.as_str(),
             "loading" | "acquiring" | "activating"
@@ -246,7 +296,27 @@ impl AgentPane {
     /// Native UI-thread publication only. It does not touch conversation
     /// storage or the current project and is safe in read-only recovery.
     pub fn publish(&self, app: &App, owner: Result<OwnerStatus, String>) {
-        app.global::<AgentUi>().set_status(self.data(owner));
+        let can_authorize = owner
+            .as_ref()
+            .is_ok_and(|status| status.phase == Phase::Ready)
+            && self.readiness.runtime_ready
+            && self.readiness.credentials_ready
+            && !self.task.running
+            && !self.readiness.provider.is_empty()
+            && !self.readiness.model.is_empty();
+        let call = app.global::<AgentCallUi>();
+        call.set_allowed(self.readiness.calls_authorized);
+        call.set_can_authorize(can_authorize);
+        call.set_limits(if self.call_limits.is_empty() {
+            "每次任务最多4次模型请求；请先配置模型输出上限。".into()
+        } else {
+            self.call_limits.as_str().into()
+        });
+        let ui = app.global::<AgentUi>();
+        ui.set_status(self.data(owner));
+        ui.set_messages(ModelRc::from(Rc::new(VecModel::from(
+            self.messages.clone(),
+        ))));
     }
 }
 

@@ -3,6 +3,8 @@
 import type { NativeMessageBridge } from "./native-wire.ts";
 import type { AgentRuntime } from "./runtime.ts";
 import type { ConversationObservation, RecoveryApproval, SchedulingAction } from "./ports.ts";
+import { nativeTaskInput } from "./commands.ts";
+import { conversationPresentation } from "./presentation.ts";
 
 type RuntimeLibrary = typeof import("./index.ts");
 type HostWindow = Window & typeof globalThis & { BKCatNative?: NativeMessageBridge; BKCatRuntime?: RuntimeLibrary };
@@ -16,6 +18,7 @@ export function attachNativeController(library: RuntimeLibrary, bridge: NativeMe
   let observation: ConversationObservation | undefined;
   let observationEpoch = 0;
   let disposed = false;
+  let activeTask: string | undefined;
   const accepted = new Set<string>();
   const reply = (id: string, result: unknown, error?: unknown) => {
     if (disposed) return;
@@ -30,39 +33,76 @@ export function attachNativeController(library: RuntimeLibrary, bridge: NativeMe
     if (!runtime) throw new library.RuntimeRefused("native runtime has not started");
     return runtime;
   };
+  const observe = async (conversationId: unknown) => {
+    if (typeof conversationId !== "number" || !Number.isSafeInteger(conversationId) || conversationId < 0) {
+      throw new library.RuntimeRefused("conversation identity is invalid");
+    }
+    const epoch = ++observationEpoch;
+    observation?.detach(); observation = undefined;
+    const present = (value: unknown) => {
+      if (disposed || epoch !== observationEpoch) return;
+      bridge.postMessage(JSON.stringify({ channel: library.NATIVE_CHANNEL, event: "conversation.presentation", conversationId,
+        ...conversationPresentation(value) }));
+    };
+    const next = await requireRuntime().observeConversation(conversationId, (event) => {
+      if (disposed || epoch !== observationEpoch) return;
+      if (event.kind === "value") present(event.value);
+    });
+    if (epoch !== observationEpoch || disposed) {
+      next.detach();
+      throw new library.RuntimeRefused("conversation observation was superseded");
+    }
+    observation = next;
+    present(next.value);
+    return { conversationId, ...conversationPresentation(next.value) };
+  };
+  const complete = async (accepted: unknown) => {
+    const admitted = accepted as { taskId: string; conversationId: number; submissionId: number };
+    try {
+      await observe(admitted.conversationId);
+      const result = await requireRuntime().dispatch("nativeWait", { taskId: admitted.taskId });
+      if (!disposed && activeTask === admitted.taskId && runtime?.phase === "ready") {
+        bridge.postMessage(JSON.stringify({ channel: library.NATIVE_CHANNEL, event: "task.completed", ...result as object }));
+      }
+    } catch {
+      // Do not emit a guessed success or accept a partial answer as a script.
+      // Native revokes this task's authority when it receives the terminal event.
+      if (!disposed && activeTask === admitted.taskId && runtime?.phase === "ready") {
+        bridge.postMessage(JSON.stringify({ channel: library.NATIVE_CHANNEL, event: "task.completed", ...admitted,
+          status: "unanswered", text: "", reason: "failed" }));
+      }
+      await runtime?.stop().catch(() => {});
+    } finally {
+      if (activeTask === admitted.taskId) activeTask = undefined;
+      phase();
+    }
+  };
   const command = async (payload: Record<string, unknown>): Promise<unknown> => {
     switch (payload.method) {
       case "runtime.start": {
         if (runtime) throw new library.RuntimeRefused("a component can start only one host generation");
         if (typeof payload.storageId !== "string" || !payload.storageId) throw new library.RuntimeRefused("native storage identity is required");
-        // Missing channel/settings are explicit. Do not search another
-        // project's credentials or import a generated placeholder catalog.
-        const denied = async () => { throw new library.RuntimeRefused("native model settings are not configured"); };
-        runtime = new library.AgentRuntime(payload.storageId, ports, library.piEngineFactory({
-          providers: [], credentials: { read: denied, list: denied, modify: denied, delete: denied },
-        }));
+        runtime = new library.AgentRuntime(payload.storageId, ports,
+          library.piEngineFactory(library.nativeModelConfiguration(payload.modelConfiguration)));
         return runtime.start();
       }
       case "runtime.inspect": return requireRuntime().inspect();
       case "runtime.confirmRecovery": return requireRuntime().confirmRecovery(payload.approval as RecoveryApproval);
-      case "runtime.dispatch": return requireRuntime().dispatch(payload.action as SchedulingAction, payload.arguments);
-      case "runtime.observe": {
-        if (typeof payload.conversationId !== "number" || !Number.isSafeInteger(payload.conversationId) || payload.conversationId < 0) {
-          throw new library.RuntimeRefused("conversation identity is invalid");
+      case "runtime.dispatch": {
+        if (activeTask || payload.action === "nativeSubmit" || payload.action === "nativeWait") {
+          throw new library.RuntimeRefused("native task commands cannot bypass explicit submission");
         }
-        const epoch = ++observationEpoch;
-        observation?.detach(); observation = undefined;
-        const next = await requireRuntime().observeConversation(payload.conversationId, (event) => {
-          if (disposed || epoch !== observationEpoch) return;
-          bridge.postMessage(JSON.stringify({ channel: library.NATIVE_CHANNEL, event: "conversation.changed", conversationId: payload.conversationId, change: event }));
-        });
-        if (epoch !== observationEpoch || disposed) {
-          next.detach();
-          throw new library.RuntimeRefused("conversation observation was superseded");
-        }
-        observation = next;
-        return observation.value;
+        return requireRuntime().dispatch(payload.action as SchedulingAction, payload.arguments);
       }
+      case "runtime.submit": {
+        if (activeTask) throw new library.RuntimeRefused("another native task is active");
+        const { method: _method, ...fields } = payload;
+        const input = nativeTaskInput(fields);
+        activeTask = input.taskId;
+        try { return await requireRuntime().dispatch("nativeSubmit", input); }
+        catch (error) { activeTask = undefined; throw error; }
+      }
+      case "runtime.observe": return observe(payload.conversationId);
       case "runtime.stop": {
         observationEpoch++;
         observation?.detach(); observation = undefined;
@@ -88,11 +128,14 @@ export function attachNativeController(library: RuntimeLibrary, bridge: NativeMe
     }
     if (accepted.size < 4096) accepted.add(envelope.id);
     const id = envelope.id;
-    void command(payload).then((result) => { reply(id, result); phase(); }, (error: unknown) => { reply(id, null, error); phase(); });
+    void command(payload).then((result) => {
+      reply(id, result); phase();
+      if (payload.method === "runtime.submit") void complete(result);
+    }, (error: unknown) => { reply(id, null, error); phase(); });
     phase();
   };
   bridge.addEventListener("message", receive);
-  bridge.postMessage(JSON.stringify({ channel: library.NATIVE_CHANNEL, event: "runtime.loaded", version: "0.1.0", modelTransport: "unconfigured" }));
+  bridge.postMessage(JSON.stringify({ channel: library.NATIVE_CHANNEL, event: "runtime.loaded", version: "0.1.0", modelTransport: "native-scoped-stream" }));
   return () => {
     if (disposed) return;
     disposed = true;

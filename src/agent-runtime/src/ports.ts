@@ -80,6 +80,11 @@ export interface NativePorts {
     /** Native code validates ownership, channel, destination and budget. */
     fetch(lease: OwnerLease, networkPermit: string, input: RequestInfo | URL, init: RequestInit): Promise<Response>;
   };
+  readonly tasks?: {
+    /** Native validates its pending task and binds the original conversation
+     * before the first scheduler/network/tool call. This grants no new task. */
+    bind(lease: OwnerLease, taskId: string, conversationId: number, signal: AbortSignal): Promise<void>;
+  };
 }
 
 export type RuntimePhase = "new" | "acquiring" | "recovery" | "activating" | "ready" | "stopping" | "closed";
@@ -88,7 +93,7 @@ export type RuntimePhase = "new" | "acquiring" | "recovery" | "activating" | "re
 export type SchedulingAction =
   | "createConversation" | "submit" | "waitSubmission" | "abortSubmission"
   | "resume" | "abortTask" | "signal" | "waitForTask" | "waitForIdle"
-  | "compact" | "abortConversation" | "resetConversation";
+  | "compact" | "abortConversation" | "resetConversation" | "nativeSubmit" | "nativeWait";
 
 export interface PiEngine {
   inspect(): Promise<unknown>;
