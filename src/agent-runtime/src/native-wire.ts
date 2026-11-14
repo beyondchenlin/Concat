@@ -190,6 +190,12 @@ export function messageNativePorts(wire: NativeWireClient): NativePorts {
     },
     recovery: {
       async read(lease, signal) { return record(await bound(lease, "recovery.read", {}, signal)) as unknown as RecoverySnapshot; },
+      async discardVerified(lease, signal) {
+        const result = record(await bound(lease, "recovery.discardVerified", {}, signal));
+        if (result.verified !== true || Object.keys(result).length !== 1) {
+          throw new RuntimeRefused("原生未确认历史任务已全部结束，会话未恢复就绪。");
+        }
+      },
     },
     sqlite: nativeSqlitePort({ send: (frame, signal) => wire.call({ ...frame }, signal) }),
     mcp: {

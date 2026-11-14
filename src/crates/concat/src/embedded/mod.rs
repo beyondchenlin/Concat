@@ -765,8 +765,7 @@ impl EmbeddedRuntime {
         };
         let result = self
             .native
-            .tasks
-            .prepare(&intent)
+            .prepare_submission(&intent)
             .and_then(|payload| self.command(payload, CommandKind::Submit));
         if let Err(error) = result {
             self.native.tasks.abandon();
@@ -992,6 +991,14 @@ impl EmbeddedRuntime {
     }
 
     pub(crate) fn confirm(&self) -> Result<(), String> {
+        self.confirm_decision("continue")
+    }
+
+    pub(crate) fn discard_interrupted(&self) -> Result<(), String> {
+        self.confirm_decision("discard")
+    }
+
+    fn confirm_decision(&self, decision: &str) -> Result<(), String> {
         let view = self.view();
         if view.phase != "recovery" {
             return Err("当前会话不在恢复确认阶段。".into());
@@ -1000,7 +1007,7 @@ impl EmbeddedRuntime {
         let id = snapshot["snapshotId"]
             .as_str()
             .ok_or("恢复核对编号缺失。")?;
-        let approval = self.native.approve_from_ui(id, "continue")?;
+        let approval = self.native.approve_from_ui(id, decision)?;
         self.command(
             json!({"method":"runtime.confirmRecovery","approval":approval}),
             CommandKind::Confirm,
@@ -1376,6 +1383,7 @@ pub(crate) fn connect_from_ui() -> Result<(), String> {
             pane.error.clear();
             pane.recovery_summary.clear();
             pane.can_recover = false;
+            pane.can_discard = false;
             pane.can_review = false;
             pane.readiness.runtime_ready = false;
             Ok(())

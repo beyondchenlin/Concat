@@ -53,6 +53,8 @@ pub struct AgentPane {
     /// Read-only recovery evidence from the current, authenticated component.
     pub recovery_summary: String,
     pub can_recover: bool,
+    /// Explicit cancellation of reviewed interrupted work, never fee consent.
+    pub can_discard: bool,
     pub can_review: bool,
     pub runtime_loading: bool,
     pub runtime_loaded: bool,
@@ -118,9 +120,15 @@ impl AgentPane {
         self.runtime_loaded = runtime.loaded && !runtime.closed;
         self.can_review = runtime.phase == "recovery";
         self.can_recover = false;
+        self.can_discard = false;
         self.error = runtime.error.clone();
         self.recovery_summary.clear();
         if let Some(snapshot) = &runtime.snapshot {
+            self.can_discard = self.can_review
+                && snapshot["snapshotId"].is_string()
+                && snapshot["projectPath"].is_string()
+                && snapshot["hasInterruptedWork"] == true
+                && snapshot["canDiscardInterrupted"] == true;
             if let Some(reason) = snapshot["blockedReason"].as_str() {
                 self.recovery_summary = reason.to_owned();
             } else if self.can_review {
@@ -184,6 +192,7 @@ impl AgentPane {
             model: model.into(),
             can_review: self.can_review,
             can_continue: self.can_recover,
+            can_discard: self.can_discard,
             recovery_summary: self.recovery_summary.as_str().into(),
             ..AgentStatusData::default()
         };
@@ -194,6 +203,9 @@ impl AgentPane {
                 data.detail = "智能任务没有启动，仍可使用手动编辑。".into();
                 data.error = error.into();
                 data.can_connect = true;
+                data.can_review = false;
+                data.can_continue = false;
+                data.can_discard = false;
                 return data;
             }
         };
@@ -210,6 +222,7 @@ impl AgentPane {
         if owner.phase != Phase::RecoveryRequired {
             data.can_review = false;
             data.can_continue = false;
+            data.can_discard = false;
         }
         match owner.phase {
             Phase::RecoveryRequired => {
@@ -392,6 +405,40 @@ mod tests {
         );
         assert!(!pane.data(owner(Phase::Draining)).can_stop);
         assert!(!pane.data(owner(Phase::Released)).can_stop);
+    }
+
+    #[test]
+    fn explicit_discard_is_a_native_recovery_action_without_send_or_fee_authority() {
+        let mut pane = configured();
+        let mut runtime = crate::embedded::RuntimeView {
+            loaded: true,
+            phase: "recovery".into(),
+            snapshot: Some(serde_json::json!({
+                "snapshotId":"native-review", "projectPath":"native-project",
+                "schemaVersion":2, "hasInterruptedWork":true,
+                "canDiscardInterrupted":true,
+                "blockedReason":"存在未完成任务；只允许明确放弃本工程旧任务。",
+            })),
+            ..crate::embedded::RuntimeView::default()
+        };
+        pane.apply_runtime(&runtime);
+        let recovery = pane.data(owner(Phase::RecoveryRequired));
+        assert!(recovery.can_discard);
+        assert!(recovery.can_review);
+        assert!(!recovery.can_continue);
+        assert!(!recovery.can_send);
+        assert!(!pane.readiness.calls_authorized);
+        assert!(!pane.data(owner(Phase::Ready)).can_discard);
+        assert!(!pane.data(owner(Phase::Draining)).can_discard);
+        assert!(!pane.data(owner(Phase::Released)).can_discard);
+        assert!(!pane.data(Err("会话所有权已失效。".into())).can_discard);
+        runtime.snapshot.as_mut().unwrap()["canDiscardInterrupted"] = serde_json::json!(false);
+        pane.apply_runtime(&runtime);
+        assert!(!pane.data(owner(Phase::RecoveryRequired)).can_discard);
+        runtime.phase = "activating".into();
+        runtime.snapshot.as_mut().unwrap()["canDiscardInterrupted"] = serde_json::json!(true);
+        pane.apply_runtime(&runtime);
+        assert!(!pane.data(owner(Phase::RecoveryRequired)).can_discard);
     }
 
     #[test]

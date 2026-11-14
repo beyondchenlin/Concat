@@ -6,7 +6,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use concat_agent::configuration::{ConfigurationSnapshot, ConfigurationStore};
-use concat_agent::conversations::{ConversationBindings, inspect_latest};
+use concat_agent::conversations::{
+    ConversationBindings, inspect_latest, inspect_project_conversations,
+};
 use concat_agent::credentials::platform_store;
 use concat_agent::network::{
     MAX_REQUESTS_PER_TASK, ModelNetwork, ModelRequest, runtime_configuration,
@@ -428,6 +430,40 @@ impl NativeTasks {
             return Ok(None);
         };
         self.latest_at(&project)
+    }
+
+    /// Recovery-only: inspect every historical binding after the same native
+    /// identity/copy check used for document writes, without creating or moving
+    /// a registry record. No model authority or scheduler is opened here.
+    pub(crate) fn recovery_conversations(
+        &self,
+        project: &CurrentProject,
+    ) -> Result<Vec<u64>, String> {
+        if concat_host::project_identity::read_persisted(Path::new(&project.path))?.as_deref()
+            != Some(project.project_id.as_str())
+        {
+            return Err("当前工程真实位置或持久身份已改变，未允许放弃旧任务。".into());
+        }
+        let root = self
+            .bridge
+            .dirs
+            .data
+            .join("bk-cat")
+            .join("script-workspaces");
+        concat_agent::script_locations::with_read_only_project_location(
+            &root,
+            &project.project_id,
+            Path::new(&project.path),
+            concat_host::project_identity::read_persisted,
+            || {
+                inspect_project_conversations(
+                    &self.bridge.owner,
+                    &self.bridge.token,
+                    &project.project_id,
+                )
+                .map_err(|error| error.to_string())
+            },
+        )
     }
 
     fn latest_at(&self, project: &CurrentProject) -> Result<Option<u64>, String> {

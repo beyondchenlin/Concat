@@ -178,15 +178,53 @@ pub fn inspect_latest(
     mode: &str,
 ) -> Result<Option<u64>, BindingError> {
     validate_target(project_id, mode)?;
+    inspect(owner, token, None, |connection| {
+        read_latest(connection, project_id, mode)
+    })
+}
+
+/// All historical Pi conversations belonging to one native project, across
+/// chat, writing and editing. Recovery may cancel only this explicit set;
+/// selecting merely the latest conversation would orphan older stopped work.
+/// This read neither creates a database nor changes an immutable binding.
+pub fn inspect_project_conversations(
+    owner: &SessionOwner,
+    token: &OwnerToken,
+    project_id: &str,
+) -> Result<Vec<u64>, BindingError> {
+    validate_project(project_id)?;
+    inspect(owner, token, Vec::new(), |connection| {
+        let mut statement = connection.prepare(
+            "SELECT conversation_id FROM conversation_bindings WHERE project_id=?1 ORDER BY conversation_id LIMIT 65537",
+        )?;
+        let rows = statement.query_map([project_id], |row| row.get::<_, i64>(0))?;
+        let mut conversations = Vec::new();
+        for row in rows {
+            let value = u64::try_from(row?).map_err(|_| BindingError::InvalidStorage)?;
+            if value > MAX_CONVERSATION_ID || conversations.len() >= 65_536 {
+                return Err(BindingError::InvalidStorage);
+            }
+            conversations.push(value);
+        }
+        Ok(conversations)
+    })
+}
+
+fn inspect<T>(
+    owner: &SessionOwner,
+    token: &OwnerToken,
+    absent: T,
+    read: impl FnOnce(&Connection) -> Result<T, BindingError>,
+) -> Result<T, BindingError> {
     owner.with_owned(token, || ())?;
     let result = (|| {
         let path = binding_path(owner.storage_root())?;
         if !path.try_exists()? {
-            return Ok(None);
+            return Ok(absent);
         }
         let file = guarded_file(&path, false)?;
         let connection = open_existing(&path, true)?;
-        let value = read_latest(&connection, project_id, mode)?;
+        let value = read(&connection)?;
         check_file_identity(&path, &file)?;
         Ok(value)
     })();
@@ -195,14 +233,21 @@ pub fn inspect_latest(
 }
 
 fn validate_target(project_id: &str, mode: &str) -> Result<(), BindingError> {
+    validate_project(project_id)?;
+    if !matches!(mode, "chat" | "script" | "edit") {
+        return Err(BindingError::InvalidInput);
+    }
+    Ok(())
+}
+
+fn validate_project(project_id: &str) -> Result<(), BindingError> {
     let native = project_id.strip_prefix("bkcat-project:");
     if !native.is_some_and(|id| {
         id.len() == 32
             && id
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    }) || !matches!(mode, "chat" | "script" | "edit")
-    {
+    }) {
         return Err(BindingError::InvalidInput);
     }
     Ok(())
@@ -420,6 +465,11 @@ mod tests {
             inspect_latest(&owner, &owner.token(), PROJECT, "chat").unwrap(),
             None
         );
+        assert!(
+            inspect_project_conversations(&owner, &owner.token(), PROJECT)
+                .unwrap()
+                .is_empty()
+        );
         assert!(!root.path().join(CONVERSATIONS_FILE_NAME).exists());
         assert!(matches!(
             ConversationBindings::open(&owner, &owner.token()),
@@ -449,6 +499,46 @@ mod tests {
             ));
         }
         assert_eq!(bindings.latest(OTHER, "chat").unwrap(), None);
+    }
+
+    #[test]
+    fn recovery_reads_every_historical_mode_without_foreign_rows_or_storage_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let owner = SessionOwner::acquire(root.path()).unwrap();
+        approve(&owner);
+        let bindings = ConversationBindings::open(&owner, &owner.token()).unwrap();
+        for (project, mode, id) in [
+            (PROJECT, "chat", 0),
+            (PROJECT, "chat", 8),
+            (PROJECT, "script", 9),
+            (PROJECT, "edit", MAX_CONVERSATION_ID),
+            (OTHER, "script", 3),
+        ] {
+            bindings.bind(project, mode, id).unwrap();
+        }
+        drop(bindings);
+        owner.finish_handoff(Duration::ZERO).unwrap();
+        let next = SessionOwner::acquire(root.path()).unwrap();
+        let path = root.path().join(CONVERSATIONS_FILE_NAME);
+        let before = fs::read(&path).unwrap();
+        assert_eq!(
+            inspect_project_conversations(&next, &next.token(), PROJECT).unwrap(),
+            [0, 8, 9, MAX_CONVERSATION_ID]
+        );
+        assert_eq!(
+            inspect_project_conversations(&next, &next.token(), OTHER).unwrap(),
+            [3]
+        );
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(next.status().unwrap().phase, Phase::RecoveryRequired);
+        assert_eq!(next.status().unwrap().active_operations, 0);
+        assert!(inspect_project_conversations(&next, &owner.token(), PROJECT).is_err());
+        assert!(
+            inspect_project_conversations(&next, &next.token(), "path-is-not-an-identity").is_err()
+        );
+        next.request_stop();
+        assert!(inspect_project_conversations(&next, &next.token(), PROJECT).is_err());
+        assert_eq!(fs::read(path).unwrap(), before);
     }
 
     #[test]
@@ -496,6 +586,7 @@ mod tests {
             fs::write(&path, contents).unwrap();
             let owner = SessionOwner::acquire(root.path()).unwrap();
             assert!(inspect_latest(&owner, &owner.token(), PROJECT, "chat").is_err());
+            assert!(inspect_project_conversations(&owner, &owner.token(), PROJECT).is_err());
             approve(&owner);
             assert!(ConversationBindings::open(&owner, &owner.token()).is_err());
             assert_eq!(fs::read(path).unwrap(), contents);
@@ -511,6 +602,7 @@ mod tests {
             .unwrap();
         drop(connection);
         let before = fs::read(&path).unwrap();
+        assert!(inspect_project_conversations(&owner, &owner.token(), PROJECT).is_err());
         assert!(ConversationBindings::open(&owner, &owner.token()).is_err());
         assert_eq!(fs::read(path).unwrap(), before);
     }

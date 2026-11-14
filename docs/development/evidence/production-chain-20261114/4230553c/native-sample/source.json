@@ -1,0 +1,11 @@
+{
+  "utc": "2026-11-14T02:50:10.289032+00:00",
+  "head": "4230553c095d29e749d71a03d1507327a9846a23",
+  "tree": "4caf0183aa749afbf5aa47640daa709e9bf6d618",
+  "status": "",
+  "example_sha256": "c11ef4eec5c7f05844f06f834bb7813af702355524ab3a9f5e78a8b4feb64d6f",
+  "source_diff_from_tested_core": " .../concat-host/examples/exact_plan_sample.rs      | 453 +++++++++++++++++++++\n 1 file changed, 453 insertions(+)\n",
+  "target_dir": "/workspace/scratch/a2559d0f84f7/target-native",
+  "output_dir": "/workspace/scratch/a2559d0f84f7/validation/4230553c/native-sample/output",
+  "dependency_env_sha256": "30b58cfb308e845420bb83f999a56959711b3b5b7bfe7117542279b917be147f"
+}

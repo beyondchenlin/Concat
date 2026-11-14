@@ -1,0 +1,16 @@
+✔ original pinned McpClient preserves per-call argument identity for the native durable invocation side channel (98.774514ms)
+✔ built browser bootstrap answers native commands and opens no writable store before native confirmation (7.531688ms)
+✔ built pinned original Harness persists real conversation records in SQLite and reopens only after explicit reconciliation (94.840992ms)
+✔ configured original provider submits, persists a real generated answer and reopens it without another request (97.989782ms)
+✔ original model tool round carries native-bound Pi invocation and stays read-only for script generation (59.497422ms)
+✔ all three original adapters use the explicit service base and output ceiling with no implicit model retry (175.637562ms)
+✔ native configuration refuses secrets, unsafe addresses and lossy revisions before opening a provider (0.878036ms)
+✔ built production bootstrap submits through native task binding, streams through wire and emits only the original durable answer (36.24696ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1218.524678

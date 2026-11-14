@@ -1,0 +1,19 @@
+{
+  "command": [
+    "cargo",
+    "+1.93.1",
+    "run",
+    "-p",
+    "concat-host",
+    "--example",
+    "exact_plan_sample",
+    "--locked",
+    "-j",
+    "2",
+    "--",
+    "/workspace/scratch/a2559d0f84f7/validation/4230553c/native-sample/output"
+  ],
+  "started": "2026-11-14T02:50:10.392381+00:00",
+  "finished": "2026-11-14T02:50:36.939722+00:00",
+  "exit_code": 0
+}

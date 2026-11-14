@@ -5,7 +5,7 @@
 // explicit fixtures here; it is not a Rust/WebView/device/model acceptance.
 import assert from "node:assert/strict";
 import { createHash, webcrypto } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -152,12 +152,13 @@ test("built browser bootstrap answers native commands and opens no writable stor
     assert.equal(forbiddenFetch, 0);
   } finally { pagehide?.(); delete sandbox.BKCatNative; }
 });
-function sqliteFixture(file, generation) {
+function sqliteFixture(file, generation, options = {}) {
   let connection;
   let transaction;
   let revoked = false;
   const databaseId = `db-${generation}`;
   const calls = [];
+  const committedTasks = [];
   const wire = {
     async send(frame, signal) {
       calls.push(frame);
@@ -186,6 +187,10 @@ function sqliteFixture(file, generation) {
       if (frame.method === "sqlite.commit" || frame.method === "sqlite.rollback") {
         connection.exec(frame.method === "sqlite.commit" ? "COMMIT" : "ROLLBACK");
         transaction = undefined;
+        if (options.traceTasks && frame.method === "sqlite.commit"
+          && connection.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'tasks'").get()) {
+          committedTasks.push(connection.prepare("SELECT record FROM tasks ORDER BY id").all().map((row) => JSON.parse(row.record)));
+        }
         return null;
       }
       if (frame.method === "sqlite.exec") { connection.exec(frame.sql); return null; }
@@ -201,34 +206,50 @@ function sqliteFixture(file, generation) {
       throw new Error(`Unexpected SQLite method ${frame.method}`);
     },
   };
-  return { calls, wire, revoke: () => { revoked = true; }, isClosed: () => !connection };
+  return { calls, wire, committedTasks, revoke: () => { revoked = true; }, isClosed: () => !connection };
 }
 
-function fixture(file, generation, configured, transport) {
-  const sqlite = sqliteFixture(file, generation);
+function fixture(file, generation, configured, transport, options = {}) {
+  const sqlite = sqliteFixture(file, generation, options);
   const mcpCalls = [];
   let granted = false;
   let networkCalls = 0;
   let credentialReads = 0;
   let snapshotReads = 0;
+  let verificationCalls = 0;
   const taskBindings = [];
   const lease = { storageId: "isolated-pi", generation: String(generation), handle: `owner-${generation}` };
   const snapshot = () => ({
     snapshotId: `reconciled-${generation}`, projectSession: "1", projectRevision: "0", sessionRevision: "0",
-    schemaVersion: existsSync(file) ? 2 : "empty", hasInterruptedWork: false,
+    schemaVersion: existsSync(file) ? 2 : "empty", hasInterruptedWork: options.interrupted === true,
   });
   const ports = {
     ownership: {
       async acquire(id) { assert.equal(id, lease.storageId); return lease; },
       async confirm(_lease, read, approval) {
         assert.equal(approval.snapshotId, read.snapshotId); granted = true;
-        return { generation: lease.generation, snapshotId: read.snapshotId, allowInitializeEmptyStore: read.schemaVersion === "empty" };
+        if (options.discardConversationIds !== undefined) assert.equal(approval.decision, "discard");
+        return { generation: lease.generation, snapshotId: read.snapshotId, allowInitializeEmptyStore: read.schemaVersion === "empty",
+          ...(options.discardConversationIds === undefined ? {} : { discardConversationIds: options.discardConversationIds }) };
       },
       async revoke() { sqlite.revoke(); },
       async drainAndRelease() { assert.equal(sqlite.isClosed(), true, "SQLite closes before ownership release"); },
       onRevoked() { return () => {}; },
     },
-    recovery: { async read() { snapshotReads++; return snapshot(); } },
+    recovery: {
+      async read() { snapshotReads++; return snapshot(); },
+      async discardVerified() {
+        verificationCalls++;
+        assert.ok(options.discardConversationIds, "only explicit native discard can request completion verification");
+        assert.equal(runtime.phase, "activating");
+        const reader = new DatabaseSync(file, { readOnly: true });
+        try {
+          assert.equal(reader.prepare("SELECT count(*) AS n FROM tasks WHERE status != 'terminal'").get().n, 0);
+          assert.equal(reader.prepare("SELECT count(*) AS n FROM submissions WHERE status NOT IN ('done', 'unanswered')").get().n, 0);
+        } finally { reader.close(); }
+        await options.verifyDiscard?.();
+      },
+    },
     sqlite: { async open(...args) { assert.equal(granted, true); return api.nativeSqlitePort(sqlite.wire).open(...args); } },
     mcp: {
       async send(_lease, message, _signal, invocation) {
@@ -237,7 +258,7 @@ function fixture(file, generation, configured, transport) {
           assert.equal(message.params.protocolVersion, "2025-11-25");
           return nativeJsonReply({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-11-25", serverInfo: { name: "explicit-fixture", version: "1" }, capabilities: { tools: {} } } });
         }
-        if (message.method === "notifications/initialized") return undefined;
+        if (["notifications/initialized", "notifications/cancelled"].includes(message.method)) return undefined;
         // The real NativeWire receives JSON in the web realm. Preserve that
         // boundary even in this direct-port fixture; host-realm arrays are
         // rejected by the original durable strict-JSON checks.
@@ -247,6 +268,7 @@ function fixture(file, generation, configured, transport) {
         if (transport && message.method === "tools/call") {
           assert.equal(message.params.name, "project_get", "only the fixture's real read path is implemented");
           assert.ok(taskBindings.some((binding) => binding.conversationId === invocation.conversationId));
+          if (options.tool) return options.tool(message, _signal, invocation);
           return nativeJsonReply({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: "Explicit read-only project fixture" }] } });
         }
         throw new Error(`Unexpected model/native tool call ${message.method}`);
@@ -269,7 +291,8 @@ function fixture(file, generation, configured, transport) {
     async delete() { throw new Error("No credential deletion"); },
   } };
   const runtime = new api.AgentRuntime(lease.storageId, ports, api.piEngineFactory(configured ?? configuration));
-  return { runtime, sqlite, mcpCalls, taskBindings, snapshotReads: () => snapshotReads, networkCalls: () => networkCalls, credentialReads: () => credentialReads };
+  return { runtime, sqlite, mcpCalls, taskBindings, snapshotReads: () => snapshotReads, networkCalls: () => networkCalls,
+    credentialReads: () => credentialReads, verificationCalls: () => verificationCalls };
 }
 
 test("built pinned original Harness persists real conversation records in SQLite and reopens only after explicit reconciliation", { timeout: 15000 }, async () => {
@@ -359,6 +382,177 @@ function durableFailure(file) {
     return JSON.stringify({ submissions, tools });
   } finally { reader.close(); }
 }
+
+function durableRecords(file) {
+  const reader = new DatabaseSync(file, { readOnly: true });
+  try {
+    return Object.fromEntries(["tasks", "submissions", "entries", "conversations", "documents"].map((table) => [
+      table, reader.prepare(`SELECT * FROM ${table} ORDER BY id`).all(),
+    ]));
+  } finally { reader.close(); }
+}
+
+/** This seeds real interrupted records by stopping the production original
+ * tool path, not by synthesizing a task graph or setting a fake success. */
+async function interruptedToolStore(file) {
+  let entered;
+  const toolEntered = new Promise((resolve) => { entered = resolve; });
+  const first = fixture(file, 1, api.nativeModelConfiguration(nativeConfiguration()), async () => completionResponse([
+    { delta: { role: "assistant", tool_calls: [{ index: 0, id: "interrupted-project-read", type: "function", function: { name: "project_get", arguments: "{}" } }] } },
+    { finish: "tool_calls" },
+  ]), {
+    tool(_message, signal, invocation) {
+      return new Promise((_resolve, reject) => {
+        signal.throwIfAborted();
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        entered(invocation);
+      });
+    },
+  });
+  try {
+    const snapshot = await first.runtime.start();
+    await first.runtime.confirmRecovery({ snapshotId: snapshot.snapshotId, decision: "continue", approvalId: "native-seed" });
+    const admitted = await first.runtime.dispatch("nativeSubmit", {
+      taskId: "interrupted-read", networkPermit: "seed-only-permit", input: "保留这条被停止的真实输入", mode: "chat",
+    });
+    const invocation = await toolEntered;
+    assert.equal(invocation.conversationId, admitted.conversationId);
+    const running = durableRecords(file).tasks.map((row) => JSON.parse(row.record));
+    assert.ok(running.some((record) => record.kind === "pi.tool" && record.state.status === "running"));
+    await first.runtime.stop();
+    assert.equal(first.sqlite.isClosed(), true);
+    assert.equal(first.networkCalls(), 1);
+    assert.equal(first.mcpCalls.filter((message) => message.method === "tools/call").length, 1);
+    const records = durableRecords(file);
+    const live = records.tasks.map((row) => JSON.parse(row.record)).filter((record) => record.state.status !== "terminal");
+    assert.equal(live.length, 2, "the original generation and its actual tool both remain interrupted");
+    assert.ok(live.some((record) => record.kind === "pi.generation"));
+    assert.ok(live.some((record) => record.kind === "pi.tool" && record.state.status === "running"),
+      "native revoke blocks close-time writes, so the real interrupted running record is preserved");
+    assert.ok(records.submissions.some((row) => row.id === admitted.submissionId && row.status === "placed"));
+    return { admitted, records, live };
+  } finally { await first.runtime.stop().catch(() => {}); }
+}
+
+test("explicit current-project discard marks every original task before cancellation-only draining, preserves history and permits a new explicit request", { timeout: 20000 }, async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), "bkcat-original-discard-"));
+  const file = resolve(directory, "session.sqlite3");
+  let reopened;
+  try {
+    const seeded = await interruptedToolStore(file);
+    reopened = fixture(file, 2, api.nativeModelConfiguration(nativeConfiguration()), async (_lease, permit) => {
+      assert.equal(permit, "new-explicit-permit");
+      return completionResponse([{ delta: { role: "assistant", content: "明确新任务的答案" } }, { finish: "stop" }]);
+    }, { interrupted: true, discardConversationIds: [seeded.admitted.conversationId], traceTasks: true });
+    const snapshot = await reopened.runtime.start();
+    await assert.rejects(reopened.runtime.dispatch("nativeSubmit", {}), /reconciliation/);
+    assert.deepEqual(durableRecords(file), seeded.records, "startup alone must not reconcile or change a running record");
+    await reopened.runtime.confirmRecovery({ snapshotId: snapshot.snapshotId, decision: "discard", approvalId: "explicit-native-discard" });
+    assert.equal(reopened.runtime.phase, "ready");
+    assert.equal(reopened.verificationCalls(), 1);
+    assert.equal(reopened.networkCalls(), 0, "original abort handlers must not request a model");
+    assert.equal(reopened.mcpCalls.filter((message) => message.method === "tools/call").length, 0, "old tools must not execute");
+    assert.equal(reopened.taskBindings.length, 0, "discard has no native model/task authorization");
+    const after = durableRecords(file);
+    const tasks = after.tasks.map((row) => JSON.parse(row.record));
+    for (const original of seeded.live) {
+      const ended = tasks.find((record) => record.id === original.id);
+      assert.equal(ended.state.status, "terminal");
+      assert.equal(ended.state.outcome.status, "aborted");
+    }
+    const commits = reopened.sqlite.committedTasks;
+    const ids = new Set(seeded.live.map((record) => record.id));
+    const firstTerminal = commits.findIndex((records) => records.some((record) => ids.has(record.id) && record.state.status === "terminal"));
+    assert.ok(firstTerminal > 0, "the test observed real terminal SQLite commits");
+    assert.ok(commits.slice(0, firstTerminal).some((records) => seeded.live.every(({ id }) => {
+      const record = records.find((entry) => entry.id === id);
+      return record?.abortRequested === true && record.state.status !== "terminal";
+    })), "a committed all-task cancellation barrier must precede the first terminal task");
+    for (const entry of seeded.records.entries) assert.deepEqual(after.entries.find((row) => row.id === entry.id), entry);
+    const oldInput = after.submissions.map((row) => JSON.parse(row.record)).find((record) => record.id === seeded.admitted.submissionId);
+    assert.equal(oldInput.status, "unanswered"); assert.equal(oldInput.reason, "aborted");
+    const observed = await reopened.runtime.observeConversation(seeded.admitted.conversationId, () => {});
+    assert.ok(observed.value.entries.some((entry) => entry.model?.some((message) => message.role === "user" && message.content === "保留这条被停止的真实输入")));
+    observed.detach();
+    const next = await reopened.runtime.dispatch("nativeSubmit", {
+      taskId: "new-explicit-task", networkPermit: "new-explicit-permit", conversationId: seeded.admitted.conversationId,
+      input: "这是明确的新请求", mode: "chat",
+    });
+    const result = await reopened.runtime.dispatch("nativeWait", { taskId: "new-explicit-task" });
+    assert.equal(result.status, "done", result.status === "done" ? undefined : durableFailure(file));
+    assert.equal(result.text, "明确新任务的答案");
+    assert.equal(result.conversationId, seeded.admitted.conversationId); assert.equal(result.submissionId, next.submissionId);
+    assert.equal(reopened.networkCalls(), 1, "only the newly approved task contacts the provider fixture");
+    assert.equal(reopened.taskBindings.length, 1); assert.equal(forbiddenFetch, 0);
+    await reopened.runtime.stop();
+  } finally { await reopened?.runtime.stop().catch(() => {}); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("original-store discard rejects other projects, unknown records and deferred polling before changing any running task or submission", { timeout: 30000 }, async (t) => {
+  const directory = mkdtempSync(resolve(tmpdir(), "bkcat-original-discard-refused-"));
+  try {
+    const seedFile = resolve(directory, "seed.sqlite3");
+    const seeded = await interruptedToolStore(seedFile);
+    const cases = ["other-project", "unknown-version", "unknown-kind", "poll", "retry-poll", "unknown-task-state", "unknown-submission-state", "unknown-submission-kind", "other-project-submission", "late-unknown-state"];
+    for (const label of cases) await t.test(label, async () => {
+      const file = resolve(directory, `${label}.sqlite3`); copyFileSync(seedFile, file);
+      if (label !== "other-project") {
+        // Deliberately corrupt only this deterministic fixture. Production
+        // never writes Pi task state with raw SQL or bypasses its constraints.
+        const writer = new DatabaseSync(file);
+        try {
+          const generation = writer.prepare("SELECT * FROM tasks ORDER BY id").all()
+            .map((row) => JSON.parse(row.record)).find((record) => record.kind === "pi.generation");
+          if (["unknown-submission-state", "unknown-submission-kind", "other-project-submission"].includes(label)) {
+            const submission = JSON.parse(writer.prepare("SELECT record FROM submissions WHERE id = ?").get(seeded.admitted.submissionId).record);
+            if (label === "unknown-submission-state") { writer.exec("PRAGMA ignore_check_constraints = ON"); submission.status = "future-submission-state"; }
+            if (label === "unknown-submission-kind") submission.type = "future-submission-kind";
+            if (label === "other-project-submission") submission.conversationId += 100;
+            writer.prepare("UPDATE submissions SET status = ?, conversation_id = ?, record = ? WHERE id = ?")
+              .run(submission.status, submission.conversationId, JSON.stringify(submission), submission.id);
+          } else if (label === "late-unknown-state") {
+            writer.exec("PRAGMA ignore_check_constraints = ON");
+            const insert = writer.prepare("INSERT INTO tasks (id, conversation_id, kind, status, abort_requested, background, record) VALUES (?, ?, ?, ?, ?, ?, ?)");
+            for (let index = 0; index < 300; index++) {
+              const terminal = { ...generation, id: 10000 + index, conversationId: seeded.admitted.conversationId + 100,
+                state: { status: "terminal", outcome: { status: "aborted" } } };
+              insert.run(terminal.id, terminal.conversationId, terminal.kind, "terminal", 0, 0, JSON.stringify(terminal));
+            }
+            const future = { ...generation, id: 20000, state: { ...generation.state, status: "future-task-state" } };
+            insert.run(future.id, future.conversationId, future.kind, "future-task-state", 0, 0, JSON.stringify(future));
+          } else {
+            if (label === "unknown-version") generation.version = 999;
+            if (label === "unknown-kind") generation.kind = "future-generation-task";
+            if (label === "poll") generation.state.checkpoint = { phase: "poll", provider: "native-channel", responseId: "must-not-contact" };
+            if (label === "retry-poll") generation.state.checkpoint = { phase: "retry", poll: { provider: "native-channel", responseId: "must-not-contact" } };
+            if (label === "unknown-task-state") { writer.exec("PRAGMA ignore_check_constraints = ON"); generation.state.status = "future-task-state"; }
+            writer.prepare("UPDATE tasks SET kind = ?, status = ?, record = ? WHERE id = ?")
+              .run(generation.kind, generation.state.status, JSON.stringify(generation), generation.id);
+          }
+        } finally { writer.close(); }
+      }
+      const before = durableRecords(file);
+      assert.ok(before.tasks.some((row) => JSON.parse(row.record).state.status === "running"), "every rejection fixture contains an actual interrupted running tool");
+      const currentConversation = seeded.admitted.conversationId + (label === "other-project" ? 1 : 0);
+      const f = fixture(file, 2, api.nativeModelConfiguration(nativeConfiguration()), async () => {
+        throw new Error("rejected discard must not request a model");
+      }, { interrupted: true, discardConversationIds: [currentConversation], traceTasks: true });
+      try {
+        const snapshot = await f.runtime.start();
+        await assert.rejects(f.runtime.confirmRecovery({ snapshotId: snapshot.snapshotId, decision: "discard", approvalId: `native-refuse-${label}` }),
+          /其他工程|未经审核|延期网络轮询|未知历史任务状态/);
+        assert.equal(f.runtime.phase, "closed");
+        assert.deepEqual(durableRecords(file), before, "all original task/submission/history records must remain byte-for-byte equal after rejection");
+        assert.equal(f.networkCalls(), 0); assert.equal(f.credentialReads(), 0); assert.equal(f.taskBindings.length, 0);
+        assert.equal(f.mcpCalls.filter((message) => message.method === "tools/call").length, 0);
+        assert.equal(f.verificationCalls(), 0, "a rejected original preflight cannot claim native cleanup completion");
+        if (label === "late-unknown-state") assert.ok(f.sqlite.calls.filter((frame) => frame.method === "sqlite.all" && frame.sql.includes("FROM tasks WHERE id >")).length >= 2,
+          "an invalid record beyond the first page must be read and refused too");
+        assert.equal(forbiddenFetch, 0);
+      } finally { await f.runtime.stop().catch(() => {}); }
+    });
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
 
 test("configured original provider submits, persists a real generated answer and reopens it without another request", { timeout: 15000 }, async () => {
   const directory = mkdtempSync(resolve(tmpdir(), "bkcat-native-model-"));

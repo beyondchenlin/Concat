@@ -483,6 +483,15 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         });
         embedded::show_ui_error(result);
     });
+    agent_ui.on_discard_requested(|| {
+        let mut result = Err("聊天运行组件尚未连接。".to_owned());
+        Shell::with(|shell, _| {
+            if let Some(runtime) = shell.embedded.borrow().as_ref() {
+                result = runtime.discard_interrupted();
+            }
+        });
+        embedded::show_ui_error(result);
+    });
     agent_ui.on_connect_requested(|| embedded::show_ui_error(embedded::connect_from_ui()));
     let agent_status_timer = slint::Timer::default();
     agent_status_timer.start(

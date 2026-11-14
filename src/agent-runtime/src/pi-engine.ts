@@ -17,6 +17,7 @@ import { argumentObject, conversationOptions, submissionDraft, nativeTaskInput, 
 import { nativeModels, type ModelConfiguration } from "./models.ts";
 import { EMBEDDED_TOOLS, guardedDatabase, guardedStorage, NativeMcpTransport } from "./native-adapters.ts";
 import type { EngineOpenOptions, PiEngine, PiEngineFactory, SchedulingAction } from "./ports.ts";
+import { discardOriginalWork, reviewDiscardStorage } from "./recovery-discard.ts";
 
 /** Builds only the original pinned Pi Harness and portable SqliteStorage. */
 export function piEngineFactory(configuration: ModelConfiguration): PiEngineFactory {
@@ -70,6 +71,11 @@ export function piEngineFactory(configuration: ModelConfiguration): PiEngineFact
         registry.install({ name: "bk-cat-native", tools });
         const context = withAbortSignal(gate.signal, BACKGROUND_CONTEXT);
         const ownedStorage = guardedStorage(storage, gate, lease);
+        if (grant.discardConversationIds !== undefined) {
+          // Original Harness.open itself persists restart reconciliation. Read
+          // every live record before allowing that write to a shared store.
+          await reviewDiscardStorage(ownedStorage, grant.discardConversationIds, gate, lease, context);
+        }
         harness = await Harness.open(ownedStorage, {
           models: nativeModels(configuration, ports, gate, lease),
           registry,
@@ -93,6 +99,11 @@ export function piEngineFactory(configuration: ModelConfiguration): PiEngineFact
         }, context);
         const opened = harness;
         gate.assertStorageWrite(lease);
+        if (grant.discardConversationIds !== undefined) {
+          await discardOriginalWork(opened, grant.discardConversationIds, gate, lease, context);
+          await reviewDiscardStorage(ownedStorage, grant.discardConversationIds, gate, lease, context, true);
+          gate.assertStorageWrite(lease);
+        }
         return {
           async inspect() {
             gate.assertOwned(lease);
@@ -129,6 +140,9 @@ export function piEngineFactory(configuration: ModelConfiguration): PiEngineFact
           harness ? harness.close(BACKGROUND_CONTEXT) : storage ? storage.close(BACKGROUND_CONTEXT) : database.close(),
           client.close(),
         ]);
+        if (grant.discardConversationIds !== undefined && !(error instanceof RuntimeRefused)) {
+          throw new RuntimeRefused("原版会话核对或取消失败，已有记录保留，运行组件未进入就绪状态。");
+        }
         throw error;
       }
     },

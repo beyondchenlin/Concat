@@ -1,0 +1,142 @@
+{
+  "utc": "2026-11-14T02:48:25.477666+00:00",
+  "head": "f11cbe5bc21f901be689a742aba3bd5b6b1c7d77",
+  "tree": "7ce361323f36870922300bfe878e0e347f6a3f4b",
+  "source_status_after": "",
+  "suites": {
+    "01-project-test.log": [
+      {
+        "suite": "Running unittests src/lib.rs (/workspace/scratch/a2559d0f84f7/target-native/debug/deps/concat_project-ae7e2456dcba1a20)",
+        "passed": 231,
+        "failed": 0,
+        "ignored": 0,
+        "raw": "test result: ok. 231 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s"
+      },
+      {
+        "suite": "Doc-tests concat_project",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "raw": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      }
+    ],
+    "05-host-test-after-clang-resource.log": [
+      {
+        "suite": "Running unittests src/lib.rs (/workspace/scratch/a2559d0f84f7/target-native/debug/deps/concat_host-5fa188f30fb52ed4)",
+        "passed": 161,
+        "failed": 0,
+        "ignored": 4,
+        "raw": "test result: ok. 161 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 4.17s"
+      },
+      {
+        "suite": "Running tests/edit_scale.rs (/workspace/scratch/a2559d0f84f7/target-native/debug/deps/edit_scale-3f63471c4729ae6c)",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 1,
+        "raw": "test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      },
+      {
+        "suite": "Running tests/export.rs (/workspace/scratch/a2559d0f84f7/target-native/debug/deps/export-44aa237e14b191ac)",
+        "passed": 17,
+        "failed": 0,
+        "ignored": 0,
+        "raw": "test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 82.34s"
+      },
+      {
+        "suite": "Running tests/import_speed.rs (/workspace/scratch/a2559d0f84f7/target-native/debug/deps/import_speed-4836a7dd83aafa4f)",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 1,
+        "raw": "test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      },
+      {
+        "suite": "Running tests/playback_feel.rs (/workspace/scratch/a2559d0f84f7/target-native/debug/deps/playback_feel-c83950030abe6cda)",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "raw": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      },
+      {
+        "suite": "Running tests/project_identity.rs (/workspace/scratch/a2559d0f84f7/target-native/debug/deps/project_identity-0a72d3457872a126)",
+        "passed": 11,
+        "failed": 0,
+        "ignored": 0,
+        "raw": "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s"
+      },
+      {
+        "suite": "Running tests/stabilize.rs (/workspace/scratch/a2559d0f84f7/target-native/debug/deps/stabilize-b227067c6b4ecad9)",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "raw": "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.00s"
+      },
+      {
+        "suite": "Doc-tests concat_host",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "raw": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      }
+    ],
+    "06-mcp-test.log": [
+      {
+        "suite": "Running unittests src/lib.rs (/workspace/scratch/a2559d0f84f7/target-native/debug/deps/concat_mcp-2a9b92cc7b24a3a9)",
+        "passed": 22,
+        "failed": 0,
+        "ignored": 0,
+        "raw": "test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.97s"
+      },
+      {
+        "suite": "Running unittests src/bin/concat-mcp.rs (/workspace/scratch/a2559d0f84f7/target-native/debug/deps/concat_mcp-c01dc7d134cca211)",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "raw": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      },
+      {
+        "suite": "Running tests/e2e.rs (/workspace/scratch/a2559d0f84f7/target-native/debug/deps/e2e-a87f83814e60d982)",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "raw": "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.09s"
+      },
+      {
+        "suite": "Doc-tests concat_mcp",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "raw": "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      }
+    ]
+  },
+  "strict_check_exit": 0,
+  "initial_environment_failure_retained": "02-host-test.log",
+  "scope": "default features, cloud Linux; not native window or device acceptance",
+  "files": [
+    {
+      "file": "01-project-test.log",
+      "bytes": 17704,
+      "sha256": "6a1bf28c47744da146aac3073f05cd390a744e60d67c5ee290500c47caded407"
+    },
+    {
+      "file": "02-host-test.log",
+      "bytes": 318649,
+      "sha256": "8b8de98f93b21c2f0d40384d2719754e379d5e85f9fab2196892fd344a91a47e"
+    },
+    {
+      "file": "05-host-test-after-clang-resource.log",
+      "bytes": 19468,
+      "sha256": "f70d330d5237fa7f9b0a463507b3aed185e377072881f5a484cf973c4b6e471e"
+    },
+    {
+      "file": "06-mcp-test.log",
+      "bytes": 4616,
+      "sha256": "d62e159ed28314a09b3b8d922a3c445a63d5ad6f695de09b316b34c7e361b2a3"
+    },
+    {
+      "file": "07-native-strict.log",
+      "bytes": 8481,
+      "sha256": "132d857f7c79ccea012e22a0f08bae00a67d990c5e9666b8fadcc0489aad7e78"
+    }
+  ]
+}

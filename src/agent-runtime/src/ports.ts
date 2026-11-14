@@ -32,6 +32,9 @@ export interface ExecutionGrant {
   readonly allowInitializeEmptyStore: boolean;
   /** Absent until a model channel and its cost authorization exist. */
   readonly networkPermit?: string;
+  /** Issued only by an explicit native discard action after project identity,
+   * location, journal and binding reconciliation. Never a model permission. */
+  readonly discardConversationIds?: readonly number[];
 }
 
 /** Original Pi ToolExecutionApi identity, never read from model arguments. */
@@ -58,6 +61,9 @@ export interface NativePorts {
   readonly recovery: {
     /** SELECT-only. Must not initialize/migrate SQLite or resume Pi. */
     read(lease: OwnerLease, signal: AbortSignal): Promise<RecoverySnapshot>;
+    /** Consume the explicit discard authorization only after original Pi
+     * settles. Native rechecks project/bindings/journal and all live counts. */
+    discardVerified(lease: OwnerLease, signal: AbortSignal): Promise<void>;
   };
   readonly sqlite: {
     /**

@@ -12,6 +12,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use concat_agent::conversations::CONVERSATIONS_FILE_NAME;
 use concat_agent::operations::{
     Invocation, JournalInspection, OPERATIONS_FILE_NAME, inspect_operations,
 };
@@ -39,11 +40,15 @@ struct Evidence {
     storage: StorageInspection,
     journal: JournalInspection,
     session_revision: String,
+    project_fingerprint: String,
+    bindings_fingerprint: String,
+    discard_conversations: Vec<u64>,
+    discard_scope_error: Option<String>,
 }
 
 impl Evidence {
-    fn interrupted(&self) -> bool {
-        let unfinished_pi = self.storage.counts.as_ref().is_some_and(|counts| {
+    fn unfinished_pi(&self) -> bool {
+        self.storage.counts.as_ref().is_some_and(|counts| {
             counts
                 .tasks
                 .iter()
@@ -51,24 +56,68 @@ impl Evidence {
                 || counts.submissions.iter().any(|(status, count)| {
                     *count > 0 && !matches!(status.as_str(), "done" | "unanswered")
                 })
-        });
-        unfinished_pi
-            || self.journal.needs_project_reconciliation > 0
+        })
+    }
+
+    fn unsettled_edits(&self) -> bool {
+        self.journal.needs_project_reconciliation > 0
             || self.journal.applied_not_saved > 0
             || self.journal.saved_not_notified > 0
     }
 
-    fn blocked_reason(&self) -> Option<&'static str> {
+    fn interrupted(&self) -> bool {
+        self.unfinished_pi() || self.unsettled_edits()
+    }
+
+    fn common_blocked_reason(&self) -> Option<&'static str> {
         if self.project.is_none() {
             return Some("请先打开原生工程，再确认会话恢复");
         }
         if self.storage.state == StorageState::Existing && !self.storage.compatible {
             return Some("会话数据库版本或结构不兼容，已保持只读；不能自动迁移或覆盖");
         }
-        if self.interrupted() {
-            return Some("检测到中断任务或未核对的编辑记录；完整恢复尚未接通，旧队列保持停止");
+        if self.unsettled_edits() {
+            return Some(
+                "原生编辑或保存记录尚未核对，不能放弃任务或恢复会话；现有工程与日志保持不变",
+            );
         }
         None
+    }
+
+    fn blocked_reason(&self) -> Option<&str> {
+        if let Some(reason) = self.common_blocked_reason() {
+            return Some(reason);
+        }
+        if self.unfinished_pi() {
+            self.discard_scope_error.as_deref().or(Some(
+                "检测到未完成任务。可明确放弃当前工程已登记的旧任务后打开会话；不会恢复模型调用，已有消息保留。",
+            ))
+        } else {
+            None
+        }
+    }
+
+    fn discard_blocked_reason(&self) -> Option<&str> {
+        if let Some(reason) = self.common_blocked_reason() {
+            return Some(reason);
+        }
+        if !self.unfinished_pi() {
+            Some("当前没有待放弃的未完成任务，请使用确认继续。")
+        } else if let Some(error) = self.discard_scope_error.as_deref() {
+            Some(error)
+        } else if self.discard_conversations.is_empty() {
+            Some("当前工程没有可核对的历史会话归属，未完成任务保持停止。")
+        } else {
+            None
+        }
+    }
+
+    fn decision_blocked_reason(&self, decision: &str) -> Option<&str> {
+        if decision == "discard" {
+            self.discard_blocked_reason()
+        } else {
+            self.blocked_reason()
+        }
     }
 }
 
@@ -93,6 +142,7 @@ impl Snapshot {
             "sessionRevision": self.evidence.session_revision,
             "schemaVersion": schema,
             "hasInterruptedWork": self.evidence.interrupted(),
+            "canDiscardInterrupted": self.evidence.discard_blocked_reason().is_none(),
             "projectPath": project.map(|p| p.path.as_str()),
             "blockedReason": self.evidence.blocked_reason(),
         })
@@ -114,6 +164,23 @@ struct State {
     closed_database: Option<String>,
     closed: bool,
     awaiting_delivery: BTreeSet<u64>,
+    discard: Option<DiscardVerification>,
+}
+
+#[derive(Clone)]
+struct DiscardVerification {
+    project: CurrentProject,
+    project_fingerprint: String,
+    bindings_fingerprint: String,
+    conversations: Vec<u64>,
+    attempted: bool,
+    verified: bool,
+}
+
+impl State {
+    fn execution_ready(&self) -> bool {
+        self.granted && !self.closed && self.discard.as_ref().is_none_or(|scope| scope.verified)
+    }
 }
 
 /// A single component bound to an already-held cross-process session owner.
@@ -185,6 +252,18 @@ impl NativeSession {
         self.approval
             .lock()
             .map_err(|_| "native recovery approval state failed".into())
+    }
+
+    /// A page's ready event cannot bypass the native completion of an explicit
+    /// discard. Writable recovery storage alone never admits a new model task.
+    pub(crate) fn prepare_submission(
+        &self,
+        intent: &super::tasks::SubmissionIntent,
+    ) -> Result<Value, String> {
+        if !self.state()?.execution_ready() {
+            return Err("原生会话恢复核验尚未完成，未签发模型任务许可。".into());
+        }
+        self.tasks.prepare(intent)
     }
 
     fn check_bound(&self, payload: &Value) -> Result<(), String> {
@@ -264,7 +343,7 @@ impl NativeSession {
         match method.as_str() {
             "task.bind" => {
                 allow_bound_keys(&payload, &["taskId", "conversationId"])?;
-                if !state.granted {
+                if !state.execution_ready() {
                     return Err("任务绑定尚未完成原生恢复确认。".into());
                 }
                 let conversation = payload["conversationId"]
@@ -300,6 +379,10 @@ impl NativeSession {
             "recovery.read" => {
                 allow_bound_keys(&payload, &[])?;
                 self.snapshot_locked(&state)
+            }
+            "recovery.discardVerified" => {
+                allow_bound_keys(&payload, &[])?;
+                self.verify_discard(&mut state)
             }
             "ownership.confirm" => {
                 allow_bound_keys(&payload, &["snapshot", "approval"])?;
@@ -463,7 +546,7 @@ impl NativeSession {
         if snapshot.id != snapshot_id {
             return Err("the displayed recovery snapshot is stale; inspect again".into());
         }
-        if let Some(reason) = snapshot.evidence.blocked_reason() {
+        if let Some(reason) = snapshot.evidence.decision_blocked_reason(decision) {
             return Err(reason.to_owned());
         }
         if state.pending.is_some() {
@@ -506,16 +589,17 @@ impl NativeSession {
         if current != snapshot.evidence {
             return Err("工程、会话或存储已变化；请重新核对后再确认".into());
         }
-        if let Some(reason) = current.blocked_reason() {
+        let decision = text_field(supplied, "decision")?;
+        if let Some(reason) = current.decision_blocked_reason(decision) {
             return Err(reason.to_owned());
         }
         let project = current
             .project
             .as_ref()
             .ok_or_else(|| "请先打开原生工程，再确认会话恢复".to_owned())?;
-        let decision = match supplied.get("decision").and_then(Value::as_str) {
-            Some("continue") => RecoveryDecision::ContinueAfterRevalidation,
-            Some("discard") => RecoveryDecision::DiscardInterrupted,
+        let decision = match decision {
+            "continue" => RecoveryDecision::ContinueAfterRevalidation,
+            "discard" => RecoveryDecision::DiscardInterrupted,
             _ => return Err("invalid native recovery decision".into()),
         };
         self.bridge.confirm_recovery(
@@ -528,11 +612,68 @@ impl NativeSession {
         )?;
         state.granted = true;
         state.initialize_empty = current.storage.state == StorageState::Empty;
-        Ok(json!({
+        let mut grant = json!({
             "generation": self.generation,
             "snapshotId": snapshot.id,
             "allowInitializeEmptyStore": state.initialize_empty,
-        }))
+        });
+        if matches!(decision, RecoveryDecision::DiscardInterrupted) {
+            // This scope permits original Pi cancellation only. There is no
+            // model grant, task authority, edit permission or automatic resume.
+            state.discard = Some(DiscardVerification {
+                project: project.clone(),
+                project_fingerprint: current.project_fingerprint,
+                bindings_fingerprint: current.bindings_fingerprint,
+                conversations: current.discard_conversations.clone(),
+                attempted: false,
+                verified: false,
+            });
+            grant["discardConversationIds"] = json!(current.discard_conversations);
+        }
+        Ok(grant)
+    }
+
+    /// One final native fact check, never a new authorization. A failed first
+    /// check keeps admission closed and cannot be retried in this component.
+    /// A duplicate after success is refused without undoing that verified state.
+    fn verify_discard(&self, state: &mut State) -> Result<Value, String> {
+        if !state.granted || state.closed {
+            return Err("当前组件没有已确认的放弃操作。".into());
+        }
+        let scope = state
+            .discard
+            .as_mut()
+            .ok_or("本代没有明确放弃任务的原生决定。")?;
+        if scope.attempted {
+            return Err("本代放弃核验已使用，不能重复或重试。".into());
+        }
+        scope.attempted = true;
+        let expected = scope.clone();
+        let current = self.read_evidence()?;
+        if current.storage.state != StorageState::Existing
+            || !current.storage.compatible
+            || current.storage.counts.is_none()
+            || current.interrupted()
+            || current.project.as_ref() != Some(&expected.project)
+            || current.project_fingerprint != expected.project_fingerprint
+            || current.bindings_fingerprint != expected.bindings_fingerprint
+        {
+            return Err(
+                "放弃后仍有未完成记录，或工程身份、会话、版本和文件已改变；会话未恢复就绪。".into(),
+            );
+        }
+        if self.tasks.recovery_conversations(&expected.project)? != expected.conversations
+            || (self.project_reader)()?.as_ref() != Some(&expected.project)
+        {
+            return Err("放弃期间当前工程的真实位置或历史会话归属已改变，会话未恢复就绪。".into());
+        }
+        self.check_owned()?;
+        state
+            .discard
+            .as_mut()
+            .expect("discard review retained")
+            .verified = true;
+        Ok(json!({"verified":true}))
     }
 
     fn read_evidence(&self) -> Result<Evidence, String> {
@@ -546,7 +687,13 @@ impl NativeSession {
         // Stop can revoke immediately, and every block plus the final result
         // rechecks the original generation before approval can be consumed.
         let mut digest = Sha256::new();
-        for name in [DATABASE_FILE_NAME, OPERATIONS_FILE_NAME] {
+        let mut bindings_fingerprint = String::new();
+        for name in [
+            DATABASE_FILE_NAME,
+            OPERATIONS_FILE_NAME,
+            CONVERSATIONS_FILE_NAME,
+        ] {
+            let mut file_digest = Sha256::new();
             for suffix in ["", "-wal", "-journal"] {
                 fingerprint(
                     &self
@@ -554,18 +701,26 @@ impl NativeSession {
                         .owner
                         .storage_root()
                         .join(format!("{name}{suffix}")),
-                    &mut digest,
+                    &mut file_digest,
                     || self.check_owned(),
                 )?;
             }
+            let file_fingerprint = format!("{:x}", file_digest.finalize());
+            digest.update(file_fingerprint.as_bytes());
+            if name == CONVERSATIONS_FILE_NAME {
+                bindings_fingerprint = file_fingerprint;
+            }
         }
+        let mut project_digest = Sha256::new();
         if let Some(project) = &project {
             fingerprint(
-                &Path::new(&project.path).join("concat.json"),
-                &mut digest,
+                &concat_host::projects::manifest_path(Path::new(&project.path)),
+                &mut project_digest,
                 || self.check_owned(),
             )?;
         }
+        let project_fingerprint = format!("{:x}", project_digest.finalize());
+        digest.update(project_fingerprint.as_bytes());
         let revision = format!("{:x}", digest.finalize());
         if (self.project_reader)()? != project {
             return Err(
@@ -573,12 +728,34 @@ impl NativeSession {
             );
         }
         self.check_owned()?;
-        Ok(Evidence {
+        let mut evidence = Evidence {
             project,
             storage,
             journal,
             session_revision: revision,
-        })
+            project_fingerprint,
+            bindings_fingerprint,
+            discard_conversations: Vec::new(),
+            discard_scope_error: None,
+        };
+        if evidence.unfinished_pi() && evidence.common_blocked_reason().is_none() {
+            let project = evidence.project.as_ref().expect("checked native project");
+            match self.tasks.recovery_conversations(project) {
+                Ok(conversations) if !conversations.is_empty() => {
+                    evidence.discard_conversations = conversations;
+                }
+                Ok(_) => {
+                    evidence.discard_scope_error =
+                        Some("当前工程没有可核对的历史会话归属，未完成任务保持停止。".into());
+                }
+                Err(error) => evidence.discard_scope_error = Some(error),
+            }
+        }
+        if (self.project_reader)()? != evidence.project {
+            return Err("核对恢复范围时工程已变化，请重新核对。".into());
+        }
+        self.check_owned()?;
+        Ok(evidence)
     }
 
     fn sqlite(&self, state: &mut State, payload: Value) -> Result<Value, String> {
@@ -875,6 +1052,88 @@ mod tests {
                 .unwrap()
                 .to_owned()
         }
+
+        // Real files and fixed Pi schema, with only a native inspection row.
+        // The original runtime's cancellation execution is covered separately
+        // by its integration suite; this helper does not simulate a scheduler.
+        fn with_bound_interrupted_task() -> Self {
+            let fixture = Self::new();
+            let current = {
+                let mut project = fixture.project.lock().unwrap();
+                let current = project.as_mut().unwrap();
+                current.project_id = "bkcat-project:33333333333333333333333333333333".into();
+                current.clone()
+            };
+            fs::write(
+                Path::new(&current.path).join("concat.json"),
+                serde_json::to_vec(
+                    &json!({"project":"isolated", "bkCatProjectId":current.project_id}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let root = fixture
+                .bridge
+                .dirs
+                .data
+                .join("bk-cat")
+                .join("script-workspaces");
+            fs::create_dir_all(&root).unwrap();
+            concat_agent::script_locations::with_project_location(
+                &root,
+                &current.project_id,
+                Path::new(&current.path),
+                concat_host::project_identity::read_persisted,
+                || Ok(()),
+            )
+            .unwrap();
+            let lease = fixture.acquire();
+            let database = fixture.open_database(&lease);
+            fixture.native.handle(bound(&lease, "sqlite.exec", json!({
+                "databaseId":database,
+                "sql":include_str!("../../../concat-agent/tests/fixtures/pi-schema-1.5.2.sql"),
+            }))).unwrap();
+            fixture.native.handle(bound(&lease, "sqlite.run", json!({
+                "databaseId":database,
+                "sql":"INSERT INTO tasks (id,conversation_id,kind,status,abort_requested,background,record) VALUES (2,1,'agent','pending',0,0,'{}')",
+                "params":[],
+            }))).unwrap();
+            let bindings = concat_agent::conversations::ConversationBindings::open(
+                &fixture.bridge.owner,
+                &fixture.bridge.token,
+            )
+            .unwrap();
+            for (mode, id) in [("chat", 1), ("script", 7), ("edit", 9)] {
+                bindings.bind(&current.project_id, mode, id).unwrap();
+            }
+            bindings
+                .bind("bkcat-project:44444444444444444444444444444444", "chat", 4)
+                .unwrap();
+            drop(bindings);
+            fixture
+        }
+
+        fn reopen(&self) -> (Arc<AgentBridge>, NativeSession, Value) {
+            let bridge = Arc::new(
+                AgentBridge::acquire(
+                    &AppDirs::under(&self.directory.0),
+                    OpenProjects::default(),
+                    Exporter::new(),
+                )
+                .unwrap(),
+            );
+            let project = Arc::clone(&self.project);
+            let next = NativeSession::with_reader(
+                Arc::clone(&bridge),
+                random_capability().unwrap(),
+                Arc::new(move || Ok(project.lock().unwrap().clone())),
+            )
+            .unwrap();
+            let lease = next
+                .handle(json!({"method":"ownership.acquire","storageId":STORAGE_ID}))
+                .unwrap();
+            (bridge, next, lease)
+        }
     }
 
     fn bound(lease: &Value, method: &str, extra: Value) -> Value {
@@ -1165,7 +1424,7 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_pi_tasks_block_both_decisions_without_starting_a_scheduler() {
+    fn interrupted_tasks_without_native_project_bindings_block_both_decisions() {
         let fixture = Fixture::new();
         let lease = fixture.acquire();
         let database = fixture.open_database(&lease);
@@ -1207,6 +1466,7 @@ mod tests {
         let snapshot = next.snapshot().unwrap();
         assert_eq!(snapshot["schemaVersion"], 2);
         assert_eq!(snapshot["hasInterruptedWork"], true);
+        assert_eq!(snapshot["canDiscardInterrupted"], false);
         assert!(
             next.approve_from_ui(snapshot["snapshotId"].as_str().unwrap(), "continue")
                 .is_err()
@@ -1218,6 +1478,401 @@ mod tests {
         assert_eq!(bridge.status().unwrap().phase, Phase::RecoveryRequired);
         assert!(next.state().unwrap().database.is_none());
         next.shutdown().unwrap();
+    }
+
+    #[test]
+    fn explicit_discard_is_bound_to_all_project_conversations_and_grants_no_model_task() {
+        let fixture = Fixture::with_bound_interrupted_task();
+        fixture.native.shutdown().unwrap();
+        let (bridge, next, lease) = fixture.reopen();
+        let database = bridge.owner.storage_root().join(DATABASE_FILE_NAME);
+        let bindings = bridge.owner.storage_root().join(CONVERSATIONS_FILE_NAME);
+        let before_database = fs::read(&database).unwrap();
+        let before_bindings = fs::read(&bindings).unwrap();
+        let snapshot = next.snapshot().unwrap();
+        assert_eq!(snapshot["hasInterruptedWork"], true);
+        assert_eq!(snapshot["canDiscardInterrupted"], true);
+        assert!(
+            next.approve_from_ui(snapshot["snapshotId"].as_str().unwrap(), "continue")
+                .is_err()
+        );
+        assert!(next.handle(bound(&lease, "ownership.confirm", json!({
+            "snapshot":snapshot,"approval":{"snapshotId":snapshot["snapshotId"],"decision":"discard","approvalId":"fabricated"},
+        }))).is_err());
+        assert_eq!(bridge.status().unwrap().phase, Phase::RecoveryRequired);
+        assert!(next.state().unwrap().database.is_none());
+        let approval = next
+            .approve_from_ui(snapshot["snapshotId"].as_str().unwrap(), "discard")
+            .unwrap();
+        assert!(
+            next.approve_from_ui(snapshot["snapshotId"].as_str().unwrap(), "discard")
+                .is_err()
+        );
+        let grant = next
+            .handle(bound(
+                &lease,
+                "ownership.confirm",
+                json!({"snapshot":snapshot,"approval":approval}),
+            ))
+            .unwrap();
+        assert_eq!(grant["discardConversationIds"], json!([1, 7, 9]));
+        assert_eq!(grant["allowInitializeEmptyStore"], false);
+        assert!(grant.get("networkPermit").is_none());
+        assert!(next.tasks.network("no-native-task").is_err());
+        assert!(
+            next.tasks
+                .authorize_tool(
+                    &mut json!({"method":"tools/call","params":{"name":"concat_version"}}),
+                    None
+                )
+                .is_err()
+        );
+        assert!(next.state().unwrap().database.is_none());
+        assert_eq!(fs::read(database).unwrap(), before_database);
+        assert_eq!(fs::read(bindings).unwrap(), before_bindings);
+        assert!(
+            next.handle(bound(
+                &lease,
+                "ownership.confirm",
+                json!({"snapshot":snapshot,"approval":approval})
+            ))
+            .is_err()
+        );
+        next.shutdown().unwrap();
+    }
+
+    #[test]
+    fn discard_rechecks_project_and_mapping_fingerprints_after_the_native_click() {
+        for mutation in ["revision", "manifest", "bindings"] {
+            let fixture = Fixture::with_bound_interrupted_task();
+            fixture.native.shutdown().unwrap();
+            let (bridge, next, lease) = fixture.reopen();
+            let snapshot = next.snapshot().unwrap();
+            let approval = next
+                .approve_from_ui(snapshot["snapshotId"].as_str().unwrap(), "discard")
+                .unwrap();
+            match mutation {
+                "revision" => fixture.project.lock().unwrap().as_mut().unwrap().revision += 1,
+                "manifest" => {
+                    let path = fixture
+                        .project
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .unwrap()
+                        .path
+                        .clone();
+                    fs::write(
+                        Path::new(&path).join("concat.json"),
+                        b"{\"project\":\"replaced\"}",
+                    )
+                    .unwrap();
+                }
+                "bindings" => {
+                    use std::io::Write;
+                    // Even a change outside parsed row counts invalidates the
+                    // exact file fingerprint captured by the displayed review.
+                    fs::OpenOptions::new()
+                        .append(true)
+                        .open(bridge.owner.storage_root().join(CONVERSATIONS_FILE_NAME))
+                        .unwrap()
+                        .write_all(&[0])
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                next.handle(bound(
+                    &lease,
+                    "ownership.confirm",
+                    json!({"snapshot":snapshot,"approval":approval})
+                ))
+                .is_err(),
+                "{mutation}"
+            );
+            assert_eq!(bridge.status().unwrap().phase, Phase::RecoveryRequired);
+            assert!(next.state().unwrap().database.is_none());
+            next.shutdown().unwrap();
+        }
+    }
+
+    #[test]
+    fn discard_review_hashes_the_actual_legacy_manifest_with_unchanged_identity() {
+        let fixture = Fixture::with_bound_interrupted_task();
+        let project = fixture.project.lock().unwrap().as_ref().unwrap().clone();
+        let legacy = Path::new(&project.path).join("wolfcut.json");
+        fs::rename(Path::new(&project.path).join("concat.json"), &legacy).unwrap();
+        fixture.native.shutdown().unwrap();
+        let (bridge, next, lease) = fixture.reopen();
+        let snapshot = next.snapshot().unwrap();
+        assert_eq!(snapshot["canDiscardInterrupted"], true);
+        let approval = next
+            .approve_from_ui(snapshot["snapshotId"].as_str().unwrap(), "discard")
+            .unwrap();
+        let mut document: Value = serde_json::from_slice(&fs::read(&legacy).unwrap()).unwrap();
+        document["project"] = json!("changed after the native review");
+        fs::write(&legacy, serde_json::to_vec(&document).unwrap()).unwrap();
+        assert_eq!(
+            concat_host::project_identity::read_persisted(Path::new(&project.path))
+                .unwrap()
+                .as_deref(),
+            Some(project.project_id.as_str())
+        );
+        assert!(
+            next.handle(bound(
+                &lease,
+                "ownership.confirm",
+                json!({"snapshot":snapshot,"approval":approval})
+            ))
+            .is_err()
+        );
+        assert_eq!(bridge.status().unwrap().phase, Phase::RecoveryRequired);
+        assert!(next.state().unwrap().database.is_none());
+        next.shutdown().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn redirected_current_project_path_cannot_receive_a_discard_scope() {
+        let fixture = Fixture::with_bound_interrupted_task();
+        fixture.native.shutdown().unwrap();
+        let original = fixture
+            .project
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .path
+            .clone();
+        let link = fixture.directory.0.join("linked-project");
+        std::os::unix::fs::symlink(&original, &link).unwrap();
+        fixture.project.lock().unwrap().as_mut().unwrap().path = link.to_str().unwrap().into();
+        let (_, next, _) = fixture.reopen();
+        let snapshot = next.snapshot().unwrap();
+        assert_eq!(snapshot["canDiscardInterrupted"], false);
+        assert!(
+            next.approve_from_ui(snapshot["snapshotId"].as_str().unwrap(), "discard")
+                .is_err()
+        );
+        next.shutdown().unwrap();
+    }
+
+    #[test]
+    fn discard_final_verification_is_single_use_and_requires_terminal_unchanged_native_facts() {
+        for mutation in [
+            "none",
+            "unfinished",
+            "revision",
+            "manifest",
+            "bindings",
+            "journal",
+        ] {
+            let fixture = Fixture::with_bound_interrupted_task();
+            fixture.native.shutdown().unwrap();
+            let (bridge, next, lease) = fixture.reopen();
+            let snapshot = next.snapshot().unwrap();
+            let approval = next
+                .approve_from_ui(snapshot["snapshotId"].as_str().unwrap(), "discard")
+                .unwrap();
+            next.handle(bound(
+                &lease,
+                "ownership.confirm",
+                json!({"snapshot":snapshot,"approval":approval}),
+            ))
+            .unwrap();
+            let project = fixture.project.lock().unwrap().as_ref().unwrap().clone();
+            assert!(!next.state().unwrap().execution_ready());
+            let intent = crate::agent::tasks::SubmissionIntent {
+                id: "must-not-start".into(),
+                project: project.clone(),
+                mode: crate::agent::tasks::TaskMode::Chat,
+                input: "do not call a model".into(),
+                selected: None,
+                generation: None,
+            };
+            assert!(
+                next.prepare_submission(&intent)
+                    .unwrap_err()
+                    .contains("恢复核验")
+            );
+            let database = next
+                .handle(bound(
+                    &lease,
+                    "sqlite.open",
+                    json!({
+                        "expectedSchemaVersion":PI_SCHEMA_VERSION,"allowInitializeEmptyStore":false,
+                    }),
+                ))
+                .unwrap()["databaseId"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            // Exercise the final native verifier against real on-disk facts.
+            // This is a fixture-only state update, not evidence of original Pi
+            // cancellation; the runtime integration executes that actual path.
+            if mutation != "unfinished" {
+                next.handle(bound(&lease, "sqlite.run", json!({
+                    "databaseId":database,"sql":"UPDATE tasks SET status='terminal', abort_requested=1 WHERE id=2", "params":[],
+                }))).unwrap();
+            }
+            match mutation {
+                "revision" => fixture.project.lock().unwrap().as_mut().unwrap().revision += 1,
+                "manifest" => {
+                    let path = concat_host::projects::manifest_path(Path::new(&project.path));
+                    let mut document: Value =
+                        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                    document["project"] = json!("edited during discard");
+                    fs::write(path, serde_json::to_vec(&document).unwrap()).unwrap();
+                }
+                "bindings" => {
+                    use std::io::Write;
+                    fs::OpenOptions::new()
+                        .append(true)
+                        .open(bridge.owner.storage_root().join(CONVERSATIONS_FILE_NAME))
+                        .unwrap()
+                        .write_all(&[0])
+                        .unwrap();
+                }
+                "journal" => {
+                    let journal = bridge.journal.lock().unwrap().clone().unwrap();
+                    let invocation = Invocation {
+                        conversation_id: 1,
+                        task_id: 2,
+                        call_id: "unsettled-during-discard".into(),
+                    };
+                    let request = json!({"method":"edit.applyGuarded","path":project.path,"expectedSession":7,"expectedRevision":1});
+                    journal
+                        .prepare(&invocation, &request, &project.path, 7, 1)
+                        .unwrap();
+                }
+                _ => {}
+            }
+            let result = next.handle(bound(&lease, "recovery.discardVerified", json!({})));
+            if mutation == "none" {
+                assert_eq!(result.unwrap(), json!({"verified":true}));
+                assert!(next.state().unwrap().execution_ready());
+            } else {
+                assert!(result.is_err(), "{mutation}");
+                assert!(!next.state().unwrap().execution_ready());
+                assert!(
+                    next.prepare_submission(&intent)
+                        .unwrap_err()
+                        .contains("恢复核验")
+                );
+            }
+            assert!(
+                next.handle(bound(&lease, "recovery.discardVerified", json!({})))
+                    .is_err()
+            );
+            assert!(next.tasks.network("no-model-authorization").is_err());
+            next.shutdown().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_live_project_copy_cannot_receive_a_discard_scope() {
+        let fixture = Fixture::with_bound_interrupted_task();
+        fixture.native.shutdown().unwrap();
+        let original = fixture
+            .project
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .path
+            .clone();
+        let copy = fixture.directory.0.join("copy");
+        fs::create_dir(&copy).unwrap();
+        fs::copy(
+            Path::new(&original).join("concat.json"),
+            copy.join("concat.json"),
+        )
+        .unwrap();
+        fixture.project.lock().unwrap().as_mut().unwrap().path = copy.to_str().unwrap().into();
+        let (_, next, _) = fixture.reopen();
+        let snapshot = next.snapshot().unwrap();
+        assert_eq!(snapshot["canDiscardInterrupted"], false);
+        assert!(snapshot["blockedReason"].as_str().unwrap().contains("副本"));
+        assert!(
+            next.approve_from_ui(snapshot["snapshotId"].as_str().unwrap(), "discard")
+                .is_err()
+        );
+        next.shutdown().unwrap();
+    }
+
+    #[test]
+    fn each_unsettled_native_edit_stage_keeps_discard_closed() {
+        for stage in ["intent", "applied", "saved"] {
+            let fixture = Fixture::with_bound_interrupted_task();
+            let project = fixture.project.lock().unwrap().as_ref().unwrap().clone();
+            {
+                let journal = fixture.bridge.journal.lock().unwrap().clone().unwrap();
+                let invocation = Invocation {
+                    conversation_id: 1,
+                    task_id: 2,
+                    call_id: format!("discard-{stage}"),
+                };
+                let request = json!({"method":"edit.applyGuarded","path":project.path,"expectedSession":7,"expectedRevision":1});
+                let concat_agent::operations::Admission::New(id) = journal
+                    .prepare(&invocation, &request, &project.path, 7, 1)
+                    .unwrap()
+                else {
+                    panic!("new intent")
+                };
+                if stage != "intent" {
+                    journal
+                        .record_receipt(id, 7, 2, &json!({"sessionId":7,"revision":2}))
+                        .unwrap();
+                }
+                if stage == "saved" {
+                    let document: Value = serde_json::from_slice(
+                        &fs::read(Path::new(&project.path).join("concat.json")).unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        fixture
+                            .bridge
+                            .record_saved(&project.path, 7, 2, &document)
+                            .unwrap(),
+                        1
+                    );
+                }
+            }
+            let counts = inspect_operations(&fixture.bridge.owner, &fixture.bridge.token).unwrap();
+            assert_eq!(
+                (
+                    counts.needs_project_reconciliation,
+                    counts.applied_not_saved,
+                    counts.saved_not_notified
+                ),
+                match stage {
+                    "intent" => (1, 0, 0),
+                    "applied" => (0, 1, 0),
+                    "saved" => (0, 0, 1),
+                    _ => unreachable!(),
+                },
+            );
+            fixture.native.shutdown().unwrap();
+            let (bridge, next, _) = fixture.reopen();
+            let snapshot = next.snapshot().unwrap();
+            assert_eq!(snapshot["canDiscardInterrupted"], false, "{stage}");
+            assert!(
+                snapshot["blockedReason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("编辑或保存记录")
+            );
+            assert!(
+                next.approve_from_ui(snapshot["snapshotId"].as_str().unwrap(), "discard")
+                    .is_err()
+            );
+            assert!(
+                next.approve_from_ui(snapshot["snapshotId"].as_str().unwrap(), "continue")
+                    .is_err()
+            );
+            assert_eq!(bridge.status().unwrap().phase, Phase::RecoveryRequired);
+            next.shutdown().unwrap();
+        }
     }
 
     #[test]
@@ -1279,6 +1934,12 @@ mod tests {
                 .is_err()
         );
         fixture.approve(&lease);
+        assert!(
+            fixture
+                .native
+                .handle(bound(&lease, "recovery.discardVerified", json!({})))
+                .is_err()
+        );
         // Recovery alone cannot substitute model arguments for original Pi
         // tool identity. This is refused before an edit intent exists.
         assert!(fixture.native.handle(bound(&lease, "mcp.send", json!({"message":{

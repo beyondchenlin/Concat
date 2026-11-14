@@ -52,6 +52,22 @@ test("revocation delivered between acquire reply and subscription cannot be miss
   wire.close();
 });
 
+test("discard completion verification carries only native ownership and requires an exact positive receipt", async () => {
+  const b = bridge(); const wire = new NativeWireClient(b.api); const ports = messageNativePorts(wire);
+  const lease = { storageId: "fixed", handle: "native-owner", generation: "7" };
+  for (const reply of [{ verified: false }, {}, { verified: true, networkPermit: "forbidden" }]) {
+    const pending = ports.recovery.discardVerified(lease, new AbortController().signal);
+    const frame = b.sent.at(-1)!;
+    assert.deepEqual(frame.payload, { method: "recovery.discardVerified", ownerHandle: "native-owner", generation: "7" });
+    b.receive({ channel: NATIVE_CHANNEL, id: frame.id, result: reply });
+    await assert.rejects(pending, /原生未确认/);
+  }
+  const pending = ports.recovery.discardVerified(lease, new AbortController().signal);
+  b.receive({ channel: NATIVE_CHANNEL, id: b.sent.at(-1)!.id, result: { verified: true } });
+  await pending;
+  wire.close();
+});
+
 test("saturated native channel still admits revoke and cleanup; close rejects all outstanding work", async () => {
   const b = bridge(); const wire = new NativeWireClient(b.api);
   const pending = Array.from({ length: 1024 }, () => wire.call({ method: "recovery.read" }).catch(() => "closed"));

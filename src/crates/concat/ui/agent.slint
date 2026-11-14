@@ -30,6 +30,7 @@ export struct AgentStatusData {
     can-stop: bool,
     can-review: bool,
     can-continue: bool,
+    can-discard: bool,
     can-connect: bool,
     recovery-summary: string,
     busy: bool,
@@ -51,6 +52,7 @@ export global AgentUi {
         can-stop: false,
         can-review: false,
         can-continue: false,
+        can-discard: false,
         can-connect: false,
         recovery-summary: "",
         busy: false,
@@ -63,6 +65,7 @@ export global AgentUi {
     callback stop-requested();
     callback review-requested();
     callback continue-requested();
+    callback discard-requested();
     callback connect-requested();
 }
 
@@ -187,6 +190,10 @@ export component AgentTaskStatus inherits VerticalLayout {
             label: "连接会话";
             clicked => { AgentUi.connect-requested(); }
         }
+    }
+    if AgentUi.status.can-discard: Button {
+        label: "放弃未完成任务并打开会话";
+        clicked => { AgentUi.discard-requested(); }
     }
     if AgentUi.status.has-progress: Rectangle {
         height: 4px;

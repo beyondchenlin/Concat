@@ -36,6 +36,30 @@ pub fn with_project_location<T>(
     read_identity: impl Fn(&Path) -> Result<Option<String>, String>,
     action: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
+    with_location(root, project_id, path, read_identity, true, action)
+}
+
+/// Recovery inspection uses the already registered location and permanent
+/// kernel lock without creating directories/files or rewriting a moved path.
+/// A historical conversation without that native location record is refused.
+pub fn with_read_only_project_location<T>(
+    root: &Path,
+    project_id: &str,
+    path: &Path,
+    read_identity: impl Fn(&Path) -> Result<Option<String>, String>,
+    action: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    with_location(root, project_id, path, read_identity, false, action)
+}
+
+fn with_location<T>(
+    root: &Path,
+    project_id: &str,
+    path: &Path,
+    read_identity: impl Fn(&Path) -> Result<Option<String>, String>,
+    register: bool,
+    action: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
     if project_id.is_empty() || project_id.len() > 4096 {
         return Err("工程标识无效，文案操作已停止。".into());
     }
@@ -47,15 +71,17 @@ pub fn with_project_location<T>(
     }
     regular_directory(root)?;
     let directory = root.join(DIRECTORY);
-    fs::create_dir_all(&directory).map_err(io_error)?;
+    if register {
+        fs::create_dir_all(&directory).map_err(io_error)?;
+    }
     regular_directory(&directory)?;
     let key = format!("{:x}", Sha256::digest(project_id.as_bytes()));
     let lock_path = directory.join(format!("{key}.lock"));
     regular_file_or_absent(&lock_path)?;
     let lock = OpenOptions::new()
         .read(true)
-        .write(true)
-        .create(true)
+        .write(register)
+        .create(register)
         .truncate(false)
         .open(&lock_path)
         .map_err(io_error)?;
@@ -78,6 +104,9 @@ pub fn with_project_location<T>(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(io_error(error)),
     };
+    if !register && previous.is_none() {
+        return Err("历史会话缺少原生工程位置登记，未允许放弃任务；现有记录保持不变。".into());
+    }
     if let Some(previous) = &previous
         && previous.path != current
         && read_identity(&previous.path)?.as_deref() == Some(project_id)
@@ -91,9 +120,10 @@ pub fn with_project_location<T>(
     if read_identity(&current)?.as_deref() != Some(project_id) {
         return Err("核对期间工程标识已改变，文案操作已停止。".into());
     }
-    if previous
-        .as_ref()
-        .is_none_or(|record| record.path != current)
+    if register
+        && previous
+            .as_ref()
+            .is_none_or(|record| record.path != current)
     {
         write_record(
             &record_path,
