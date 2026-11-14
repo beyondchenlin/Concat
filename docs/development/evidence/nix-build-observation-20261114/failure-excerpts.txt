@@ -1,0 +1,44 @@
+Published subject: f67f054b8eb28a529a1c81f4ce269fbffd57b524
+This file contains selected failure text, not full resource snapshots.
+Only the original local evidence directory prefix is replaced with <evidence-root>.
+
+[source: local-resources.json / nix_version / error]
+[Errno 2] No such file or directory: 'nix'
+
+[source: local-resources.json / requested_max_jobs / error]
+[Errno 2] No such file or directory: 'nix'
+
+[source: local-resources.json / requested_cores / error]
+[Errno 2] No such file or directory: 'nix'
+
+[source: local-resources.json / memory_pressure / error]
+[Errno 2] No such file or directory: '/proc/pressure/memory'
+
+[source: local-resources.json / disk_blocks / stderr; exit=1]
+df: /nix: No such file or directory
+
+[source: local-resources.json / disk_inodes / stderr; exit=1]
+df: /nix: No such file or directory
+
+[source: local-resources.json / kernel_messages / stderr; exit=1]
+dmesg: read kernel buffer failed: Operation not permitted
+
+[source: local-resources.json / cgroups / scan_errors]
+[Errno 2] No such file or directory: '/sys/fs/cgroup'
+
+[source: cases/log_failure/workflow-build-step.stderr.log]
+controlled log failure after draining input
+
+[source: cases/record_failure/workflow-build-step.stderr.log]
+<evidence-root>/published-build-step.sh: line 12: <evidence-root>/cases/record_failure/runner-temp/nix-build-observation/exit-status.txt: Is a directory
+
+[source: cases/build_and_record_failure/workflow-build-step.stderr.log]
+<evidence-root>/published-build-step.sh: line 12: <evidence-root>/cases/build_and_record_failure/runner-temp/nix-build-observation/exit-status.txt: Is a directory
+
+[source: cases/build_failure/runner-temp/nix-build-observation/exit-status.txt]
+nix_exit_code=37
+tee_exit_code=0
+
+[source: cases/build_and_log_failure/runner-temp/nix-build-observation/exit-status.txt]
+nix_exit_code=37
+tee_exit_code=41
