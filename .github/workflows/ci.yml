@@ -1,6 +1,6 @@
 name: CI
 
-# The engine's tests and lints on every push and pull request. The bundles
+# The engine's tests and lints on main and dev pushes and pull requests. The bundles
 # are built by release.yml, on a tag; see that file.
 #
 # Every action is pinned to a commit, with the tag it was in a comment
@@ -10,7 +10,7 @@ name: CI
 # digest, in scripts/ci/deps.lock.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
   workflow_dispatch:
   # release.yml runs this before it builds anything: a tag on a red tree

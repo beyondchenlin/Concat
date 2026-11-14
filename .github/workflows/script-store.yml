@@ -1,6 +1,17 @@
 name: Script store checks
 
 on:
+  push:
+    branches: [dev]
+    paths:
+      - "src/crates/concat-agent/**"
+      - "src/agent-runtime/**"
+      - "src/crates/concat/src/embedded/transport.js"
+      - ".github/actions/prepare-agent-runtime/**"
+      - "src/Cargo.toml"
+      - "src/Cargo.lock"
+      - "src/rust-toolchain.toml"
+      - ".github/workflows/script-store.yml"
   pull_request:
     paths:
       - "src/crates/concat-agent/**"
