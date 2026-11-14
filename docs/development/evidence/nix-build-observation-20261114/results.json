@@ -1,0 +1,145 @@
+{
+  "schema_version": 1,
+  "tested_commit": "f67f054b8eb28a529a1c81f4ce269fbffd57b524",
+  "tested_tree": "9d77095c07c6bc2ceed5e41d631fbac013fac206",
+  "pull_request": "https://github.com/beyondchenlin/Concat/pull/12",
+  "execution_scope": "Local execution of the published sampler and extracted workflow step; Nix builds were replaced by process-local command substitutes.",
+  "real_nix_build_executed": false,
+  "worktree_clean_before_and_after": true,
+  "source_sha256": {
+    ".github/workflows/nix.yml": "f03b3b2d978bf8e87ce5e120c8962b519f393392e296c5330b9282b1628a50bd",
+    "extracted_published_build_step": "9f4008d422c0874e652bd1a7202d339d68cbd2ba6109ec0c084f7b2679fae20f",
+    "scripts/ci/nix-resources.py": "d77fd2742af2e95e2118c6409555827803ef48efca62033d22904729ea64c55a",
+    "original_validation_report": "2bf57fab501b9a25263218f64325c02c18a3858849a14e58eaeeb87726189987",
+    "original_validation_program": "c364ac64b4d5d6180bfe156f248f204388325e38342bfc40df076654bf76aee1"
+  },
+  "reproduction": {
+    "workflow_step": "jobs.build.steps: the step named Build, run value copied without modification",
+    "shell_arguments": [
+      "bash",
+      "--noprofile",
+      "--norc",
+      "-e",
+      "-o",
+      "pipefail",
+      "<extracted-build-step>"
+    ],
+    "subprocess_environment_names": [
+      "PATH",
+      "RUNNER_TEMP",
+      "LC_ALL"
+    ],
+    "nix_substitute": "Echo arguments and controlled stdout/stderr, then exit with controlled_nix_exit; installed in a temporary per-case PATH prefix only.",
+    "tee_failure_substitute": "Drain all stdin with /bin/cat >/dev/null, print controlled log failure after draining input to stderr, then exit 41.",
+    "record_failure": "Before execution, create a directory at RUNNER_TEMP/nix-build-observation/exit-status.txt; preserve the actual shell redirection error.",
+    "ordinary_logging": "Use the existing system tee when controlled_tee_exit is 0.",
+    "postconditions": "Check the workflow exit and exact exit-status.txt text when writable; when blocked, check that the directory survives and the shell reports Is a directory. Check both controlled output streams in each successfully written build.log."
+  },
+  "sampler": {
+    "exit_code": 0,
+    "source_result": "local-resources.json",
+    "real_nix_lookup_exit": 1,
+    "real_nix_available": false,
+    "nix_errors": {
+      "nix_version": "[Errno 2] No such file or directory: 'nix'",
+      "requested_max_jobs": "[Errno 2] No such file or directory: 'nix'",
+      "requested_cores": "[Errno 2] No such file or directory: 'nix'"
+    },
+    "disk_command_results": {
+      "disk_blocks": {
+        "exit_code": 1,
+        "stderr": "df: /nix: No such file or directory\n"
+      },
+      "disk_inodes": {
+        "exit_code": 1,
+        "stderr": "df: /nix: No such file or directory\n"
+      }
+    },
+    "memory_pressure_error": "[Errno 2] No such file or directory: '/proc/pressure/memory'",
+    "visible_cgroup_count": 0,
+    "cgroup_scan_errors": [
+      "[Errno 2] No such file or directory: '/sys/fs/cgroup'"
+    ],
+    "cgroup_counters_validated": false,
+    "kernel_messages": {
+      "exit_code": 1,
+      "stderr": "dmesg: read kernel buffer failed: Operation not permitted\n"
+    },
+    "raw_build_exit_record_available": false,
+    "raw_build_exit_record_reason": "No real build was executed by the local sampler run."
+  },
+  "pipeline_cases": [
+    {
+      "case": "success",
+      "controlled_nix_exit": 0,
+      "controlled_tee_exit": 0,
+      "record_path_blocked_by_directory": false,
+      "workflow_step_exit": 0,
+      "expected_step_exit": 0,
+      "recorded_exit_text": "nix_exit_code=0\ntee_exit_code=0\n",
+      "passed": true,
+      "source_exit_file": "cases/success/workflow-build-step.exit-code.txt"
+    },
+    {
+      "case": "build_failure",
+      "controlled_nix_exit": 37,
+      "controlled_tee_exit": 0,
+      "record_path_blocked_by_directory": false,
+      "workflow_step_exit": 37,
+      "expected_step_exit": 37,
+      "recorded_exit_text": "nix_exit_code=37\ntee_exit_code=0\n",
+      "passed": true,
+      "source_exit_file": "cases/build_failure/workflow-build-step.exit-code.txt"
+    },
+    {
+      "case": "log_failure",
+      "controlled_nix_exit": 0,
+      "controlled_tee_exit": 41,
+      "record_path_blocked_by_directory": false,
+      "workflow_step_exit": 41,
+      "expected_step_exit": 41,
+      "recorded_exit_text": "nix_exit_code=0\ntee_exit_code=41\n",
+      "passed": true,
+      "source_exit_file": "cases/log_failure/workflow-build-step.exit-code.txt"
+    },
+    {
+      "case": "record_failure",
+      "controlled_nix_exit": 0,
+      "controlled_tee_exit": 0,
+      "record_path_blocked_by_directory": true,
+      "workflow_step_exit": 1,
+      "expected_step_exit": 1,
+      "recorded_exit_text": null,
+      "passed": true,
+      "source_exit_file": "cases/record_failure/workflow-build-step.exit-code.txt"
+    },
+    {
+      "case": "build_and_log_failure",
+      "controlled_nix_exit": 37,
+      "controlled_tee_exit": 41,
+      "record_path_blocked_by_directory": false,
+      "workflow_step_exit": 37,
+      "expected_step_exit": 37,
+      "recorded_exit_text": "nix_exit_code=37\ntee_exit_code=41\n",
+      "passed": true,
+      "source_exit_file": "cases/build_and_log_failure/workflow-build-step.exit-code.txt"
+    },
+    {
+      "case": "build_and_record_failure",
+      "controlled_nix_exit": 37,
+      "controlled_tee_exit": 0,
+      "record_path_blocked_by_directory": true,
+      "workflow_step_exit": 37,
+      "expected_step_exit": 37,
+      "recorded_exit_text": null,
+      "passed": true,
+      "source_exit_file": "cases/build_and_record_failure/workflow-build-step.exit-code.txt"
+    }
+  ],
+  "not_covered_by_this_evidence": [
+    "Real Nix build or its daemon settings",
+    "Hosted runner resource limits or compiler termination cause",
+    "Hosted artifact upload and forced runner termination behavior"
+  ],
+  "repository_data_scope": "Only source identifiers, hashes, controlled exit results, reproduction steps and selected failure text. Full host data, kernel contents, process environment and credentials are excluded."
+}
