@@ -335,15 +335,16 @@ impl OperationJournal {
         invocation.validate()?;
         let connection = self.connection()?;
         self.permit.with_valid(|| -> Result<Option<Value>, JournalError> {
-            let record: Option<(String, Option<String>, Option<String>, Option<String>)> =
+            let record: Option<(String, String, String, String)> =
                 connection.query_row(
                     "SELECT expected_revision,result_session,result_revision,receipt FROM operations \
-                     WHERE conversation=?1 AND task=?2 AND call=?3 AND project=?4 AND session=?5",
+                     WHERE conversation=?1 AND task=?2 AND call=?3 AND project=?4 AND session=?5 \
+                     AND result_session IS NOT NULL AND result_revision IS NOT NULL AND receipt IS NOT NULL",
                     params![invocation.conversation_id.to_string(), invocation.task_id.to_string(),
                         invocation.call_id, project_path, expected_session.to_string()],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 ).optional()?;
-            let Some((original_revision, Some(session), Some(revision), Some(receipt))) = record else {
+            let Some((original_revision, session, revision, receipt)) = record else {
                 return Ok(None);
             };
             let revision = revision.parse::<u64>().map_err(|_| JournalError::InvalidSchema)?;
