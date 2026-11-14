@@ -1,0 +1,10 @@
+{
+  "utc": "2026-11-14T02:29:18.955459+00:00",
+  "failed_log": "02-host-test.log",
+  "failure": "Clang could not find resource header stddef.h while generating FFmpeg bindings; no host tests executed",
+  "repair": "Unpacked official signed-index-verified libclang-common-19-dev and set task resource-dir; no project source changes",
+  "package_manifest": "/workspace/scratch/a2559d0f84f7/deps/debian/clang-extra-manifest.json",
+  "env_sha256": "30b58cfb308e845420bb83f999a56959711b3b5b7bfe7117542279b917be147f",
+  "head": "f11cbe5bc21f901be689a742aba3bd5b6b1c7d77",
+  "status": ""
+}

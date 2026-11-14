@@ -1,0 +1,22 @@
+2026-11-13 12:43:30.054Z INFO  [main] concat_host::logs: Concat 0.2.10 · windows-x86_64 · commit local · log level INFO
+2026-11-13 12:43:30.054Z INFO  [main] concat_host::logs: system: Windows 10 Pro 22H2 (build 19045.6466)
+2026-11-13 12:43:30.054Z INFO  [main] concat_host::logs: cpu: 12th Gen Intel(R) Core(TM) i7-12700KF · 20 threads · has sse4.2 avx avx2 fma bmi2 f16c · lacks avx512f
+2026-11-13 12:43:30.266Z INFO  [main] concat::gpu: GPU adapter: NVIDIA GeForce RTX 4090 (DiscreteGpu, Dx12, driver 32.0.16.1714)
+2026-11-13 12:43:30.904Z INFO  [main] concat::studio::project_files: project: opening E:\BK-CAT\.build\target\bk-cat-probes\c646d06ec9d64872be8489bcae06375a\platform\portable\projects\BK CAT isolated integration
+2026-11-13 12:43:30.904Z INFO  [concat cards] concat_media::hardware: video decode on Direct3D 11
+2026-11-13 12:43:31.612Z INFO  [bk-cat-native-mailbox] concat::embedded: bk-cat-agent: state=recovery generation=1
+2026-11-13 12:43:31.615Z INFO  [concat shader warm-up] concat_host::preview: effects: 85 pipelines ready in 1.08 s
+2026-11-13 12:43:31.806Z INFO  [main] concat::embedded: bk-cat-agent: state=stopping
+2026-11-13 12:43:31.806Z INFO  [bk-cat-webview2] concat::embedded: bk-cat-agent: state=stopping
+2026-11-13 12:43:31.816Z INFO  [bk-cat-webview2] concat::embedded: bk-cat-agent: state=stopping
+2026-11-13 12:43:31.818Z INFO  [bk-cat-native-mailbox] concat::embedded: bk-cat-agent: state=closed
+2026-11-13 12:43:32.167Z INFO  [bk-cat-native-mailbox] concat::embedded: bk-cat-agent: state=recovery generation=2
+2026-11-13 12:43:32.688Z INFO  [main] concat::embedded: bk-cat-agent: state=stopping
+2026-11-13 12:43:32.688Z INFO  [bk-cat-webview2] concat::embedded: bk-cat-agent: state=stopping
+2026-11-13 12:43:32.697Z INFO  [bk-cat-webview2] concat::embedded: bk-cat-agent: state=stopping
+2026-11-13 12:43:32.698Z INFO  [bk-cat-native-mailbox] concat::embedded: bk-cat-agent: state=closed
+2026-11-13 12:43:32.721Z INFO  [main] concat::studio::project_files: project: closing BK CAT isolated integration
+2026-11-13 12:43:32.729Z INFO  [main] concat::embedded: bk-cat-agent: state=stopping
+2026-11-13 12:43:32.729Z INFO  [main] concat: close: event loop exited (ok=true)
+2026-11-13 12:43:32.729Z INFO  [main] concat::embedded: bk-cat-agent: state=stopping
+2026-11-13 12:43:32.729Z INFO  [main] concat::embedded: bk-cat-agent: state=stopping

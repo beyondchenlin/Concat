@@ -1,0 +1,13 @@
+name: Prepare fixed agent runtime
+description: Build the reviewed Pi browser assets before product packaging
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version: "22.19.0"
+    - name: Verify the fixed source and build browser assets
+      shell: bash
+      env:
+        BK_CAT_PI_REFERENCE: ${{ runner.temp }}/bk-cat-pi-reference
+      run: node "$GITHUB_WORKSPACE/src/agent-runtime/scripts/prepare.mjs"

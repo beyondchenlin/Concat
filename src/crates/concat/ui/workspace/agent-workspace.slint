@@ -1,0 +1,265 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+import { Theme } from "../theme/theme.slint";
+import { Editor } from "../editor.slint";
+import { AgentUi, AgentView, AgentChat, AgentScript } from "../agent.slint";
+import { RecentProjectData } from "../start.slint";
+import { Button } from "../primitives/modal.slint";
+import { ThinScrollbar } from "../primitives/scrollbar.slint";
+import { PreviewPane } from "preview-pane.slint";
+import { SourcePreview } from "media-pane.slint";
+
+/// The real programme monitor, bound to the original editor's image,
+/// playhead, selection, actions and undo/redo history. No timeline lives here.
+component AgentPreview inherits Rectangle {
+    in property <bool> phone;
+    in property <string> project-name;
+    in property <string> project-status;
+    callback save();
+    callback export-clicked();
+
+    background: Theme.panel;
+    border-radius: Theme.r-lg;
+    clip: true;
+    VerticalLayout {
+        padding: root.phone ? 6px : 10px;
+        spacing: 6px;
+        HorizontalLayout {
+            Text {
+                text: root.phone ? root.project-name : "当前工程预览";
+                color: Theme.fg;
+                font-size: root.phone ? Theme.fs : Theme.fs-xl;
+                font-weight: Theme.weight-title;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            Text {
+                text: root.project-status;
+                color: Theme.fg-muted;
+                font-size: Theme.fs-sm;
+                vertical-alignment: center;
+            }
+        }
+        PreviewPane {
+            vertical-stretch: 1;
+            bare: true;
+            pane-removable: false;
+            previewing: Editor.library-audition != "";
+            preview-ended => { Editor.library-audition-filter(Editor.library-audition); }
+            output-width: Editor.output-width;
+            output-height: Editor.output-height;
+            frame-rate: Editor.frame-rate;
+            ratio-index: Editor.ratio-index;
+            quality-index: Editor.quality-index;
+            playhead: SourcePreview.open ? SourcePreview.time : Editor.playhead;
+            duration: SourcePreview.open ? SourcePreview.duration : Editor.preview-duration;
+            playhead-free: Editor.playhead-free && !SourcePreview.open;
+            playing: SourcePreview.open ? SourcePreview.playing : Editor.playing;
+            source-name: SourcePreview.open ? SourcePreview.name : "";
+            has-picture: Editor.has-picture;
+            clip-name: Editor.preview-clip-name;
+            frame: Editor.preview-frame;
+            see-through: Editor.see-through && !SourcePreview.open;
+            stage-items: SourcePreview.open ? [] : Editor.stage-items;
+            stage-guides: Editor.stage-guides;
+            stroke-path: Editor.stroke-path;
+            stroke-width: Editor.stroke-width;
+            stroke-erase: Editor.stroke-erase;
+            painting: Editor.painting && Editor.selected-clip.cutout == 2;
+            picking: Editor.picking-colour && !SourcePreview.open;
+            play-toggled => { Editor.play-toggled(); }
+            seek(seconds) => {
+                if (SourcePreview.open) { SourcePreview.seek(seconds); }
+                else { Editor.seek(seconds); }
+            }
+            step(frames) => {
+                if (SourcePreview.open) {
+                    SourcePreview.seek(SourcePreview.time + frames / Editor.frame-rate);
+                } else { Editor.step-frames(frames); }
+            }
+            source-closed => { SourcePreview.closed(); }
+            ratio-changed(index) => { Editor.ratio-changed(index); }
+            quality-changed(index) => { Editor.quality-changed(index); }
+            stage-pressed(x, y, additive) => {
+                Editor.blur();
+                Editor.stage-pressed(x, y, additive);
+            }
+            stage-grip-pressed(id, grip, x, y) => {
+                Editor.blur();
+                Editor.stage-grip-pressed(id, grip, x, y);
+            }
+            stage-dragged(x, y, snap) => { Editor.stage-dragged(x, y, snap); }
+            stage-released => { Editor.stage-released(); }
+            save-frame => { Editor.save-frame(); }
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            Button {
+                label: Editor.playing ? "暂停" : "播放";
+                block: true;
+                min-height: root.phone ? 36px : 32px;
+                max-height: root.phone ? 36px : 32px;
+                clicked => { Editor.play-toggled(); }
+            }
+            Button {
+                label: "撤销";
+                block: true;
+                enabled: Editor.can-undo;
+                min-height: root.phone ? 36px : 32px;
+                max-height: root.phone ? 36px : 32px;
+                clicked => { Editor.undo(); }
+            }
+            Button {
+                label: "重做";
+                block: true;
+                enabled: Editor.can-redo;
+                min-height: root.phone ? 36px : 32px;
+                max-height: root.phone ? 36px : 32px;
+                clicked => { Editor.redo(); }
+            }
+        }
+        if !root.phone: HorizontalLayout {
+            spacing: 6px;
+            Button { label: "保存工程"; block: true; clicked => { root.save(); } }
+            Button { label: "导出"; block: true; clicked => { root.export-clicked(); } }
+        }
+        if !root.phone: Text {
+            text: "字幕、素材和历史均来自当前工程。切到手动编辑可调整轨道与片段。";
+            color: Theme.fg-dim;
+            font-size: Theme.fs;
+            wrap: word-wrap;
+        }
+    }
+}
+
+component AgentProjects inherits Rectangle {
+    in property <[RecentProjectData]> recents;
+    in property <string> project-name;
+    in property <string> project-status;
+    callback open();
+    callback open-recent(path: string);
+    background: Theme.panel;
+    border-radius: Theme.r-lg;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 10px;
+        Text {
+            text: "项目";
+            color: Theme.fg;
+            font-size: Theme.fs-xl;
+            font-weight: Theme.weight-title;
+        }
+        Text {
+            text: root.project-name;
+            color: Theme.fg;
+            font-size: Theme.fs-lg;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.project-status;
+            color: Theme.fg-muted;
+            font-size: Theme.fs;
+            wrap: word-wrap;
+        }
+        Button { label: "打开工程"; block: true; clicked => { root.open(); } }
+        Text { text: "最近使用"; color: Theme.fg-dim; font-size: Theme.fs-sm; }
+        Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+            recent-scroll := Flickable {
+                width: parent.width;
+                height: parent.height;
+                content-width: self.width;
+                content-height: Math.max(self.height, recent-list.preferred-height);
+                recent-list := VerticalLayout {
+                    width: recent-scroll.width - 8px;
+                    height: self.preferred-height;
+                    spacing: 6px;
+                    alignment: start;
+                    for recent in root.recents: Rectangle {
+                        height: name.preferred-height + 22px;
+                        border-radius: Theme.r;
+                        background: click.has-hover && !recent.missing ? Theme.field-hover : Theme.well;
+                        opacity: recent.missing ? 0.5 : 1;
+                        name := Text {
+                            x: 8px;
+                            y: 11px;
+                            width: parent.width - 16px;
+                            text: recent.name + (recent.missing ? " · 文件夹缺失" : "");
+                            color: Theme.fg;
+                            font-size: Theme.fs-lg;
+                            wrap: word-wrap;
+                        }
+                        click := TouchArea {
+                            enabled: !recent.missing;
+                            mouse-cursor: pointer;
+                            clicked => { root.open-recent(recent.path); }
+                        }
+                    }
+                }
+            }
+            ThinScrollbar {
+                x: parent.width - self.width;
+                height: parent.height;
+                viewport: recent-scroll.height;
+                content: recent-scroll.content-height;
+                offset: -recent-scroll.content-y;
+                scrolled(to) => { recent-scroll.content-y = -to; }
+            }
+        }
+    }
+}
+
+export component AgentWorkspace inherits Rectangle {
+    in property <bool> phone;
+    in property <string> project-name;
+    in property <string> project-status;
+    in property <[RecentProjectData]> recents;
+    callback open();
+    callback open-recent(path: string);
+    callback save();
+    callback export-clicked();
+    background: Theme.page;
+
+    if !root.phone: HorizontalLayout {
+        padding: 8px;
+        spacing: 8px;
+        AgentProjects {
+            width: 190px;
+            recents: root.recents;
+            project-name: root.project-name;
+            project-status: root.project-status;
+            open => { root.open(); }
+            open-recent(path) => { root.open-recent(path); }
+        }
+        if AgentUi.view == AgentView.chat: AgentChat { horizontal-stretch: 3; }
+        if AgentUi.view == AgentView.script: AgentScript { horizontal-stretch: 3; }
+        AgentPreview {
+            horizontal-stretch: 4;
+            project-name: root.project-name;
+            project-status: root.project-status;
+            save => { root.save(); }
+            export-clicked => { root.export-clicked(); }
+        }
+    }
+
+    // A phone uses one column. The preview yields its space while the
+    // keyboard leaves a short viewport; the draft and stop stay reachable.
+    if root.phone: VerticalLayout {
+        padding: 6px;
+        spacing: 6px;
+        if AgentUi.view == AgentView.chat && root.height >= 460px: AgentPreview {
+            phone: true;
+            height: Math.min(220px, root.height * 0.28);
+            project-name: root.project-name;
+            project-status: root.project-status;
+            save => { root.save(); }
+            export-clicked => { root.export-clicked(); }
+        }
+        if AgentUi.view == AgentView.chat: AgentChat {
+            phone: true;
+            vertical-stretch: 1;
+        }
+        if AgentUi.view == AgentView.script: AgentScript { vertical-stretch: 1; }
+    }
+}

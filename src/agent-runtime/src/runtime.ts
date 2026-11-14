@@ -8,7 +8,7 @@ import type {
 
 const ACTIONS = new Set<SchedulingAction>([
   "createConversation", "submit", "waitSubmission", "abortSubmission", "resume", "abortTask",
-  "signal", "waitForTask", "waitForIdle", "compact", "abortConversation", "resetConversation",
+  "signal", "waitForTask", "waitForIdle", "compact", "abortConversation", "resetConversation", "nativeSubmit", "nativeWait",
 ]);
 
 /**
@@ -28,6 +28,7 @@ export class AgentRuntime {
   #stopping: Promise<void> | undefined;
   #unsubscribe: (() => void) | undefined;
   #confirming = false;
+  #nativeConfirmed = false;
   readonly #observations = new Set<() => void>();
 
   constructor(storageId: string, ports: NativePorts, factory: PiEngineFactory) {
@@ -87,7 +88,7 @@ export class AgentRuntime {
     const work = this.#activate(approval).finally(() => { this.#confirming = false; });
     this.#transition = work;
     return work.catch(async (error: unknown) => {
-      if (this.phase === "activating") await this.stop().catch(() => {});
+      if (this.phase === "activating" || this.#nativeConfirmed) await this.stop().catch(() => {});
       throw error;
     });
   }
@@ -100,21 +101,32 @@ export class AgentRuntime {
       || !["continue", "discard"].includes(approval.decision)) {
       throw new RuntimeRefused("the native approval must match the last reconciliation snapshot");
     }
-    // Conversation.abort() and wait*() may start Pi's scheduler. They are
-    // never used to clear an old queue behind the user's recovery dialog.
-    // Native discard must first persist a reviewed reconciliation; then a
-    // fresh read must show no interrupted work before this host can open.
-    if (approval.decision === "discard" && snapshot.hasInterruptedWork) {
-      throw new RuntimeRefused("native discard reconciliation is required before opening writable Pi storage");
-    }
-    const grant = await this.#ports.ownership.confirm(lease, snapshot, approval);
+    const issued = await this.#ports.ownership.confirm(lease, snapshot, approval);
+    this.#nativeConfirmed = true;
     this.#gate.assertOwned(lease);
-    if (grant.snapshotId !== snapshot.snapshotId) throw new RuntimeRefused("native grant has a stale snapshot");
+    if (issued.snapshotId !== snapshot.snapshotId) throw new RuntimeRefused("native grant has a stale snapshot");
+    const ids = issued.discardConversationIds;
+    if (ids !== undefined && (!Array.isArray(ids) || ids.length === 0 || ids.length > 65536
+      || new Set(ids).size !== ids.length || Array.from(ids).some((id) => !Number.isSafeInteger(id) || id < 0)
+      || approval.decision !== "discard" || !snapshot.hasInterruptedWork || snapshot.schemaVersion === "empty"
+      || issued.allowInitializeEmptyStore || issued.networkPermit !== undefined)) {
+      throw new RuntimeRefused("原生放弃授权不完整或同时包含调用许可，未打开会话存储。");
+    }
+    if (snapshot.hasInterruptedWork && (approval.decision !== "discard" || ids === undefined)) {
+      throw new RuntimeRefused("未完成任务需要当前工程的原生明确放弃授权，未自动恢复或清除。");
+    }
+    const grant = { ...issued, ...(ids === undefined ? {} : { discardConversationIds: Object.freeze([...ids]) }) };
     this.#gate.activating(lease, grant);
     const engine = await this.#factory.open({ lease, grant, ports: this.#ports, gate: this.#gate });
     this.#engine = engine;
+    if (ids !== undefined) {
+      this.#gate.assertStorageWrite(lease);
+      await this.#ports.recovery.discardVerified(lease, this.#gate.signal);
+      this.#gate.assertStorageWrite(lease);
+    }
     this.#gate.ready(lease);
-    // Deliberately no resume(), wait*(), submit(), or abort() here.
+    // Ordinary open never resumes. A discard grant is consumed inside the
+    // factory while still activating, before tools/network can be admitted.
   }
 
   async dispatch(action: SchedulingAction, payload?: unknown): Promise<unknown> {

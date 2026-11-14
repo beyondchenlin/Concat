@@ -277,3 +277,147 @@ https://unsplash.com/photos/2v921tlqdXE), used under the Unsplash License. The s
 and is embedded in the app; each card is the effect's own shader run over
 it on the GPU when the app first needs the card (`concat-host`'s
 `cards.rs`).
+
+
+## BK CAT controlled runtime additions
+
+These additions retain Concat's existing AGPL-3.0-or-later licence and all
+notices above. They do not grant a different licence to the combined app.
+
+### Original Pi components
+
+The controlled browser bundle is built from the original Pi source at
+`d36266e06669c6991a7c9509d1da04d18d30378d`, component version `1.5.2`:
+https://github.com/earendil-works/pi/tree/d36266e06669c6991a7c9509d1da04d18d30378d
+
+Pi is MIT-licensed. Its original `LICENSE` and MCP third-party notices are
+copied unchanged by `src/agent-runtime/scripts/build.mjs`. The Windows staged
+bundle carries them in `licenses/PI-LICENSE.txt` and
+`licenses/PI-MCP-THIRD-PARTY-NOTICES/`. The generated bundle keeps its legal
+comments; the native embedded resources also retain the Pi licence.
+
+### Windows WebView2 Rust bindings
+
+`webview2-com 0.39.1`, `webview2-com-sys 0.39.1` and
+`webview2-com-macros 0.8.1` are from `wravery/webview2-rs`, under MIT.
+The two 0.39.1 binding packages record commit `edc2caf886175ccaebe86078c9cfe1ae2a187328`:
+https://github.com/wravery/webview2-rs/blob/edc2caf886175ccaebe86078c9cfe1ae2a187328/LICENSE
+
+The 0.8.1 callback macro package records commit
+`dffa41a8a46d3f5565eefbff2de57d38d399f158`; its licence text is identical:
+https://github.com/wravery/webview2-rs/blob/dffa41a8a46d3f5565eefbff2de57d38d399f158/LICENSE
+
+```text
+MIT License
+
+Copyright (c) 2021 Bill Avery
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+The `windows 0.62.2` family of Microsoft Windows Rust API bindings is
+available under MIT OR Apache-2.0; this distribution uses its MIT option.
+Source: https://github.com/microsoft/windows-rs . The MIT notice from the
+resolved package is reproduced below.
+
+```text
+MIT License
+
+Copyright (c) Microsoft Corporation.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE
+```
+
+### Microsoft WebView2 loader and Runtime
+
+The Microsoft loader bundled by `webview2-com-sys` is separate from the
+MIT-licensed Rust binding source. The binding's source update tool identifies
+Microsoft.Web.WebView2 SDK version `1.0.3800.47` as its source:
+https://github.com/wravery/webview2-rs/blob/edc2caf886175ccaebe86078c9cfe1ae2a187328/crates/update-bindings/src/main.rs
+
+The SDK's own Microsoft terms apply to its loader; the crate's MIT metadata
+does not relicense Microsoft's files. The official package and licence are at
+https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.3800.47 .
+
+The full Microsoft Edge WebView2 Runtime is an external prerequisite. This
+change does not download, bundle or redistribute that Runtime. Loader code
+alone does not establish that a target device has the Runtime or supports the
+required interfaces. Official deployment and detection guidance:
+https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution .
+
+The current installer has not passed clean-device missing-Runtime detection
+and recovery acceptance. The staged Windows bundle includes
+`WEBVIEW2-RUNTIME-REQUIREMENTS.txt` with the official installation route.
+Runtime redistribution terms, installer detection and clean-device validation
+remain release checks; no public release is authorized by this notice.
+
+
+#### Microsoft.Web.WebView2 SDK 1.0.3800.47 licence notice
+
+The official package licence at
+https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.3800.47/License
+was retrieved directly and is reproduced unchanged below for the loader's
+binary-distribution notice requirement. This is the SDK licence, not a licence
+for redistributing the full WebView2 Runtime.
+
+```text
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * The name of Microsoft Corporation, or the names of its contributors
+may not be used to endorse or promote products derived from this
+software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```

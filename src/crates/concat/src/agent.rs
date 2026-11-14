@@ -9,9 +9,11 @@
 //! The platform runtime must acquire this endpoint before opening that storage,
 //! reconcile it, and obtain a native user decision before admitting writes.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use concat_agent::operations::{Admission, Invocation, JournalError, OperationJournal};
 use concat_agent::{OwnerStatus, OwnerToken, Reconciliation, RecoveryDecision, SessionOwner};
 use concat_api::{Api, ApiError, AppDirs, ErrorCode, OpenProjects, Request, Response};
 use concat_host::export::Exporter;
@@ -21,15 +23,31 @@ use serde_json::{Value, json};
 use crate::host::Shell;
 use crate::live::Live;
 
+pub(crate) mod native;
+/// Isolated real-window integration driver, excluded from ordinary builds.
+#[cfg(feature = "bk-cat-native-probe")]
+pub mod probe;
+/// Isolated native document integration driver, excluded from ordinary builds.
+#[cfg(feature = "bk-cat-native-probe")]
+pub mod script_probe;
+pub(crate) mod tasks;
+
+type JournalSlot = Arc<Mutex<Option<Arc<OperationJournal>>>>;
+type InvocationSlot = Arc<Mutex<Option<Invocation>>>;
+
 /// One internal protocol endpoint, bound to one persistent-storage owner.
 ///
 /// Only trusted native platform glue may hold this object. Its recovery and
 /// lifecycle methods are deliberately absent from the model's tool catalogue.
 pub struct AgentBridge {
+    dirs: AppDirs,
     owner: Arc<SessionOwner>,
     token: OwnerToken,
     live: Arc<Live>,
     protocol: Mutex<concat_mcp::Session>,
+    journal: JournalSlot,
+    invocation: InvocationSlot,
+    component_claimed: AtomicBool,
 }
 
 impl AgentBridge {
@@ -47,16 +65,24 @@ impl AgentBridge {
         api.share_exporter(exporter);
         api.share_window(Arc::clone(&live) as Arc<dyn concat_api::WindowLink>);
         api.add_capability("edit.guarded");
+        let journal = Arc::new(Mutex::new(None));
+        let invocation = Arc::new(Mutex::new(None));
         let backend = AgentBackend {
             api,
             owner: Arc::clone(&owner),
             token: token.clone(),
+            journal: Arc::clone(&journal),
+            invocation: Arc::clone(&invocation),
         };
         Ok(Self {
+            dirs: dirs.clone(),
             owner,
             token,
             live,
             protocol: Mutex::new(concat_mcp::Session::embedded(Box::new(backend))),
+            journal,
+            invocation,
+            component_claimed: AtomicBool::new(false),
         })
     }
 
@@ -70,6 +96,16 @@ impl AgentBridge {
     /// The platform must also validate the local page's origin and original
     /// generation before reaching this entry. It is not a general IPC server.
     pub fn handle(&self, message: Value) -> Result<Option<Value>, String> {
+        self.handle_with_invocation(message, None)
+    }
+
+    /// The private platform channel supplies original Pi call identity outside
+    /// model arguments. The protocol lock scopes it to exactly this one frame.
+    pub(crate) fn handle_with_invocation(
+        &self,
+        message: Value,
+        invocation: Option<Invocation>,
+    ) -> Result<Option<Value>, String> {
         // A protocol cancellation must never queue behind the mutex held by
         // the native edit it is trying to stop. Retire this whole host bridge;
         // continuing requires native reconciliation and a new bridge, never
@@ -96,6 +132,11 @@ impl AgentBridge {
             .protocol
             .lock()
             .map_err(|_| "the embedded protocol failed".to_owned())?;
+        *self
+            .invocation
+            .lock()
+            .map_err(|_| "native invocation state failed".to_owned())? = invocation;
+        let _scope = InvocationScope(&self.invocation);
         Ok(protocol.handle(message))
     }
 
@@ -110,13 +151,57 @@ impl AgentBridge {
     ) -> Result<(), String> {
         self.owner
             .confirm_recovery(&self.token, state, decision)
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        let journal = match OperationJournal::open(&self.owner, &self.token) {
+            Ok(journal) => Arc::new(journal),
+            Err(error) => {
+                self.stop();
+                return Err(error.to_string());
+            }
+        };
+        *self
+            .journal
+            .lock()
+            .map_err(|_| "native journal state failed".to_owned())? = Some(journal);
+        Ok(())
     }
 
-    /// Revoke first, then permanently cancel this bridge's pending requests.
-    /// Calls and callbacks holding another Arc cannot retain execution authority.
+    /// Consume a genuine native Written result. Document matching and hashing
+    /// happen over the same file bytes, never over a second later path read.
+    pub(crate) fn record_saved(
+        &self,
+        path: &str,
+        session: u64,
+        revision: u64,
+        expected_document: &Value,
+    ) -> Result<u64, String> {
+        let journal = self
+            .journal
+            .lock()
+            .map_err(|_| "native journal state failed".to_owned())?
+            .clone();
+        match journal {
+            Some(journal) => journal
+                .record_saved_document(path, session, revision, expected_document)
+                .map_err(|error| error.to_string()),
+            None => Ok(0),
+        }
+    }
+
+    /// Connections and their permits must close before ownership is released.
+    fn close_journal(&self) -> Result<(), String> {
+        self.journal
+            .lock()
+            .map_err(|_| "native journal state failed".to_owned())?
+            .take();
+        Ok(())
+    }
+
+    /// Retire later admission first, then cancel this bridge's queued requests.
+    /// This UI-safe request does not wait for an admitted synchronous write;
+    /// finish_handoff fences and drains that work before ownership is released.
     pub fn stop(&self) {
-        self.owner.revoke();
+        self.owner.request_stop();
         self.live.cancel_pending();
     }
 
@@ -131,6 +216,7 @@ impl AgentBridge {
             return Err("agent handoff must drain on a background thread".to_owned());
         }
         self.stop();
+        self.close_journal()?;
         self.owner
             .finish_handoff(timeout)
             .map_err(|error| error.to_string())
@@ -143,10 +229,23 @@ impl Drop for AgentBridge {
     }
 }
 
+struct InvocationScope<'a>(&'a Mutex<Option<Invocation>>);
+
+impl Drop for InvocationScope<'_> {
+    fn drop(&mut self) {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+    }
+}
+
 struct AgentBackend {
     api: Api,
     owner: Arc<SessionOwner>,
     token: OwnerToken,
+    journal: JournalSlot,
+    invocation: InvocationSlot,
 }
 
 impl Backend for AgentBackend {
@@ -165,17 +264,160 @@ impl Backend for AgentBackend {
                 "this operation is not available to the embedded agent",
             ));
         }
-        match self.api.dispatch(request) {
-            Response::Result(reply) => {
-                serde_json::to_value(reply).map_err(|error| ApiError::failed(error.to_string()))
+        if matches!(&request, Request::EditApplyGuarded { .. }) {
+            let invocation = self
+                .invocation
+                .lock()
+                .map_err(|_| ApiError::failed("native invocation state failed"))?
+                .clone()
+                .ok_or_else(|| {
+                    ApiError::new(
+                        ErrorCode::Refused,
+                        "guarded edits require the original Pi invocation context",
+                    )
+                })?;
+            let journal = self
+                .journal
+                .lock()
+                .map_err(|_| ApiError::failed("native journal state failed"))?
+                .clone()
+                .ok_or_else(|| {
+                    ApiError::new(
+                        ErrorCode::Refused,
+                        "native edit journal is not open after recovery approval",
+                    )
+                })?;
+            let result = journaled_edit(&journal, &invocation, request, |request| {
+                dispatch(&mut self.api, request)
+            });
+            // An unknown native outcome must not lead to another tool or
+            // provider call in this generation. Proven zero-change refusals
+            // remain normal tool errors that the user can correct.
+            if result.as_ref().is_err_and(|error| !proven_no_change(error)) {
+                self.owner.revoke();
             }
-            Response::Error(error) => Err(error),
+            return result;
         }
+        dispatch(&mut self.api, request)
     }
 
     fn describe(&self) -> Value {
         json!({ "mode": "embedded-current-window", "automaticRetry": false })
     }
+}
+
+fn dispatch(api: &mut Api, request: Request) -> Result<Value, ApiError> {
+    match api.dispatch(request) {
+        Response::Result(reply) => {
+            serde_json::to_value(reply).map_err(|error| ApiError::failed(error.to_string()))
+        }
+        Response::Error(error) => Err(error),
+    }
+}
+
+/// The intent is durably committed before dispatch enters the native editor.
+/// Unknown or repeated outcomes never turn into a second edit.
+fn journaled_edit(
+    journal: &OperationJournal,
+    invocation: &Invocation,
+    request: Request,
+    execute: impl FnOnce(Request) -> Result<Value, ApiError>,
+) -> Result<Value, ApiError> {
+    let Request::EditApplyGuarded {
+        path,
+        expected_session,
+        expected_revision,
+        ..
+    } = &request
+    else {
+        return Err(ApiError::new(
+            ErrorCode::Refused,
+            "the journal accepts only guarded edits",
+        ));
+    };
+    let encoded =
+        serde_json::to_value(&request).map_err(|error| ApiError::failed(error.to_string()))?;
+    let admission = journal
+        .prepare(
+            invocation,
+            &encoded,
+            path,
+            *expected_session,
+            *expected_revision,
+        )
+        .map_err(|error| {
+            let code = match &error {
+                JournalError::NeedsReconciliation { .. } => ErrorCode::Busy,
+                JournalError::InvalidInvocation
+                | JournalError::ConflictingInvocation
+                | JournalError::Owner(_) => ErrorCode::Refused,
+                _ => ErrorCode::Failed,
+            };
+            ApiError::new(code, error.to_string())
+        })?;
+    let expected = (*expected_session, *expected_revision);
+    let operation_id = match admission {
+        Admission::New(id) => id,
+        Admission::AlreadyApplied { operation_id, .. } => {
+            return Err(ApiError::new(
+                ErrorCode::Refused,
+                format!(
+                    "operation {operation_id} was already applied; read the current project before a new plan"
+                ),
+            ));
+        }
+        Admission::PreviouslyRejected { error, .. } => {
+            return Err(serde_json::from_value(error)
+                .map_err(|_| ApiError::failed("native refusal record is invalid"))?);
+        }
+    };
+    let reply = match execute(request) {
+        Ok(reply) => reply,
+        Err(error) => {
+            if proven_no_change(&error) {
+                let encoded = serde_json::to_value(&error)
+                    .map_err(|failure| ApiError::failed(failure.to_string()))?;
+                journal.record_rejected(operation_id, &encoded)
+                    .map_err(|failure| ApiError::failed(format!("native edit was refused, but its terminal receipt was not persisted: {failure}")))?;
+            }
+            return Err(error);
+        }
+    };
+    let session = reply
+        .get("sessionId")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            ApiError::failed("native edit reply has no session identity; reconcile the project")
+        })?;
+    let revision = reply
+        .get("revision")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            ApiError::failed("native edit reply has no revision; reconcile the project")
+        })?;
+    if (session, revision) == expected {
+        journal
+            .record_unchanged(operation_id, session, revision, &reply)
+            .map_err(|error| {
+                ApiError::failed(format!(
+                    "native no-op result could not be persisted: {error}"
+                ))
+            })?;
+        return Ok(reply);
+    }
+    journal.record_receipt(operation_id, session, revision, &reply)
+        .map_err(|error| ApiError::failed(format!("native edit applied but its receipt was not persisted: {error}; reconcile before retry")))?;
+    Ok(reply)
+}
+
+/// These structured codes are audited on the guarded current-window route:
+/// Refused and NotOpen precede mutation, and Cancelled only retires a queued
+/// ticket. A running timeout is Busy; a lost/failed result is never terminal.
+fn proven_no_change(error: &ApiError) -> bool {
+    matches!(
+        error.code,
+        ErrorCode::Refused | ErrorCode::NotOpen | ErrorCode::Invalid | ErrorCode::Cancelled
+    )
 }
 
 #[cfg(test)]

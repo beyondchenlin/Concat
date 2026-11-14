@@ -45,7 +45,8 @@ whisper.cpp's Rust build. The published build script builds whisper and
 ggml as static libraries only, so ggml's CPU kernels are compiled for one
 instruction set: AVX2 crashed Sandy and Ivy Bridge machines at launch
 (jub0t/concat#193), and AVX alone made transcription some eight times
-slower everywhere else (#388). One change, marked `Concat:` in `build.rs`:
+slower everywhere else (#388). The shared-library change is marked `Concat:`
+in `build.rs`:
 
 - `GGML_BACKEND_DL=ON` in the environment builds whisper, ggml and
   ggml-base as shared libraries and every backend as a module ggml loads
@@ -55,6 +56,13 @@ slower everywhere else (#388). One change, marked `Concat:` in `build.rs`:
   generation, and ggml loads the best one the CPU can run; concat-speech's
   `cpu_backend` tells it where to look. build-app.yml turns both on for the
   x86_64 Windows and Linux bundles. Unset, the build is the published one.
+
+BK CAT also fixes the Windows-specific compiler/linker condition in `build.rs`:
+`/utf-8` and `advapi32` are selected from Cargo's actual `TARGET`, not the
+operating system running the build script. Windows-target builds retain both;
+Android-target builds on Windows receive neither. This removes a confirmed
+source-level cross-compilation blocker; it is not evidence of an Android build
+or device test passing.
 
 And the copy is smaller than the published crate: ggml's GPU backends that
 no build of Concat compiles (CANN, CUDA, Hexagon, HIP, MUSA, OpenCL, RPC,

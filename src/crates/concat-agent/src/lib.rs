@@ -29,8 +29,26 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
+
+/// Non-secret native model channels, versioned independently of projects and sessions.
+pub mod configuration;
+/// Native project bindings for original Pi conversation identities, without messages or scheduling.
+pub mod conversations;
+/// Product-scoped platform secure credentials, never persisted in model metadata.
+pub mod credentials;
+/// Bounded native model transport; credentials never enter the embedded page.
+pub mod network;
+/// Durable native edit intent, receipt, disk-save and notification states.
+pub mod operations;
+/// Persistent project-location admission for independent script versions.
+pub mod script_locations;
+/// Independent project script versions and explicit cutting-plan input bindings.
+pub mod scripts;
+/// Original Pi session storage through a generation-fenced native SQLite port.
+pub mod sqlite;
 
 /// A permanent file, shared by all embedded host instances using this storage.
 pub const OWNER_FILE_NAME: &str = ".bk-cat-agent-owner.lock";
@@ -40,6 +58,7 @@ const RECORD_SIZE: usize = 24;
 
 /// Whether this host is allowed to admit new side effects.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
 pub enum Phase {
     /// Ownership exists, but reconciliation and a user decision are required.
     RecoveryRequired,
@@ -181,6 +200,66 @@ fn io_error(operation: &'static str, source: io::Error) -> Error {
     Error::Io { operation, source }
 }
 
+// Rust 1.93.1's standard library returns Unsupported for Android file locks.
+// Use the platform's descriptor-scoped flock there; a process-wide fcntl lock
+// would let two independently opened hosts in the same process share ownership.
+// The File remains in Core until every permit drains and handoff is explicit.
+#[cfg(target_os = "android")]
+fn android_flock(file: &File, operation: libc::c_int) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    loop {
+        // SAFETY: File owns a live descriptor for the entire call. flock does
+        // not retain a pointer or close the descriptor; Core retains the File.
+        if unsafe { libc::flock(file.as_raw_fd(), operation) } == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+fn lock_new_owner_file(file: &File) -> io::Result<()> {
+    #[cfg(target_os = "android")]
+    {
+        android_flock(file, libc::LOCK_EX)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        file.lock()
+    }
+}
+
+fn try_lock_owner_file(file: &File) -> Result<(), TryLockError> {
+    #[cfg(target_os = "android")]
+    {
+        android_flock(file, libc::LOCK_EX | libc::LOCK_NB).map_err(|error| {
+            if error.kind() == io::ErrorKind::WouldBlock {
+                TryLockError::WouldBlock
+            } else {
+                TryLockError::Error(error)
+            }
+        })
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        file.try_lock()
+    }
+}
+
+fn unlock_owner_file(file: &File) -> io::Result<()> {
+    #[cfg(target_os = "android")]
+    {
+        android_flock(file, libc::LOCK_UN)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        file.unlock()
+    }
+}
+
 struct State {
     phase: Phase,
     active_operations: usize,
@@ -190,13 +269,22 @@ struct State {
 }
 
 impl State {
-    fn release_if_drained(&mut self) {
+    fn release_if_drained(&mut self) -> Result<(), Error> {
         if self.phase == Phase::Draining && self.release_requested && self.active_operations == 0 {
-            // Closing the sole file handle releases the kernel lock. Never
-            // unlink the file: that would create a second ownership domain.
+            // A concurrent process spawn can briefly inherit this open file
+            // description. Closing our descriptor alone would then publish
+            // Released while that inherited descriptor still keeps the lock.
+            // Unlock only after every admitted operation has drained. On an
+            // error retain both the handle and Draining; never claim handoff.
+            if let Some(file) = self.file.as_ref() {
+                unlock_owner_file(file)
+                    .map_err(|error| io_error("unlock drained session ownership", error))?;
+            }
+            // Never unlink: the permanent inode defines one ownership domain.
             drop(self.file.take());
             self.phase = Phase::Released;
         }
+        Ok(())
     }
 }
 
@@ -205,29 +293,79 @@ struct Core {
     generation: u64,
     state: Mutex<State>,
     drained: Condvar,
+    // Admission can be retired without waiting for an already-running SQLite
+    // step or disk sync. The existing mutex still protects synchronous writes.
+    stop_requested: AtomicBool,
+    published_phase: AtomicU8,
+    published_operations: AtomicUsize,
 }
 
 impl Core {
+    fn request_stop(&self) {
+        self.stop_requested.store(true, Ordering::Release);
+        self.drained.notify_all();
+    }
+
+    fn check_admission(&self) -> Result<(), Error> {
+        if self.state.is_poisoned() {
+            self.request_stop();
+            return Err(Error::Poisoned);
+        }
+        if self.stop_requested.load(Ordering::Acquire) {
+            return Err(Error::Revoked);
+        }
+        Ok(())
+    }
+
+    fn publish_status(&self, state: &State) {
+        // Store the count before the phase: observing Released also observes
+        // its zero drain count. These diagnostics never grant authority.
+        self.published_operations
+            .store(state.active_operations, Ordering::Release);
+        self.published_phase
+            .store(state.phase as u8, Ordering::Release);
+    }
+
     fn state(&self) -> Result<MutexGuard<'_, State>, Error> {
         self.state.lock().map_err(|poisoned| {
+            self.request_stop();
             let mut state = poisoned.into_inner();
             state.phase = Phase::Draining;
-            state.release_if_drained();
+            let _ = state.release_if_drained();
+            self.publish_status(&state);
             Error::Poisoned
         })
     }
 
-    fn revoke(&self, request_release: bool) {
+    fn revoke(&self, request_release: bool) -> Result<(), Error> {
+        self.request_stop();
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state.phase != Phase::Released {
+        let result = if state.phase != Phase::Released {
             state.phase = Phase::Draining;
             state.release_requested |= request_release;
-            state.release_if_drained();
-        }
+            state.release_if_drained()
+        } else {
+            Ok(())
+        };
+        self.publish_status(&state);
         self.drained.notify_all();
+        result
+    }
+}
+
+/// A read-only cancellation signal for a native connection's progress handler.
+/// It cannot reset admission, acquire another generation or keep an owner alive.
+#[derive(Clone)]
+pub(crate) struct StopSignal(Weak<Core>);
+
+impl StopSignal {
+    pub(crate) fn requested(&self) -> bool {
+        self.0.upgrade().is_none_or(|core| {
+            core.stop_requested.load(Ordering::Acquire) || core.state.is_poisoned()
+        })
     }
 }
 
@@ -316,10 +454,10 @@ impl SessionOwner {
             // us. It cannot become an owner: an existing empty journal is
             // refused below. Wait for that check to release its handle rather
             // than return Busy and strand our first initialization forever.
-            file.lock()
+            lock_new_owner_file(&file)
                 .map_err(|error| io_error("lock newly created ownership file", error))?;
         } else {
-            match file.try_lock() {
+            match try_lock_owner_file(&file) {
                 Ok(()) => {}
                 Err(TryLockError::WouldBlock) => return Err(Error::Busy),
                 Err(TryLockError::Error(error)) => {
@@ -348,6 +486,9 @@ impl SessionOwner {
                     reconciliation: None,
                 }),
                 drained: Condvar::new(),
+                stop_requested: AtomicBool::new(false),
+                published_phase: AtomicU8::new(Phase::RecoveryRequired as u8),
+                published_operations: AtomicUsize::new(0),
             }),
         })
     }
@@ -365,13 +506,28 @@ impl SessionOwner {
         }
     }
 
-    /// Read the host's phase and drain count without granting execution.
+    /// Read diagnostics without waiting for an in-flight write or disk sync.
+    /// This published snapshot is never an execution credential.
     pub fn status(&self) -> Result<OwnerStatus, Error> {
-        let state = self.core.state()?;
+        if self.core.state.is_poisoned() {
+            self.core.request_stop();
+            return Err(Error::Poisoned);
+        }
+        let mut phase = match self.core.published_phase.load(Ordering::Acquire) {
+            0 => Phase::RecoveryRequired,
+            1 => Phase::Ready,
+            2 => Phase::Draining,
+            3 => Phase::Released,
+            _ => Phase::Draining,
+        };
+        let active_operations = self.core.published_operations.load(Ordering::Acquire);
+        if self.core.stop_requested.load(Ordering::Acquire) && phase != Phase::Released {
+            phase = Phase::Draining;
+        }
         Ok(OwnerStatus {
             generation: self.core.generation,
-            phase: state.phase,
-            active_operations: state.active_operations,
+            phase,
+            active_operations,
         })
     }
 
@@ -382,7 +538,9 @@ impl SessionOwner {
     /// schedule work in this closure. It shares the non-reentrant owner mutex.
     pub fn with_owned<T>(&self, token: &OwnerToken, read: impl FnOnce() -> T) -> Result<T, Error> {
         self.check_token(token)?;
+        self.core.check_admission()?;
         let state = self.core.state()?;
+        self.core.check_admission()?;
         if matches!(state.phase, Phase::Draining | Phase::Released) {
             return Err(Error::Revoked);
         }
@@ -414,14 +572,17 @@ impl SessionOwner {
         decision: RecoveryDecision,
     ) -> Result<(), Error> {
         self.check_token(token)?;
+        self.core.check_admission()?;
         if !reconciliation.is_complete() {
             return Err(Error::IncompleteReconciliation);
         }
         let mut state = self.core.state()?;
+        self.core.check_admission()?;
         match state.phase {
             Phase::RecoveryRequired => {
                 state.reconciliation = Some((reconciliation, decision));
                 state.phase = Phase::Ready;
+                self.core.publish_status(&state);
                 Ok(())
             }
             Phase::Ready => Err(Error::RecoveryAlreadyCompleted),
@@ -440,22 +601,35 @@ impl SessionOwner {
     /// `with_valid` method must guard each actual write and external dispatch.
     pub fn begin(&self, token: &OwnerToken) -> Result<OperationPermit, Error> {
         self.check_token(token)?;
+        self.core.check_admission()?;
         let mut state = self.core.state()?;
+        self.core.check_admission()?;
         check_ready(state.phase)?;
         state.active_operations = state.active_operations.checked_add(1).ok_or(Error::Busy)?;
+        self.core.publish_status(&state);
         Ok(OperationPermit {
             core: Arc::clone(&self.core),
             generation: self.core.generation,
         })
     }
 
-    /// Revoke admission immediately, including every outstanding delayed callback.
+    /// Permanently retire new admission without waiting for a current write.
     ///
-    /// This waits only for a callback currently inside `with_valid`, whose
-    /// synchronous side effect precedes the revocation. It never waits for all
-    /// asynchronous permits; use `finish_handoff` after stopping those operations.
+    /// Use this on a UI or platform lifecycle thread. In-flight synchronous
+    /// work remains protected by its original gate and lifetime permit until
+    /// it settles or rolls back. Storage ownership is not released here.
+    /// Close the old component and its databases before `finish_handoff`.
+    pub fn request_stop(&self) {
+        self.core.request_stop();
+    }
+
+    /// Request stop, then synchronously fence the current admitted callback.
+    ///
+    /// This preserves the original atomic-revocation contract: it waits for
+    /// the callback currently inside `with_valid`. Use `request_stop` on UI
+    /// threads; use `finish_handoff` after stopping and closing old operations.
     pub fn revoke(&self) {
-        self.core.revoke(false);
+        let _ = self.core.revoke(false);
     }
 
     /// Revoke and wait for all permits to drain before releasing the kernel lock.
@@ -463,7 +637,7 @@ impl SessionOwner {
     /// A timeout leaves ownership locked and revoked. The caller must keep
     /// shutting down the old host; a replacement cannot acquire it yet.
     pub fn finish_handoff(&self, timeout: Duration) -> Result<(), Error> {
-        self.core.revoke(true);
+        self.core.revoke(true)?;
         let started = Instant::now();
         let mut state = self
             .core
@@ -472,7 +646,8 @@ impl SessionOwner {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         loop {
             if state.active_operations == 0 {
-                state.release_if_drained();
+                state.release_if_drained()?;
+                self.core.publish_status(&state);
                 return Ok(());
             }
             let remaining = timeout.saturating_sub(started.elapsed());
@@ -493,7 +668,7 @@ impl SessionOwner {
 
 impl Drop for SessionOwner {
     fn drop(&mut self) {
-        self.core.revoke(true);
+        let _ = self.core.revoke(true);
     }
 }
 
@@ -509,19 +684,26 @@ impl OperationPermit {
         self.generation
     }
 
+    pub(crate) fn stop_signal(&self) -> StopSignal {
+        StopSignal(Arc::downgrade(&self.core))
+    }
+
     /// Atomically check admission and start a synchronous side effect.
     ///
-    /// Revocation cannot race between the check and this closure. The closure
-    /// should initiate a model call, perform a native edit, or persist one
+    /// Synchronous revocation cannot split this check and closure. A fast stop
+    /// request retires later admission while already admitted work settles.
+    /// The closure should initiate a model call, perform a native edit, or persist one
     /// callback; do not await an asynchronous operation while holding this gate.
     /// Never call owner/permit methods recursively from the closure: they share
     /// this mutex. Every later callback must enter `with_valid` again using the
     /// original permit, so revocation suppresses late writes and follow-up calls.
     pub fn with_valid<T>(&self, operation: impl FnOnce() -> T) -> Result<T, Error> {
-        let state = self.core.state()?;
         if self.generation != self.core.generation {
             return Err(Error::TokenMismatch);
         }
+        self.core.check_admission()?;
+        let state = self.core.state()?;
+        self.core.check_admission()?;
         check_ready(state.phase)?;
         let result = operation();
         drop(state);
@@ -534,6 +716,7 @@ impl Drop for OperationPermit {
         let mut state = match self.core.state.lock() {
             Ok(state) => state,
             Err(poisoned) => {
+                self.core.request_stop();
                 let mut state = poisoned.into_inner();
                 state.phase = Phase::Draining;
                 state
@@ -541,7 +724,8 @@ impl Drop for OperationPermit {
         };
         debug_assert!(state.active_operations > 0);
         state.active_operations = state.active_operations.saturating_sub(1);
-        state.release_if_drained();
+        let _ = state.release_if_drained();
+        self.core.publish_status(&state);
         self.core.drained.notify_all();
     }
 }
@@ -599,6 +783,86 @@ fn issue_generation(file: &mut File, created: bool) -> Result<u64, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn drained_handoff_unlocks_while_an_inherited_descriptor_remains_open() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = SessionOwner::acquire(directory.path()).unwrap();
+        let token = owner.token();
+        // A real duplicate of the same open file description, just as an
+        // unrelated child holds between fork and exec. Keep it alive across
+        // handoff: a close-only release deterministically fails this test.
+        let inherited = owner
+            .core
+            .state
+            .lock()
+            .unwrap()
+            .file
+            .as_ref()
+            .unwrap()
+            .try_clone()
+            .unwrap();
+        owner.finish_handoff(Duration::ZERO).unwrap();
+        assert_eq!(owner.status().unwrap().phase, Phase::Released);
+        let next = SessionOwner::acquire(directory.path())
+            .expect("Released must permit handoff even before inherited descriptors close");
+        assert_eq!(next.token().generation(), token.generation() + 1);
+        assert!(matches!(
+            owner.with_owned(&token, || ()),
+            Err(Error::Revoked)
+        ));
+        assert!(matches!(next.begin(&token), Err(Error::TokenMismatch)));
+        drop(inherited);
+        assert!(
+            matches!(SessionOwner::acquire(directory.path()), Err(Error::Busy)),
+            "closing an old description must not unlock the new owner's different handle"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inherited_descriptor_does_not_release_a_live_operation_before_drain() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = SessionOwner::acquire(directory.path()).unwrap();
+        owner
+            .confirm_recovery(
+                &owner.token(),
+                Reconciliation {
+                    project_identity: "isolated-project".into(),
+                    project_revision: "1".into(),
+                    session_revision: "1".into(),
+                },
+                RecoveryDecision::DiscardInterrupted,
+            )
+            .unwrap();
+        let permit = owner.begin(&owner.token()).unwrap();
+        let inherited = owner
+            .core
+            .state
+            .lock()
+            .unwrap()
+            .file
+            .as_ref()
+            .unwrap()
+            .try_clone()
+            .unwrap();
+        drop(owner);
+        assert!(matches!(permit.with_valid(|| ()), Err(Error::Revoked)));
+        assert!(matches!(
+            SessionOwner::acquire(directory.path()),
+            Err(Error::Busy)
+        ));
+        drop(permit);
+        let next = SessionOwner::acquire(directory.path())
+            .expect("the final drained permit explicitly releases the retired owner's lock");
+        assert_eq!(next.token().generation(), 2);
+        drop(inherited);
+        assert!(matches!(
+            SessionOwner::acquire(directory.path()),
+            Err(Error::Busy)
+        ));
+    }
 
     #[test]
     fn a_read_only_file_never_issues_a_generation() {

@@ -1,0 +1,10 @@
+{
+  "Package": "libclang-common-19-dev",
+  "Version": "1:19.1.7-3+b1",
+  "Architecture": "amd64",
+  "Filename": "pool/main/l/llvm-toolchain-19/libclang-common-19-dev_19.1.7-3+b1_amd64.deb",
+  "Size": "739932",
+  "SHA256": "4018e40e2d4144fe38c45822e68cca63c1bf6c7872c3073ebb262ad4b2f9b8bc",
+  "download_url": "https://deb.debian.org/debian/pool/main/l/llvm-toolchain-19/libclang-common-19-dev_19.1.7-3+b1_amd64.deb",
+  "actual_sha256": "4018e40e2d4144fe38c45822e68cca63c1bf6c7872c3073ebb262ad4b2f9b8bc"
+}

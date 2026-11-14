@@ -1,0 +1,25 @@
+{
+  "head": "50bc9fe1e42f710e7c892058c74e7df4d3dfe90c",
+  "merge": "b02bb70f8b74661a2a1c5f588db1dcf162133340",
+  "note": "Verbatim bounded excerpts from the first compiler error in each original job log; this is not a complete job log.",
+  "jobs": [
+    {
+      "id": 132240282975,
+      "run": 43528521833,
+      "source": "engine",
+      "excerpt": "2026-11-13T23:49:43.3025027Z \u001b[1m\u001b[91merror[E0616]\u001b[0m\u001b[1m: field `dirty` of struct `studio::Studio` is private\u001b[0m\n2026-11-13T23:49:43.3025564Z    \u001b[1m\u001b[94m--> \u001b[0mcrates/concat/src/panes/script.rs:507:22\n2026-11-13T23:49:43.3026234Z     \u001b[1m\u001b[94m|\u001b[0m\n2026-11-13T23:49:43.3026586Z \u001b[1m\u001b[94m507\u001b[0m \u001b[1m\u001b[94m|\u001b[0m                 self.dirty = true;\n2026-11-13T23:49:43.3027004Z     \u001b[1m\u001b[94m|\u001b[0m                      \u001b[1m\u001b[91m^^^^^\u001b[0m \u001b[1m\u001b[91mprivate field\u001b[0m\n2026-11-13T23:49:43.3027246Z \n"
+    },
+    {
+      "id": 132240303271,
+      "run": 43528521844,
+      "source": "android-x86_64",
+      "excerpt": "2026-11-13T23:45:11.2708592Z \u001b[1m\u001b[91merror[E0616]\u001b[0m\u001b[1m: field `dirty` of struct `studio::Studio` is private\u001b[0m\n2026-11-13T23:45:11.2709385Z    \u001b[1m\u001b[94m--> \u001b[0mcrates/concat/src/panes/script.rs:507:22\n2026-11-13T23:45:11.2709831Z     \u001b[1m\u001b[94m|\u001b[0m\n2026-11-13T23:45:11.2710358Z \u001b[1m\u001b[94m507\u001b[0m \u001b[1m\u001b[94m|\u001b[0m                 self.dirty = true;\n2026-11-13T23:45:11.2711026Z     \u001b[1m\u001b[94m|\u001b[0m                      \u001b[1m\u001b[91m^^^^^\u001b[0m \u001b[1m\u001b[91mprivate field\u001b[0m\n2026-11-13T23:45:11.2711657Z \n"
+    },
+    {
+      "id": 132240303420,
+      "run": 43528521844,
+      "source": "android-arm64",
+      "excerpt": "2026-11-13T23:45:01.7342315Z \u001b[1m\u001b[91merror[E0616]\u001b[0m\u001b[1m: field `dirty` of struct `studio::Studio` is private\u001b[0m\n2026-11-13T23:45:01.7342822Z    \u001b[1m\u001b[94m--> \u001b[0mcrates/concat/src/panes/script.rs:507:22\n2026-11-13T23:45:01.7343108Z     \u001b[1m\u001b[94m|\u001b[0m\n2026-11-13T23:45:01.7343438Z \u001b[1m\u001b[94m507\u001b[0m \u001b[1m\u001b[94m|\u001b[0m                 self.dirty = true;\n2026-11-13T23:45:01.7344425Z     \u001b[1m\u001b[94m|\u001b[0m                      \u001b[1m\u001b[91m^^^^^\u001b[0m \u001b[1m\u001b[91mprivate field\u001b[0m\n2026-11-13T23:45:01.7344637Z \n"
+    }
+  ]
+}

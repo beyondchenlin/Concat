@@ -1,0 +1,5 @@
+
+> bk-cat-agent-runtime@0.1.0 build
+> node scripts/build.mjs
+
+Built original Pi 1.5.2 at d36266e06669c6991a7c9509d1da04d18d30378d: 909439 bytes

@@ -1,0 +1,7 @@
+command: npm run typecheck
+BK_CAT_PI_REFERENCE=/workspace/scratch/84c9af9701bd/bk-cat-verify/.build/pi-reference
+npm warn Unknown env config "http-proxy". This will stop working in the next major version of npm.
+
+> bk-cat-agent-runtime@0.1.0 typecheck
+> node scripts/typecheck.mjs
+

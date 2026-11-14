@@ -1,0 +1,16 @@
+2026-11-13T14:06:46.7535347Z Verified Android ownership binary for source 420a70e15f4ef9bcffdcfaca21325c4f3917194a
+2026-11-13T14:06:46.9154372Z api=35
+2026-11-13T14:06:46.9184501Z device_directory=/data/local/tmp/bk-cat-owner-ci.vDPGHSWG
+2026-11-13T14:06:48.8204840Z test result: ok. 20 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 1.63s
+2026-11-13T14:06:48.8446574Z ANDROID_OWNERSHIP_TESTS_PASS: 20 real tests
+2026-11-13T14:06:59.0094361Z == watch for 60s
+2026-11-13T14:07:01.1340984Z 11-13 14:06:58.482  3475  3475 I concat  : concat::embedded: bk-cat-agent: state=stopping
+2026-11-13T14:07:01.1364904Z 11-13 14:06:58.484  3475  3475 I concat  : concat::embedded: bk-cat-agent: state=stopping
+2026-11-13T14:07:01.1383182Z 11-13 14:06:58.485  3475  3729 I concat  : concat::embedded: bk-cat-agent: state=closed
+2026-11-13T14:07:01.7266296Z 11-13 14:06:58.482  3475  3475 I concat  : concat::embedded: bk-cat-agent: state=stopping
+2026-11-13T14:07:01.7266958Z 11-13 14:06:58.484  3475  3475 I concat  : concat::embedded: bk-cat-agent: state=stopping
+2026-11-13T14:07:01.7267442Z 11-13 14:06:58.485  3475  3729 I concat  : concat::embedded: bk-cat-agent: state=closed
+2026-11-13T14:07:01.7308607Z ##[error]the app failed on start: 11-13 14:06:58.482  3475  3475 I concat  : concat::embedded: bk-cat-agent: state=stopping
+2026-11-13T14:07:01.7324249Z ##[error]The process '/usr/bin/sh' failed with exit code 1
+2026-11-13T14:07:05.2475449Z Artifact smoke-android-api35 successfully finalized. Artifact ID 14044661968
+2026-11-13T14:07:05.2476183Z Artifact smoke-android-api35 has been successfully uploaded! Final size is 273490 bytes. Artifact ID is 14044661968

@@ -1,0 +1,47 @@
+
+> bk-cat-agent-runtime@0.1.0 test
+> node --test test/*.test.ts
+
+✔ conversation creation cannot install executable callbacks, task ownership, or registry objects (1.2014ms)
+✔ chat submission requires native deduplication identity and cannot forge transcript entries or queued follow-ups (0.2471ms)
+✔ startup only acquires ownership and reads recovery; every scheduling entry stays closed (3.1241ms)
+✔ confirmation opens Pi once but does not resume or call a model (0.3825ms)
+✔ stale approval and discard with interrupted work never open writable Pi (0.2879ms)
+✔ overlapping recovery confirmation has one native grant and one Pi open (0.2984ms)
+✔ stop while acquire is pending revokes the eventual lease before release (0.2806ms)
+✔ stop during Pi open retains ownership until the late engine is closed (0.2929ms)
+✔ a replacement host starts in recovery after the prior owner drains (0.6428ms)
+✔ late results cannot authorize a new action after stop (0.2591ms)
+✔ real-view observer callback from an old generation is not delivered (0.3687ms)
+✔ failed Pi open revokes and releases the owned generation (0.2601ms)
+✔ an observer cleanup failure cannot prevent native revocation, engine cleanup, or ownership drain (0.223ms)
+✔ a generation without a model budget cannot obtain a network permit (0.1902ms)
+✔ SQLite transaction callback that loses ownership cannot reach commit (0.3199ms)
+✔ late SQLite durability receipt cannot publish through an old generation (0.3112ms)
+✔ MCP transport blocks recovery edits, hidden tools, and cancelled sends before native dispatch (0.4504ms)
+✔ MCP late reply is discarded when native ownership has been revoked (0.2245ms)
+✔ guarded MCP edits take operation identity only from the original tool context, not model JSON (0.223ms)
+✔ concurrent MCP calls keep distinct trusted invocation identities (0.1812ms)
+✔ native message correlation ignores wrong channels and duplicate/late replies without resending (3.7474ms)
+✔ abort sends a native cancellation but preserves the terminal resource response for cleanup (0.6468ms)
+✔ revocation delivered between acquire reply and subscription cannot be missed (0.1586ms)
+✔ saturated native channel still admits revoke and cleanup; close rejects all outstanding work (7.1714ms)
+✔ native ports bind the trusted invocation beside MCP JSON, and never fall back to browser fetch (0.4368ms)
+✔ only a live acquired owner acknowledges a genuinely received native save notification (0.3007ms)
+✔ desktop transport binds every original-runtime frame to its native component (1.515ms)
+✔ stale and wrong-channel native replies cannot reach Pi listeners (0.6515ms)
+✔ Android transport uses only the native bridge and the same fenced inbox (0.4884ms)
+✔ absent transport, malformed frames and resource exhaustion fail closed (0.9448ms)
+✔ SQLite values preserve signed 64-bit integers and bytes without lossy numeric coercion (1.8815ms)
+✔ SQLite connection queues outside work until its transaction commits; expired transaction handles refuse (0.8731ms)
+✔ SQLite callback failure rolls back; abort still permits rollback and close cleanup (0.4236ms)
+✔ SQLite swallowed statement failure cannot commit and rollback failure remains explicit (0.8715ms)
+✔ SQLite wire absent rows, tagged result values and affected counts conform to the original interface (0.4511ms)
+ℹ tests 35
+ℹ suites 0
+ℹ pass 35
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 149.6092

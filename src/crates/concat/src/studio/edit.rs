@@ -551,34 +551,74 @@ impl Studio {
         // Capture the write order with the snapshot, not later when a
         // worker happens to pick it up.
         let ticket = projects::ticket();
+        let authority = session.save_authority();
         let saved_session = session.session_id();
         let saved_revision = session.revision();
+        let agent = self.host.agent.clone();
         crate::host::spawn_in_project_publishing(
-            move || projects::save_ordered(&path, &document, ticket),
-            move |studio, _, _, result| {
-                let current = studio.session.as_ref().is_some_and(|session| {
-                    session
-                        .check_revision(saved_session, saved_revision)
-                        .is_ok()
-                });
-                match result {
-                    Ok(projects::Saved::Written) if current => {
-                        studio.dirty = false;
-                        if announce {
-                            studio.notify(&t("studio.projectSaved"), false);
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        if current {
-                            studio.dirty = true;
-                        }
-                        studio.notify(&tf("studio.couldNotSave", &[&error]), true);
-                    }
-                }
+            move || {
+                let result =
+                    projects::save_ordered_with_authority(&path, &document, ticket, &authority);
+                let journal_error = if matches!(result, Ok(projects::Saved::Written)) {
+                    agent.as_ref().and_then(|bridge| {
+                        bridge
+                            .record_saved(&path, saved_session, saved_revision, &document)
+                            .err()
+                    })
+                } else {
+                    None
+                };
+                (result, journal_error)
+            },
+            move |studio, _, _, (result, journal_error)| {
+                studio.accept_project_save(
+                    saved_session,
+                    saved_revision,
+                    result,
+                    journal_error,
+                    announce,
+                );
             },
             |studio, app, _| studio.publish_status(app),
         );
+    }
+
+    /// Consume one real ordered save result. Document workspaces use this same
+    /// completion path when making a new native identity durable before binding.
+    pub(crate) fn accept_project_save(
+        &mut self,
+        saved_session: u64,
+        saved_revision: u64,
+        result: Result<projects::Saved, String>,
+        journal_error: Option<String>,
+        announce: bool,
+    ) {
+        let current = self.session.as_ref().is_some_and(|session| {
+            session
+                .check_revision(saved_session, saved_revision)
+                .is_ok()
+        });
+        match result {
+            Ok(projects::Saved::Written) if current => {
+                self.dirty = false;
+                if announce {
+                    self.notify(&t("studio.projectSaved"), false);
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                if current {
+                    self.dirty = true;
+                }
+                self.notify(&tf("studio.couldNotSave", &[&error]), true);
+            }
+        }
+        if let Some(error) = journal_error {
+            log::warn!("native agent save journal requires reconciliation: {error}");
+            if current {
+                self.notify("工程已落盘；智能任务回执需要重新核对。", true);
+            }
+        }
     }
 
     /// The audible clip set, handed to playback whenever the edit changes.

@@ -4,7 +4,7 @@
 # the phone build ever runs what it packages.
 #
 #   smoke-android.sh [--out DIR] [--wait SECS] [--ready REGEX] [--no-install]
-#                    [--package NAME] APK
+#                    [--package NAME] [--require-agent] APK
 #
 # On whatever device adb talks to (ANDROID_SERIAL picks one of several):
 # waits for it to finish booting; checks the device can run one of the
@@ -20,6 +20,11 @@
 #     loop that ended in an error, or a preview that failed: the window's
 #     "Preview failed" notice, which the log carries as `preview: ...`,
 #     #312),
+#
+# --require-agent also requires this launch's current process to report
+# the production embedded runtime in native recovery state. Any ownership,
+# host startup or retirement failure during this foreground observation fails;
+# the full wait is retained even when --ready is also supplied.
 #
 # and passes if none of that has happened by the end of the wait, with the
 # app's own first line ("Concat <version> starting") in the log, so a pass
@@ -55,11 +60,12 @@ set -euo pipefail
 out=smoke-android
 wait_secs=45
 ready=""
+require_agent=0
 install=1
 package=app.concat.editor
 
 usage() {
-  echo "usage: $0 [--out DIR] [--wait SECS] [--ready REGEX] [--no-install] [--package NAME] APK" >&2
+  echo "usage: $0 [--out DIR] [--wait SECS] [--ready REGEX] [--no-install] [--package NAME] [--require-agent] APK" >&2
   exit 2
 }
 
@@ -69,6 +75,7 @@ while [ $# -gt 0 ]; do
     --wait) wait_secs=${2:?}; shift 2 ;;
     --ready) ready=${2:?}; shift 2 ;;
     --no-install) install=0; shift ;;
+    --require-agent) require_agent=1; shift ;;
     --package) package=${2:?}; shift 2 ;;
     -h|--help) usage ;;
     --*) usage ;;
@@ -182,14 +189,36 @@ case "$activity" in
   *) fail "no launcher activity for $package (resolve-activity said: $activity)" ;;
 esac
 
+# Strict agent evidence must come from a new process and a fresh device log.
+# An empty pidof response cannot distinguish "absent" from an adb failure,
+# so require a successful process listing with the expected header instead.
+prepare_agent_start() {
+  limit 30 adb shell am force-stop "$package" \
+    || fail "could not stop the previous app before the agent startup check"
+  local processes remaining
+  processes=$(limit 30 adb shell ps -A -o PID,NAME | tr -d '\r') \
+    || fail "could not verify that the previous app process exited"
+  awk 'NR == 1 { valid = ($1 == "PID" && $2 == "NAME") } END { exit !valid }' <<< "$processes" \
+    || fail "the process listing cannot prove that the previous app exited"
+  remaining=$(awk -v package="$package" 'NR > 1 && ($2 == package || index($2, package ":") == 1) { print $1 }' <<< "$processes")
+  [ -z "$remaining" ] \
+    || fail "the previous app process is still present after force-stop"
+  limit 30 adb logcat -c \
+    || fail "could not clear the previous device log before the agent startup check"
+}
+
 say "start $activity"
 # A cold start: the app stopped, the log emptied and made big enough to
 # hold the whole run, and read into a file from before the launch on, so
 # the app's first line cannot have scrolled out of the device's buffer by
 # the time it is looked for.
-adb shell am force-stop "$package" || true
 adb logcat -G 16M > /dev/null 2>&1 || true
-adb logcat -c || true
+if [ "$require_agent" = 1 ]; then
+  prepare_agent_start
+else
+  adb shell am force-stop "$package" || true
+  adb logcat -c || true
+fi
 adb logcat -v threadtime > "$logcat_file" 2>&1 &
 logcat_pid=$!
 started=$(limit 180 adb shell am start -W -n "$activity" 2>&1 | tr -d '\r') \
@@ -208,6 +237,9 @@ grep -q '^Status: ok' <<< "$started" || fail "am start did not report the launch
 # The app's lines read "concat  : <module>: <message>".
 fatal='FATAL EXCEPTION|Fatal signal [0-9]+|panicked at|ANR in |Preview failed'
 fatal+='| concat +: ([A-Za-z0-9_:]+: )?(preview: |could not start|close: event loop exited [(]ok=false[)])'
+if [ "$require_agent" = 1 ]; then
+  fatal+='| concat +: ([A-Za-z0-9_:]+: )?(embedded agent unavailable:|could not install the embedded Android runtime:|bk-cat-agent: state=(failed|stopping|closed))'
+fi
 
 # Every process the app has had since the launch: the ones the activity
 # manager reports starting, which a process that dies at once still has,
@@ -231,6 +263,15 @@ app_pids() {
 fatal_lines() {
   awk -v re="$fatal" -v pids=" $pids " -v pkg="$package" '
     $0 ~ re && (index(pids, " " $3 " ") || index($0, pkg)) { print; if (++n == 5) exit }
+  ' "$logcat_file"
+}
+
+# Only the process currently alive can prove runtime readiness. A marker from
+# an earlier process or another application's log cannot satisfy this check.
+agent_ready_lines() {
+  awk -v pids=" $running " '
+    / concat +: ([A-Za-z0-9_:]+: )?bk-cat-agent: state=recovery generation=[1-9][0-9]*[[:space:]]*$/ &&
+    index(pids, " " $3 " ") { print }
   ' "$logcat_file"
 }
 
@@ -273,6 +314,9 @@ untestable_here() {
     printf '### Android smoke, API %s: not tested\n\n%s\n' "$sdk" "$why" >> "$GITHUB_STEP_SUMMARY"
   fi
   say "not tested"
+  if [ "$require_agent" = 1 ]; then
+    fail "required native agent could not be tested on this device; no startup acceptance"
+  fi
   exit 0
 }
 
@@ -297,10 +341,10 @@ while [ "$SECONDS" -lt "$deadline" ]; do
     untestable_here
     fail "the app's process is gone ${gone}s after the launch${found:+: $(head -n 1 <<< "$found")}"
   fi
-  if [ -n "$ready" ] && grep -E -q -- "$ready" "$logcat_file"; then
+  if [ -n "$ready" ] && [ -z "$seen_ready" ] && grep -E -q -- "$ready" "$logcat_file"; then
     seen_ready=1
     echo "the ready line is in the log: $(grep -E -m 1 -- "$ready" "$logcat_file")"
-    break
+    if [ "$require_agent" = 0 ]; then break; fi
   fi
 done
 
@@ -316,6 +360,18 @@ grep -i 'ResumedActivity' "$out/focus.txt" | grep -q "$package/" \
 # and not only that a process by its name exists.
 grep -E -q ' concat +: ([A-Za-z0-9_:]+: )?Concat .* starting' "$logcat_file" \
   || fail "the app's first line (\"Concat <version> starting\") never reached logcat"
+if [ "$require_agent" = 1 ]; then
+  # Collection can capture lines after the final polling interval. Recheck
+  # failures and the live PID against that complete foreground log.
+  app_pids
+  [ -n "$running" ] || fail "the app has no current process at the agent startup check"
+  found=$(fatal_lines)
+  [ -z "$found" ] || fail "native agent startup failed: $(head -n 1 <<< "$found")"
+  agent_ready=$(agent_ready_lines)
+  [ -n "$agent_ready" ] || fail "the current app process never completed native agent recovery within the observation window"
+  printf '%s\n' "$agent_ready" > "$out/agent-recovery.txt"
+  echo "the current process completed production native agent recovery; no model call or edit is asserted"
+fi
 if [ -n "$ready" ] && [ -z "$seen_ready" ]; then
   fail "no line matching '$ready' within ${wait_secs}s"
 fi

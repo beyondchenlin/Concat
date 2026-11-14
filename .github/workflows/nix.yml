@@ -15,12 +15,14 @@ on:
       - src/Cargo.toml
       - src/crates/*/Cargo.toml
       - .github/workflows/nix.yml
+      - scripts/ci/nix-resources.py
   pull_request:
     paths:
       - flake.nix
       - flake.lock
       - src/Cargo.lock
       - .github/workflows/nix.yml
+      - scripts/ci/nix-resources.py
   workflow_dispatch:
 
 # Only a pull request's run is superseded by the next push to it; a run on
@@ -54,8 +56,37 @@ jobs:
             exit 1
           fi
 
+      - name: Resources before the build
+        run: python3 scripts/ci/nix-resources.py "$RUNNER_TEMP/nix-build-observation/before.json"
+
       - name: Build
-        run: nix build .#concat --print-build-logs
+        shell: bash
+        run: |
+          observation="$RUNNER_TEMP/nix-build-observation"
+          mkdir -p "$observation"
+          build=(nix build .#concat --print-build-logs --max-jobs 1 --cores 1)
+          printf '%q ' "${build[@]}" > "$observation/command.txt"
+          printf '\n' >> "$observation/command.txt"
+          date -u +%Y-%m-%dT%H:%M:%SZ > "$observation/started-at.txt"
+          # Capture both pipeline results immediately. A failed build keeps
+          # its own exit code; tee or metadata failures cannot turn it green.
+          set +e
+          "${build[@]}" 2>&1 | tee "$observation/build.log"
+          pipeline_status=("${PIPESTATUS[@]}")
+          printf 'nix_exit_code=%s\ntee_exit_code=%s\n' \
+            "${pipeline_status[0]}" "${pipeline_status[1]}" > "$observation/exit-status.txt"
+          record_status=$?
+          if (( pipeline_status[0] != 0 )); then
+            exit "${pipeline_status[0]}"
+          fi
+          if (( pipeline_status[1] != 0 )); then
+            exit "${pipeline_status[1]}"
+          fi
+          exit "$record_status"
+
+      - name: Resources after the build (also on failure)
+        if: always()
+        run: python3 scripts/ci/nix-resources.py "$RUNNER_TEMP/nix-build-observation/after.json"
 
       # A window cannot open on the runner, so the check is that the binary
       # is there, links, and resolves every library it needs.
@@ -63,3 +94,11 @@ jobs:
         run: |
           file result/bin/.concat-wrapped || file result/bin/concat
           ldd result/bin/.concat-wrapped 2>/dev/null | grep -i 'not found' && exit 1 || true
+
+      - name: Keep the build log and resource observations
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nix-build-observation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/nix-build-observation/
+          if-no-files-found: error

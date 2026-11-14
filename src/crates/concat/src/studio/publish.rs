@@ -20,6 +20,7 @@ impl Studio {
     // ── publishing ──
 
     pub fn publish(&self, app: &App, models: &Models) {
+        self.script.publish(app);
         // The tray's three menu labels and the tooltips' bare-letter
         // hints, spelled from the keymap so a rebind moves the words
         // with the key. An action left unbound shows an em dash rather

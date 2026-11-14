@@ -26,6 +26,7 @@ use std::time::Duration;
 use concat_agent::{OwnerToken, SessionOwner};
 use concat_api::{ApiError, ErrorCode, WindowLink};
 use concat_host::Session;
+use concat_host::agent_media::ExactMediaChecks;
 use concat_host::session::EditorView;
 use concat_project::Command;
 use concat_project::model::VideoSettings;
@@ -115,6 +116,16 @@ impl PendingRegistry {
     }
 }
 
+/// Identity read from the native window for recovery, without opening a file
+/// or constructing another editable project.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CurrentProject {
+    pub project_id: String,
+    pub path: String,
+    pub session_id: u64,
+    pub revision: u64,
+}
+
 /// The background protocol adapter to the one project open in the native UI.
 pub struct Live {
     owner: Arc<SessionOwner>,
@@ -133,6 +144,19 @@ impl Live {
             token,
             pending: Mutex::new(PendingRegistry::default()),
         }
+    }
+
+    /// Read the actual selected project on its owning thread. A window without
+    /// a project is a successful `None`, never an invented path or timeout.
+    pub(crate) fn current_project(&self) -> Result<Option<CurrentProject>, ApiError> {
+        self.on_window_target(None, false, |studio| {
+            Ok(studio.session.as_ref().map(|session| CurrentProject {
+                project_id: session.project_identity().to_owned(),
+                path: session.path().to_owned(),
+                session_id: session.session_id(),
+                revision: session.revision(),
+            }))
+        })
     }
 
     /// Permanently stop this bridge and retire requests not yet executing.
@@ -184,6 +208,15 @@ impl Live {
         publish: bool,
         body: impl FnOnce(&mut Studio) -> Result<T, ApiError> + Send + 'static,
     ) -> Result<T, ApiError> {
+        self.on_window_target(Some(path), publish, body)
+    }
+
+    fn on_window_target<T: Send + 'static>(
+        &self,
+        path: Option<&str>,
+        publish: bool,
+        body: impl FnOnce(&mut Studio) -> Result<T, ApiError> + Send + 'static,
+    ) -> Result<T, ApiError> {
         Self::require_background_thread()?;
         let permit = if publish {
             Some(self.owner.begin(&self.token).map_err(ownership_error)?)
@@ -197,7 +230,7 @@ impl Live {
         let queued_request = Arc::clone(&request);
         let owner = Arc::clone(&self.owner);
         let token = self.token.clone();
-        let path = path.to_owned();
+        let path = path.map(str::to_owned);
         let (reply, answer) = mpsc::channel();
 
         slint::invoke_from_event_loop(move || {
@@ -212,14 +245,15 @@ impl Live {
                 Shell::with(|shell, app| {
                     let result = {
                         let mut studio = shell.studio.borrow_mut();
-                        if studio
-                            .session
-                            .as_ref()
-                            .is_some_and(|session| same_folder(session.path(), &path))
-                        {
+                        if path.as_deref().is_none_or(|path| {
+                            studio
+                                .session
+                                .as_ref()
+                                .is_some_and(|session| same_folder(session.path(), path))
+                        }) {
                             body(&mut studio)
                         } else {
-                            Err(not_open(&path))
+                            Err(not_open(path.as_deref().unwrap_or_default()))
                         }
                     };
                     if publish && result.is_ok() {
@@ -288,7 +322,33 @@ impl WindowLink for Live {
         expected_revision: u64,
         command: Command,
     ) -> Result<EditorView, ApiError> {
+        Self::require_background_thread()?;
+        // Keep the source probe counted as in-flight work so host retirement
+        // cannot report a drained owner while native file access is ongoing.
+        // Holding the permit does not hold its gate; the slow probe is outside
+        // both the owner mutex and the UI callback.
+        let probe_permit = self.owner.begin(&self.token).map_err(ownership_error)?;
+        let captured = self.read(path, move |studio| {
+            let session = session(studio)?;
+            session
+                .check_revision(expected_session, expected_revision)
+                .map_err(|message| ApiError::new(ErrorCode::Refused, message))?;
+            Ok(session.project().clone())
+        })?;
+        let media = ExactMediaChecks::probe(&captured, &command, || {
+            probe_permit
+                .with_valid(|| ())
+                .map_err(|error| error.to_string())
+        })
+        .map_err(|message| ApiError::new(ErrorCode::Refused, message))?;
         self.on_window(path, true, move |studio| {
+            crate::embedded::validate_current_edit(studio, expected_session, expected_revision)
+                .map_err(|message| ApiError::new(ErrorCode::Refused, message))?;
+            let current = session(studio)?;
+            current
+                .check_revision(expected_session, expected_revision)
+                .and_then(|()| media.recheck(current.project()))
+                .map_err(|message| ApiError::new(ErrorCode::Refused, message))?;
             studio
                 .apply_agent(command, expected_session, expected_revision)
                 .map_err(|message| ApiError::new(ErrorCode::Refused, message))

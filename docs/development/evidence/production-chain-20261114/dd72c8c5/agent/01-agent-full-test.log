@@ -1,0 +1,201 @@
+{"revision": "dd72c8c59fb3c66f4a61e49f0afcd3c471d4e59b", "tree": "f9af8ec7fc765dce7061fe8f54a8ebd107c9d2d7", "command": ["/home/agent/.cargo/bin/cargo", "+1.93.1", "test", "--locked", "--offline", "-j", "2", "-p", "concat-agent", "--no-fail-fast", "--", "--test-threads=2"], "target": "/workspace/scratch/a2559d0f84f7/target-agent", "cleaned_package": "concat-agent", "started_utc": "2026-11-14T02:38:18Z"}
+   Compiling concat-agent v0.2.10 (/workspace/scratch/a2559d0f84f7/verify-dd72c8c5/src/crates/concat-agent)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.74s
+     Running unittests src/lib.rs (/workspace/scratch/a2559d0f84f7/target-agent/debug/deps/concat_agent-29f72cfdedda3ae6)
+
+running 20 tests
+test configuration::tests::a_different_valid_document_read_back_after_replacement_is_not_save_confirmation ... ok
+test configuration::tests::failed_atomic_replacement_keeps_the_previous_complete_document ... ok
+test configuration::tests::permanent_configuration_lock_refuses_overlapping_writers ... ok
+test conversations::tests::original_conversation_is_immutable_and_duplicate_binding_does_not_reorder ... ok
+test conversations::tests::invalid_targets_and_ids_do_not_create_bindings ... ok
+test conversations::tests::recovery_inspection_leaves_an_empty_store_empty_and_does_not_admit_writes ... ok
+test conversations::tests::symlink_alias_and_replaced_live_database_are_refused ... ok
+test conversations::tests::reopens_bindings_without_messages_or_automatic_recovery_and_keeps_owner_until_closed ... ok
+test credentials::installation_tests::repeated_application_installation_keeps_the_original_store ... ok
+test conversations::tests::unexpected_schema_and_existing_empty_file_are_never_initialized_or_replaced ... ok
+test script_locations::tests::explicit_release_is_not_delayed_by_another_descriptor_for_the_same_file ... ok
+
+running 1 test
+test operations::readonly_tests::readonly_inspection_does_not_hold_ownership_while_waiting ... ok
+test scripts::initialization_tests::first_open_crash_child ... ignored, invoked by the real first-creation process-crash test
+test sqlite::readonly_tests::readonly_inspection_does_not_hold_ownership_while_waiting ... ok
+test sqlite::stop_tests::fast_stop_interrupts_a_real_read_and_allows_rollback ... ok
+
+running 1 test
+test sqlite::stop_tests::fast_stop_interrupts_a_real_write_without_releasing_its_owner ... ok
+test tests::a_read_only_file_never_issues_a_generation ... ok
+test tests::drained_handoff_unlocks_while_an_inherited_descriptor_remains_open ... ok
+test scripts::initialization_tests::first_creation_crashes_do_not_poison_the_fixed_database_path ... ok
+test tests::inherited_descriptor_does_not_release_a_live_operation_before_drain ... ok
+
+test result: ok. 19 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/configuration.rs (/workspace/scratch/a2559d0f84f7/target-agent/debug/deps/configuration-f78f956f492e6aec)
+
+running 10 tests
+test changing_credentials_invalidates_the_reviewed_configuration_without_storing_a_secret ... ok
+test a_same_version_external_change_is_not_mistaken_for_the_reviewed_file ... ok
+test concurrent_stale_editors_cannot_overwrite_the_winning_change ... ok
+test explicit_channels_reopen_with_stable_identity_and_no_implicit_selection_or_grant ... ok
+test deleting_the_selected_channel_does_not_activate_another_channel ... ok
+test numeric_and_text_boundaries_are_validated_before_writing ... ok
+test service_scope_is_canonical_and_includes_scheme_host_port_and_base_path ... ok
+test replacement_keeps_identity_and_invalidates_old_versions ... ok
+test unsafe_or_ambiguous_endpoint_forms_are_rejected_without_echoing_the_value ... ok
+test unknown_schema_secret_fields_and_damaged_documents_are_never_migrated_or_overwritten ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/credentials.rs (/workspace/scratch/a2559d0f84f7/target-agent/debug/deps/credentials-6bfa90649df2dd12)
+
+running 3 tests
+test invalid_scope_and_secret_errors_do_not_echo_the_input ... ok
+test status_never_converts_a_backend_failure_to_missing ... ok
+test scope_separates_channel_and_complete_destination_without_exposing_them ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/network.rs (/workspace/scratch/a2559d0f84f7/target-agent/debug/deps/network-d540c3f6a14050db)
+
+running 11 tests
+test cancellation_interrupts_header_wait_and_owner_stop_interrupts_body_wait ... ok
+test ambiguous_provider_stream_indices_and_tool_aliases_are_refused_before_delivery ... ok
+test changed_configuration_retires_old_grant_before_followup_or_late_body_delivery ... ok
+test original_responses_and_anthropic_shapes_admit_only_registered_local_tools ... ok
+test provider_initial_values_and_final_joins_cannot_complete_an_escaped_credential ... ok
+test redirect_and_error_bodies_never_forward_credentials_or_provider_error_text ... ok
+test rejects_full_destination_and_fee_escalations_before_socket_or_budget_consumption ... ok
+test secret_echo_is_rejected_before_page_bytes_even_through_json_and_split_deltas ... ok
+test streams_real_bytes_before_socket_end_and_injects_only_native_scoped_credential ... ok
+test terminal_reader_cancel_admits_next_request_while_old_socket_is_still_open ... ok
+test enforces_event_and_response_bounds_and_cancels_backpressured_stream ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.14s
+
+     Running tests/operations.rs (/workspace/scratch/a2559d0f84f7/target-agent/debug/deps/operations-47e9a7af2ae60e60)
+
+running 9 tests
+test crash_child_phase ... ignored, owned subprocess crash fixture
+
+running 1 test
+test early_verified_save_joins_only_the_matching_later_receipt ... ok
+
+running 1 test
+test four_durable_transitions_are_distinct_and_repeated_work_is_never_replayed ... ok
+test invalid_saved_document_never_produces_save_evidence ... ok
+
+running 1 test
+test notifications_never_auto_resume_after_reopening_the_journal ... ok
+test proven_native_refusals_are_terminal_but_unknown_failures_are_not ... ok
+test saved_document_must_match_the_exact_written_snapshot_and_receipt ... ok
+
+running 1 test
+test unchanged_native_revision_finishes_without_inventing_a_save ... ok
+test actual_subprocess_crashes_require_reconciliation_without_replaying ... ok
+
+test result: ok. 8 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/ownership.rs (/workspace/scratch/a2559d0f84f7/target-agent/debug/deps/ownership-92388355acd274b4)
+
+running 21 tests
+test a_new_owner_cannot_start_work_until_reviewed ... ok
+test a_symlink_to_the_storage_root_cannot_create_a_second_owner ... ok
+test a_timed_out_handoff_refuses_new_owners_and_late_callbacks ... ok
+test an_existing_empty_journal_cannot_reuse_generation_one ... ok
+test callback_panic_fails_closed_until_the_host_is_closed ... ok
+test damaged_generation_journal_refuses_ownership_without_repairing_it ... ok
+test concurrent_first_acquisition_has_one_owner_and_does_not_strand_an_empty_journal ... ok
+test different_stores_cannot_exchange_tokens_even_when_generations_match ... ok
+test dropping_the_host_revokes_but_keeps_the_kernel_lock_until_callbacks_drain ... ok
+test fast_stop_and_status_do_not_wait_for_an_admitted_write_or_release_ownership ... ok
+test incomplete_or_repeated_review_does_not_approve_again ... ok
+test desktop_second_process_is_refused_by_the_operating_system_lock ... ok
+test malformed_complete_records_are_not_treated_as_a_fresh_store ... ok
+test killed_owner_can_be_taken_over_but_never_automatically_resumes ... ok
+test mobile_runtime_replacement_overlap_is_fenced_by_native_generation ... ok
+test owner_child_process ... ignored, subprocess helper; invoked explicitly by the real multiprocess tests
+test persistent_generation_increases_without_removing_the_lock_file ... ok
+test recovery_reads_are_allowed_but_revocation_refuses_even_read_callbacks ... ok
+test revocation_retains_ownership_until_safe_handoff_is_requested ... ok
+test same_store_and_canonical_path_alias_share_one_real_lock ... ok
+test native_revocation_and_a_write_are_one_ordered_boundary ... ok
+
+test result: ok. 20 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/script_locations.rs (/workspace/scratch/a2559d0f84f7/target-agent/debug/deps/script_locations-0f71912ddde34bc9)
+
+running 6 tests
+test a_live_copy_and_a_mismatched_current_manifest_are_refused_before_writing ... ok
+test corrupt_registration_and_unreadable_previous_identity_preserve_the_record ... ok
+test linked_registry_and_lock_objects_are_refused_without_touching_the_target ... ok
+test simultaneous_copies_never_both_acquire_one_identity ... ok
+test a_move_keeps_the_script_and_a_reused_old_path_gets_no_old_script ... ok
+test the_kernel_lock_covers_the_document_action_and_is_released_after_failure ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/scripts.rs (/workspace/scratch/a2559d0f84f7/target-agent/debug/deps/scripts-d1483a0ac25b3ad7)
+
+running 23 tests
+test a_saved_intervening_edit_keeps_old_candidate_visible_but_ineligible ... ok
+test a_stale_legacy_preview_cannot_authorize_a_different_later_document ... ok
+test changed_content_with_old_digest_is_refused_on_read_and_plan_resolution ... ok
+test chinese_paragraphs_and_old_selected_version_survive_reopen_and_further_edits ... ok
+test concurrent_snapshots_allow_exactly_one_writer_without_losing_the_other_draft ... ok
+test corrupted_head_or_revision_cannot_hide_saved_history ... ok
+test corrupted_or_unrecognized_existing_files_are_never_reinitialized ... ok
+test edit_then_restore_same_text_still_invalidates_a_generation_request ... ok
+
+running 1 test
+test explicit_candidate_acceptance_is_a_draft_until_a_separate_save ... ok
+test explicit_legacy_copy_keeps_history_candidates_and_source_without_selecting ... ok
+
+running 1 test
+test failure_after_version_insert_rolls_back_the_entire_save ... ok
+test crash_before_commit_rolls_back_and_crash_after_commit_retains_the_saved_version ... ok
+test late_generation_remains_a_persisted_candidate_without_overwriting_manual_text ... ok
+test immutable_rows_are_protected_even_from_accidental_direct_sql_updates ... ok
+test native_editor_epoch_survives_async_draft_reconstruction ... ok
+test legacy_copy_failure_rolls_back_target_and_preserves_all_original_rows ... ok
+test project_identity_and_document_identity_prevent_cross_project_binding ... ok
+test read_only_connection_refuses_save_without_clearing_the_draft ... ok
+test script_crash_child ... ignored, invoked by the real process-crash parent test
+test selection_updates_preserve_unsaved_edits_and_reject_old_snapshots ... ok
+test simultaneous_first_open_publishes_one_complete_database_for_both_projects ... ok
+test storage_objects_and_invalid_identities_fail_closed ... ok
+test real_database_busy_failure_preserves_the_draft_then_allows_an_explicit_retry ... ok
+
+test result: ok. 22 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.32s
+
+     Running tests/sqlite.rs (/workspace/scratch/a2559d0f84f7/target-agent/debug/deps/sqlite-b884efce22939783)
+
+running 17 tests
+test a_nonterminating_query_is_bounded_without_losing_the_connection ... ok
+test a_version_two_marker_without_the_other_real_tables_is_never_writable ... ok
+test all_portable_value_types_round_trip_without_integer_precision_loss ... ok
+test authorizer_rejects_external_files_pragmas_and_sql_transaction_bypasses ... ok
+test database_and_sidecar_links_are_refused_without_touching_the_target ... ok
+test dropping_a_revoked_connection_rolls_back_before_releasing_ownership ... ok
+test a_version_two_store_with_a_fake_tasks_view_is_never_writable ... ok
+test existing_same_named_metadata_views_are_never_executed_or_replaced ... ok
+test existing_unsupported_schema_is_read_only_inspected_and_not_migrated ... ok
+test identities_are_checked_on_reads_writes_and_cleanup ... ok
+test opening_frames_cannot_grant_themselves_initialization_or_a_path ... ok
+test recovery_inspection_never_initializes_an_absent_database ... ok
+test pinned_pi_schema_initializes_and_real_data_survives_handoff ... ok
+test single_statement_methods_refuse_a_second_statement_before_the_first_write ... ok
+test sqlite_automatic_rollback_cannot_turn_an_old_transaction_into_implicit_writes ... ok
+test revocation_refuses_queries_and_commit_but_allows_matching_rollback_and_close ... ok
+test unrelated_or_expired_transaction_handles_never_join_active_work ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+   Doc-tests concat_agent
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+EXIT_CODE=0

@@ -36,6 +36,8 @@ const inputs = Object.keys(result.metafile.inputs).map(normalized);
 for (const required of [
   "packages/durable/src/harness/harness.ts", "packages/durable/src/storage/sqlite/storage.ts",
   "packages/ai/src/models.ts", "packages/mcp/src/client.ts",
+  "packages/ai/src/api/openai-completions.ts", "packages/ai/src/api/openai-responses.ts",
+  "packages/ai/src/api/anthropic-messages.ts",
 ]) {
   if (!inputs.some((path) => path === required || path.endsWith(`/${required}`))) {
     throw new Error(`Browser bundle omitted original Pi component ${required}`);
@@ -52,6 +54,21 @@ for (const forbidden of [
 }
 copyFileSync(resolve(referenceRoot, "LICENSE"), resolve(output, "PI-LICENSE.txt"));
 cpSync(resolve(referenceRoot, "packages/mcp/THIRD_PARTY_NOTICES"), resolve(output, "PI-MCP-THIRD-PARTY-NOTICES"), { recursive: true });
+// cargo-apk includes this directory through concat-android's assets metadata.
+// Keep complete legal texts in the APK as files, not only a bundle comment.
+const androidLicenses = resolve(output, "android-assets/licenses");
+mkdirSync(androidLicenses, { recursive: true });
+copyFileSync(resolve(packageRoot, "../../LICENSE"), resolve(androidLicenses, "BK-CAT-LICENSE.txt"));
+copyFileSync(resolve(packageRoot, "../../THIRD_PARTY_NOTICES.md"), resolve(androidLicenses, "THIRD_PARTY_NOTICES.md"));
+copyFileSync(resolve(output, "PI-LICENSE.txt"), resolve(androidLicenses, "PI-LICENSE.txt"));
+cpSync(resolve(output, "PI-MCP-THIRD-PARTY-NOTICES"), resolve(androidLicenses, "PI-MCP-THIRD-PARTY-NOTICES"), { recursive: true });
+writeFileSync(resolve(androidLicenses, "PI-SOURCE.txt"), [
+  "Original Pi components and their MCP SDK notices are copied without text changes.",
+  "Repository: " + pins.repository,
+  "Commit: " + pins.commit,
+  "Component version: " + pins.packageVersion,
+  "",
+].join("\n"));
 const bundle = readFileSync(resolve(output, "runtime.js"));
 const files = Object.fromEntries(["index.html", "runtime.js", "bootstrap.js"].map((name) => {
   const content = readFileSync(resolve(output, name));

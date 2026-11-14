@@ -1,0 +1,2 @@
+    Checking bk-cat-android-jni-typecheck v0.0.0 (E:\BK-CAT\.build\android-runtime-jni-check)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.24s

@@ -1,0 +1,16 @@
+diff --git a/src/crates/concat-agent/tests/scripts.rs b/src/crates/concat-agent/tests/scripts.rs
+--- a/src/crates/concat-agent/tests/scripts.rs
++++ b/src/crates/concat-agent/tests/scripts.rs
+@@ -115,10 +115,11 @@
+             let snapshot = initial.clone();
+             let barrier = barrier.clone();
+             std::thread::spawn(move || {
+-                let store = ScriptStore::open(&path).unwrap();
++                let store = ScriptStore::open(&path);
+                 let mut draft = ScriptDraft::from_snapshot(snapshot);
+                 draft.set_text(text.into()).unwrap();
+                 barrier.wait();
++                let store = store.unwrap();
+                 let result = store.save(&mut draft);
+                 match result {
+                     Ok(_) => {

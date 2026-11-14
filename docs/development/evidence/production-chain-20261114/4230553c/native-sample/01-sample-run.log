@@ -1,0 +1,19 @@
+Command: cargo +1.93.1 run -p concat-host --example exact_plan_sample --locked -j 2 -- /workspace/scratch/a2559d0f84f7/validation/4230553c/native-sample/output
+   Compiling concat-core v0.2.10 (/workspace/scratch/a2559d0f84f7/verify-4230553c/src/crates/concat-core)
+   Compiling concat-effects v0.2.10 (/workspace/scratch/a2559d0f84f7/verify-4230553c/src/crates/concat-effects)
+   Compiling concat-media v0.2.10 (/workspace/scratch/a2559d0f84f7/verify-4230553c/src/crates/concat-media)
+   Compiling concat-project v0.2.10 (/workspace/scratch/a2559d0f84f7/verify-4230553c/src/crates/concat-project)
+   Compiling concat-render v0.2.10 (/workspace/scratch/a2559d0f84f7/verify-4230553c/src/crates/concat-render)
+   Compiling concat-vision v0.2.10 (/workspace/scratch/a2559d0f84f7/verify-4230553c/src/crates/concat-vision)
+   Compiling concat-text v0.2.10 (/workspace/scratch/a2559d0f84f7/verify-4230553c/src/crates/concat-text)
+   Compiling concat-export v0.2.10 (/workspace/scratch/a2559d0f84f7/verify-4230553c/src/crates/concat-export)
+   Compiling concat-host v0.2.10 (/workspace/scratch/a2559d0f84f7/verify-4230553c/src/crates/concat-host)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 24.79s
+     Running `/workspace/scratch/a2559d0f84f7/target-native/debug/examples/exact_plan_sample /workspace/scratch/a2559d0f84f7/validation/4230553c/native-sample/output`
+两份自产素材已完成真实探测，时长均为六秒。
+精确计划已由原生受控批次提交，工程版本只增加一次。
+一次撤销与一次重做的完整工程状态已核对。
+原生保存已实际返回成功：/workspace/scratch/a2559d0f84f7/validation/4230553c/native-sample/output/exact_plan_project
+原生工程关闭重开后一致，旧会话计划已被拒绝。
+原生导出已实际返回文件，开始解码核验：/workspace/scratch/a2559d0f84f7/validation/4230553c/native-sample/output/exact-plan-sample.mp4
+原生核心夹具验证通过；工程、素材、样片和结果保留于 /workspace/scratch/a2559d0f84f7/validation/4230553c/native-sample/output

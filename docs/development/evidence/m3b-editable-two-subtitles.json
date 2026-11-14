@@ -1,0 +1,258 @@
+{
+  "activeTimelineId": "TL1",
+  "clips": [
+    {
+      "duration": 1.5,
+      "fadeIn": 0.0,
+      "fadeOut": 0.0,
+      "filters": [],
+      "id": "c1",
+      "kind": "text",
+      "mediaId": "",
+      "name": "Continued native protocol edit",
+      "offsetX": 0.0,
+      "offsetY": 0.0,
+      "opacity": 1.0,
+      "preservePitch": true,
+      "rotation": 0.0,
+      "scale": 1.0,
+      "sourceStart": 0.0,
+      "speed": 1.0,
+      "start": 0.0,
+      "text": {
+        "align": "center",
+        "background": "",
+        "backgroundPaddingX": 0.0315,
+        "backgroundPaddingY": 0.018,
+        "backgroundRadius": 0.0135,
+        "color": "#ffffff",
+        "content": "BK CAT - First subtitle",
+        "fontFamily": "Hanken Grotesk",
+        "fontSize": 0.09,
+        "fontWeight": 700.0,
+        "italic": false,
+        "lineHeight": 1.2,
+        "maxHeight": 0.0,
+        "maxWidth": 0.0,
+        "opacity": 1.0,
+        "shadow": true,
+        "strikethrough": false,
+        "strokeColor": "#000000",
+        "strokeWidth": 0.0,
+        "textCase": "original",
+        "tracking": 0.0,
+        "underline": false
+      },
+      "trackId": "T1",
+      "videoEffects": [],
+      "volume": 1.0
+    },
+    {
+      "duration": 1.5,
+      "fadeIn": 0.0,
+      "fadeOut": 0.0,
+      "filters": [],
+      "id": "c2",
+      "kind": "text",
+      "mediaId": "",
+      "name": "BK CAT - Second subtitle",
+      "offsetX": 0.0,
+      "offsetY": 0.0,
+      "opacity": 1.0,
+      "preservePitch": true,
+      "rotation": 0.0,
+      "scale": 1.0,
+      "sourceStart": 0.0,
+      "speed": 1.0,
+      "start": 2.0,
+      "text": {
+        "align": "center",
+        "background": "",
+        "backgroundPaddingX": 0.0315,
+        "backgroundPaddingY": 0.018,
+        "backgroundRadius": 0.0135,
+        "color": "#ffffff",
+        "content": "BK CAT - Second subtitle",
+        "fontFamily": "Hanken Grotesk",
+        "fontSize": 0.09,
+        "fontWeight": 700.0,
+        "italic": false,
+        "lineHeight": 1.2,
+        "maxHeight": 0.0,
+        "maxWidth": 0.0,
+        "opacity": 1.0,
+        "shadow": true,
+        "strikethrough": false,
+        "strokeColor": "#000000",
+        "strokeWidth": 0.0,
+        "textCase": "original",
+        "tracking": 0.0,
+        "underline": false
+      },
+      "trackId": "T1",
+      "videoEffects": [],
+      "volume": 1.0
+    }
+  ],
+  "concat": "0.1.0",
+  "fonts": [],
+  "media": [],
+  "name": "BK CAT isolated integration",
+  "timelines": [
+    {
+      "clips": [
+        {
+          "duration": 1.5,
+          "fadeIn": 0.0,
+          "fadeOut": 0.0,
+          "filters": [],
+          "id": "c1",
+          "kind": "text",
+          "mediaId": "",
+          "name": "Continued native protocol edit",
+          "offsetX": 0.0,
+          "offsetY": 0.0,
+          "opacity": 1.0,
+          "preservePitch": true,
+          "rotation": 0.0,
+          "scale": 1.0,
+          "sourceStart": 0.0,
+          "speed": 1.0,
+          "start": 0.0,
+          "text": {
+            "align": "center",
+            "background": "",
+            "backgroundPaddingX": 0.0315,
+            "backgroundPaddingY": 0.018,
+            "backgroundRadius": 0.0135,
+            "color": "#ffffff",
+            "content": "BK CAT - First subtitle",
+            "fontFamily": "Hanken Grotesk",
+            "fontSize": 0.09,
+            "fontWeight": 700.0,
+            "italic": false,
+            "lineHeight": 1.2,
+            "maxHeight": 0.0,
+            "maxWidth": 0.0,
+            "opacity": 1.0,
+            "shadow": true,
+            "strikethrough": false,
+            "strokeColor": "#000000",
+            "strokeWidth": 0.0,
+            "textCase": "original",
+            "tracking": 0.0,
+            "underline": false
+          },
+          "trackId": "T1",
+          "videoEffects": [],
+          "volume": 1.0
+        },
+        {
+          "duration": 1.5,
+          "fadeIn": 0.0,
+          "fadeOut": 0.0,
+          "filters": [],
+          "id": "c2",
+          "kind": "text",
+          "mediaId": "",
+          "name": "BK CAT - Second subtitle",
+          "offsetX": 0.0,
+          "offsetY": 0.0,
+          "opacity": 1.0,
+          "preservePitch": true,
+          "rotation": 0.0,
+          "scale": 1.0,
+          "sourceStart": 0.0,
+          "speed": 1.0,
+          "start": 2.0,
+          "text": {
+            "align": "center",
+            "background": "",
+            "backgroundPaddingX": 0.0315,
+            "backgroundPaddingY": 0.018,
+            "backgroundRadius": 0.0135,
+            "color": "#ffffff",
+            "content": "BK CAT - Second subtitle",
+            "fontFamily": "Hanken Grotesk",
+            "fontSize": 0.09,
+            "fontWeight": 700.0,
+            "italic": false,
+            "lineHeight": 1.2,
+            "maxHeight": 0.0,
+            "maxWidth": 0.0,
+            "opacity": 1.0,
+            "shadow": true,
+            "strikethrough": false,
+            "strokeColor": "#000000",
+            "strokeWidth": 0.0,
+            "textCase": "original",
+            "tracking": 0.0,
+            "underline": false
+          },
+          "trackId": "T1",
+          "videoEffects": [],
+          "volume": 1.0
+        }
+      ],
+      "id": "TL1",
+      "name": "Timeline 1",
+      "tracks": [
+        {
+          "id": "T1",
+          "muted": false,
+          "visible": true
+        },
+        {
+          "id": "T2",
+          "muted": false,
+          "visible": true
+        },
+        {
+          "id": "T3",
+          "muted": false,
+          "visible": true
+        },
+        {
+          "id": "T4",
+          "muted": false,
+          "visible": true
+        }
+      ],
+      "video": {
+        "height": 360,
+        "rateDen": 1,
+        "rateNum": 24,
+        "width": 640
+      }
+    }
+  ],
+  "tracks": [
+    {
+      "id": "T1",
+      "muted": false,
+      "visible": true
+    },
+    {
+      "id": "T2",
+      "muted": false,
+      "visible": true
+    },
+    {
+      "id": "T3",
+      "muted": false,
+      "visible": true
+    },
+    {
+      "id": "T4",
+      "muted": false,
+      "visible": true
+    }
+  ],
+  "version": 2,
+  "video": {
+    "height": 360,
+    "rateDen": 1,
+    "rateNum": 24,
+    "width": 640
+  }
+}

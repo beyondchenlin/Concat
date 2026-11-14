@@ -1,0 +1,12 @@
+{
+  "utc": "2026-11-14T02:22:38.052975+00:00",
+  "head": "f11cbe5bc21f901be689a742aba3bd5b6b1c7d77",
+  "tree": "7ce361323f36870922300bfe878e0e347f6a3f4b",
+  "status": "",
+  "cargo_lock_sha256": "2fb998c4799819a5e6838c6cea28f0e9e64fdcaf99d5e10c84f2d5c72e08ee5d",
+  "source_dir": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b",
+  "target_dir": "/workspace/scratch/a2559d0f84f7/target-native",
+  "parallel_jobs": 2,
+  "test_threads": 2,
+  "dependency_env": "/workspace/scratch/a2559d0f84f7/deps/native-env.sh"
+}

@@ -35,6 +35,7 @@ pub mod agent;
 mod batch_volume;
 mod chips;
 mod dock;
+pub mod embedded;
 mod fonts;
 mod format;
 mod gpu;
@@ -293,7 +294,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
                 if studio.session.is_some() {
                     log::info!("close: app terminating");
                     terminating.set(true);
-                    if let Err(error) = studio.close_project() {
+                    if let Err(error) = studio.save_and_release_on_termination() {
                         log::warn!("close: project could not be saved: {error}");
                     }
                 }
@@ -441,11 +442,78 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
 
     let shell = Rc::new(Shell {
         app: app.as_weak(),
-        agent: studio.host.agent.clone(),
+        agent: RefCell::new(studio.host.agent.clone()),
+        embedded: RefCell::new(None),
+        agent_pane: RefCell::new(panes::agent::AgentPane::default()),
+        agent_settings: RefCell::new(panes::agent_settings::AgentSettingsPane::default()),
         studio: RefCell::new(studio),
         models: Models::new(),
     });
     Shell::install(shell.clone());
+    panes::agent_settings::install(&app);
+
+    // State comes from the same native owner as protocol admission. A rendered
+    // enabled button is never authority: the send callback reads it again.
+    panes::script::install(&app);
+    let agent_ui = app.global::<AgentUi>();
+    agent_ui.on_send_requested(|draft| {
+        embedded::show_ui_error(embedded::submit_chat_from_ui(draft.to_string(), false));
+    });
+    agent_ui.on_edit_requested(|draft| {
+        embedded::show_ui_error(embedded::submit_chat_from_ui(draft.to_string(), true));
+    });
+    agent_ui.on_stop_requested(embedded::stop_from_ui);
+    app.global::<ui::AgentCallUi>()
+        .on_authorize_requested(embedded::authorize_call_from_ui);
+    agent_ui.on_review_requested(|| {
+        let mut result = Err("聊天运行组件尚未连接。".to_owned());
+        Shell::with(|shell, _| {
+            if let Some(runtime) = shell.embedded.borrow().as_ref() {
+                result = runtime.inspect();
+            }
+        });
+        embedded::show_ui_error(result);
+    });
+    agent_ui.on_continue_requested(|| {
+        let mut result = Err("聊天运行组件尚未连接。".to_owned());
+        Shell::with(|shell, _| {
+            if let Some(runtime) = shell.embedded.borrow().as_ref() {
+                result = runtime.confirm();
+            }
+        });
+        embedded::show_ui_error(result);
+    });
+    agent_ui.on_discard_requested(|| {
+        let mut result = Err("聊天运行组件尚未连接。".to_owned());
+        Shell::with(|shell, _| {
+            if let Some(runtime) = shell.embedded.borrow().as_ref() {
+                result = runtime.discard_interrupted();
+            }
+        });
+        embedded::show_ui_error(result);
+    });
+    agent_ui.on_connect_requested(|| embedded::show_ui_error(embedded::connect_from_ui()));
+    let agent_status_timer = slint::Timer::default();
+    agent_status_timer.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(250),
+        || {
+            Shell::with(|shell, app| {
+                if let Some(runtime) = shell.embedded.borrow().as_ref() {
+                    runtime.poll_saved();
+                }
+                shell.agent_pane.borrow().publish(
+                    &app,
+                    shell
+                        .agent
+                        .borrow()
+                        .as_ref()
+                        .ok_or_else(|| "会话暂不可用，仍可使用手动编辑。".to_owned())
+                        .and_then(|bridge| bridge.status()),
+                );
+            });
+        },
+    );
 
     // The machine's fonts, for the Text inspector's picker. Read on a
     // worker: on a machine with a few thousand faces it is a moment, and
@@ -2818,10 +2886,17 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     // The chosen interface scale, as soon as the window is up.
     slint::Timer::single_shot(std::time::Duration::ZERO, || {
         Shell::with(|_, app| platform::apply_ui_scale(app.window()));
+        #[cfg(feature = "bk-cat-native-probe")]
+        if agent::script_probe::start_if_requested() || agent::probe::start_if_requested() {
+            return;
+        }
+        #[cfg(any(target_os = "windows", target_os = "android"))]
+        embedded::start_for_window();
     });
 
     let result = app.run();
     stop_native_agent();
+    drop(agent_status_timer);
     drop(reader_sweep);
     log::info!("close: event loop exited (ok={})", result.is_ok());
     // The loop failing is the window never having run at all - on a phone
@@ -2843,7 +2918,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     Shell::with(|shell, _| {
         let mut studio = shell.studio.borrow_mut();
         if studio.session.is_some()
-            && let Err(error) = studio.close_project()
+            && let Err(error) = studio.save_and_release_on_termination()
         {
             log::warn!("close: the activity ended and the project could not be saved: {error}");
         }
@@ -3053,8 +3128,11 @@ fn leave(code: i32) -> ! {
 /// Revocation only: never wait on the UI thread for callbacks it must drain.
 fn stop_native_agent() {
     Shell::with(|shell, _| {
-        if let Some(agent) = &shell.agent {
+        if let Some(agent) = shell.agent.borrow().as_ref() {
             agent.stop();
+        }
+        if let Some(runtime) = shell.embedded.borrow().as_ref() {
+            runtime.stop();
         }
     });
 }

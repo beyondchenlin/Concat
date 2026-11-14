@@ -1,0 +1,10 @@
+   Compiling concat-agent v0.2.10 (/workspace/scratch/84c9af9701bd/bk-cat-verify/src/crates/concat-agent)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.41s
+     Running unittests src/lib.rs (target/debug/deps/concat_agent-d38a5a6ae06c3582)
+
+running 2 tests
+test tests::drained_handoff_unlocks_while_an_inherited_descriptor_remains_open ... ok
+test tests::inherited_descriptor_does_not_release_a_live_operation_before_drain ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+

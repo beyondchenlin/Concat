@@ -219,7 +219,9 @@ fn main() {
         config.define("GGML_CPU_ALL_VARIANTS", "OFF");
     }
 
-    if cfg!(target_os = "windows") {
+    // BK CAT: build.rs runs on the host. Windows-only flags and libraries
+    // belong to the compiled target, including when Windows builds Android.
+    if target.contains("-windows-") {
         config.cxxflag("/utf-8");
         println!("cargo:rustc-link-lib=advapi32");
     }

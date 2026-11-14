@@ -2,6 +2,7 @@
 
 import { RuntimeRefused } from "./gate.ts";
 import { nativeSqlitePort } from "./sqlite-port.ts";
+import { nativeNetworkFetch } from "./native-network.ts";
 import type { NativePorts, OwnerLease, RecoverySnapshot, ExecutionGrant } from "./ports.ts";
 
 export const NATIVE_CHANNEL = "bk-cat-runtime-v1";
@@ -27,6 +28,9 @@ export class NativeWireClient {
   readonly #pending = new Map<string, Pending>();
   readonly #revocations = new Set<(lease: Pick<OwnerLease, "handle" | "generation">) => void>();
   readonly #revoked = new Set<string>();
+  readonly #savedAcks = new Set<string>();
+  readonly #closeListeners = new Set<() => void>();
+  #owner: OwnerLease | undefined;
   #sequence = 0;
   #closed = false;
   readonly #receive = (event: { data: string }) => {
@@ -36,6 +40,23 @@ export class NativeWireClient {
     if (envelope.event === "owner.revoked" && typeof envelope.ownerHandle === "string" && typeof envelope.generation === "string") {
       this.#revoked.add(JSON.stringify([envelope.ownerHandle, envelope.generation]));
       for (const listener of this.#revocations) listener({ handle: envelope.ownerHandle, generation: envelope.generation });
+      return;
+    }
+    if (envelope.event === "operation.saved") {
+      const owner = this.#owner;
+      const operationId = envelope.operationId;
+      if (!owner || this.#closed || envelope.ownerHandle !== owner.handle || envelope.generation !== owner.generation
+        || this.#revoked.has(JSON.stringify([owner.handle, owner.generation]))
+        || typeof operationId !== "string" || !/^[1-9][0-9]*$/.test(operationId) || operationId.length > 20) return;
+      if (this.#savedAcks.has(operationId)) return;
+      if (this.#savedAcks.size >= 65536) { this.#savedFailure("native save acknowledgement limit reached"); return; }
+      this.#savedAcks.add(operationId);
+      // A native save request is not a save acknowledgement. Only this actual
+      // native Written notification reaches here, and only receipt by this
+      // live component produces the final native journal acknowledgement.
+      void this.call({ method: "operation.acknowledge", operationId,
+        ownerHandle: owner.handle, generation: owner.generation,
+      }).catch((error: unknown) => this.#savedFailure(error instanceof Error ? error.message : String(error)));
       return;
     }
     if (typeof envelope.id !== "string" || ("result" in envelope) === ("error" in envelope)) return;
@@ -58,7 +79,7 @@ export class NativeWireClient {
 
   call(payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     if (this.#closed) return Promise.reject(new RuntimeRefused("native message channel is closed"));
-    const cleanup = ["ownership.revoke", "ownership.drainAndRelease", "sqlite.rollback", "sqlite.close"].includes(String(payload.method));
+    const cleanup = ["ownership.revoke", "ownership.drainAndRelease", "sqlite.rollback", "sqlite.close", "network.cancel"].includes(String(payload.method));
     if (this.#pending.size >= 1024 && !cleanup) return Promise.reject(new RuntimeRefused("native channel request limit reached"));
     signal?.throwIfAborted();
     const id = `js:${this.#prefix}:${++this.#sequence}`;
@@ -85,6 +106,35 @@ export class NativeWireClient {
     });
   }
 
+  bindOwner(lease: OwnerLease): void {
+    if (this.#closed || this.#owner) throw new RuntimeRefused("the native channel already has an owner");
+    this.#owner = Object.freeze({ ...lease });
+  }
+
+  assertOwner(lease: OwnerLease): void {
+    if (this.#closed || !this.#owner || this.#owner.handle !== lease.handle || this.#owner.generation !== lease.generation
+      || this.#owner.storageId !== lease.storageId || this.#revoked.has(JSON.stringify([lease.handle, lease.generation]))) {
+      throw new RuntimeRefused("native network owner is no longer active");
+    }
+  }
+
+  onClosed(listener: () => void): () => void {
+    if (this.#closed) { listener(); return () => {}; }
+    this.#closeListeners.add(listener);
+    return () => { this.#closeListeners.delete(listener); };
+  }
+
+  #savedFailure(message: string): void {
+    if (this.#closed) return;
+    try {
+      this.#bridge.postMessage(JSON.stringify({ channel: NATIVE_CHANNEL, event: "operation.failed", message }));
+    } catch {
+      // A broken platform channel owns native revoke and teardown. Reject
+      // local waiters without creating an unhandled rejection or retry.
+      this.close();
+    }
+  }
+
   onRevoked(lease: OwnerLease, listener: () => void): () => void {
     const matching = (revoked: Pick<OwnerLease, "handle" | "generation">) => {
       if (revoked.handle === lease.handle && revoked.generation === lease.generation) listener();
@@ -97,6 +147,8 @@ export class NativeWireClient {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    for (const listener of this.#closeListeners) listener();
+    this.#closeListeners.clear();
     this.#bridge.removeEventListener("message", this.#receive);
     for (const pending of this.#pending.values()) {
       pending.detach(); pending.reject(new RuntimeRefused("native message channel was closed"));
@@ -104,6 +156,8 @@ export class NativeWireClient {
     this.#pending.clear();
     this.#revocations.clear();
     this.#revoked.clear();
+    this.#savedAcks.clear();
+    this.#owner = undefined;
   }
 }
 
@@ -118,7 +172,9 @@ export function messageNativePorts(wire: NativeWireClient): NativePorts {
         if (typeof lease.storageId !== "string" || typeof lease.handle !== "string" || typeof lease.generation !== "string") {
           throw new RuntimeRefused("native ownership response is incomplete");
         }
-        return { storageId: lease.storageId, handle: lease.handle, generation: lease.generation };
+        const owner = { storageId: lease.storageId, handle: lease.handle, generation: lease.generation };
+        wire.bindOwner(owner);
+        return owner;
       },
       async confirm(lease, snapshot, approval) {
         const grant = record(await bound(lease, "ownership.confirm", { snapshot, approval }));
@@ -134,6 +190,12 @@ export function messageNativePorts(wire: NativeWireClient): NativePorts {
     },
     recovery: {
       async read(lease, signal) { return record(await bound(lease, "recovery.read", {}, signal)) as unknown as RecoverySnapshot; },
+      async discardVerified(lease, signal) {
+        const result = record(await bound(lease, "recovery.discardVerified", {}, signal));
+        if (result.verified !== true || Object.keys(result).length !== 1) {
+          throw new RuntimeRefused("原生未确认历史任务已全部结束，会话未恢复就绪。");
+        }
+      },
     },
     sqlite: nativeSqlitePort({ send: (frame, signal) => wire.call({ ...frame }, signal) }),
     mcp: {
@@ -144,10 +206,11 @@ export function messageNativePorts(wire: NativeWireClient): NativePorts {
       },
     },
     network: {
-      async fetch() {
-        // This first host profile has no native stream transport or model
-        // service configuration. No browser fetch fallback is permitted.
-        throw new RuntimeRefused("native model streaming transport and cost authorization are not configured");
+      fetch: (lease, networkPermit, input, init) => nativeNetworkFetch(wire, lease, networkPermit, input, init),
+    },
+    tasks: {
+      async bind(lease, taskId, conversationId, signal) {
+        await bound(lease, "task.bind", { taskId, conversationId }, signal);
       },
     },
   };

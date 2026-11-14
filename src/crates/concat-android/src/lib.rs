@@ -115,14 +115,60 @@ mod java {
     /// The classes build.rs compiled: app.concat.editor.ConcatFiles.
     const DEX: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/classes.dex"));
     const CLASS_NAME: &str = "app.concat.editor.ConcatFiles";
+    const RUNTIME_CLASS_NAME: &str = "app.concat.editor.BKCatRuntime";
+    const CREDENTIAL_CLASS_NAME: &str = "app.concat.editor.BKCatCredentials";
 
-    /// The fragment class, loaded once and kept.
+    /// The fragment classes, loaded once and kept.
     static CLASS: OnceLock<Global<JClass<'static>>> = OnceLock::new();
+    static RUNTIME_CLASS: OnceLock<Global<JClass<'static>>> = OnceLock::new();
+    static CREDENTIAL_CLASS: OnceLock<Global<JClass<'static>>> = OnceLock::new();
+    static CREDENTIAL_ACCESS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Runs `with` on this thread, attached to the activity's JavaVM, with
     /// the activity and the fragment class - loaded the first time.
     pub fn with_class<T>(
         app: &AndroidApp,
+        with: impl FnOnce(
+            &mut Env<'_>,
+            &JObject<'_>,
+            &Global<JClass<'static>>,
+        ) -> jni::errors::Result<T>,
+    ) -> jni::errors::Result<T> {
+        with_named_class(app, CLASS_NAME, &CLASS, with)
+    }
+
+    /// Reaches only the bundled runtime host class, never a caller-given class.
+    pub fn with_runtime_class<T>(
+        app: &AndroidApp,
+        with: impl FnOnce(
+            &mut Env<'_>,
+            &JObject<'_>,
+            &Global<JClass<'static>>,
+        ) -> jni::errors::Result<T>,
+    ) -> jni::errors::Result<T> {
+        with_named_class(app, RUNTIME_CLASS_NAME, &RUNTIME_CLASS, with)
+    }
+
+    /// Only the native settings adapter can reach this fixed class. The
+    /// mutex prevents duplicate class loaders and overlapping JVM file locks.
+    pub fn with_credentials_class<T>(
+        app: &AndroidApp,
+        with: impl FnOnce(
+            &mut Env<'_>,
+            &JObject<'_>,
+            &Global<JClass<'static>>,
+        ) -> jni::errors::Result<T>,
+    ) -> jni::errors::Result<T> {
+        let _guard = CREDENTIAL_ACCESS
+            .lock()
+            .map_err(|_| jni::errors::Error::NullPtr("credential access unavailable"))?;
+        with_named_class(app, CREDENTIAL_CLASS_NAME, &CREDENTIAL_CLASS, with)
+    }
+
+    fn with_named_class<T>(
+        app: &AndroidApp,
+        name: &str,
+        cache: &OnceLock<Global<JClass<'static>>>,
         with: impl FnOnce(
             &mut Env<'_>,
             &JObject<'_>,
@@ -137,12 +183,12 @@ mod java {
             // SAFETY: the activity pointer is a live reference the app
             // holds for as long as it runs; it is only read here.
             let activity = unsafe { JObject::from_raw(env, app.activity_as_ptr().cast()) };
-            let class = match CLASS.get() {
+            let class = match cache.get() {
                 Some(class) => class,
                 None => {
-                    let loaded = load_class(env, &activity)?;
-                    let _ = CLASS.set(loaded);
-                    CLASS.get().expect("set just above")
+                    let loaded = load_class(env, &activity, name)?;
+                    let _ = cache.set(loaded);
+                    cache.get().expect("set just above")
                 }
             };
             with(env, &activity, class)
@@ -154,6 +200,7 @@ mod java {
     fn load_class(
         env: &mut Env,
         activity: &JObject,
+        class_name: &str,
     ) -> jni::errors::Result<Global<JClass<'static>>> {
         let parent = env
             .call_method(
@@ -170,7 +217,7 @@ mod java {
             jni_sig!("(Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V"),
             &[(&buffer).into(), (&parent).into()],
         )?;
-        let name = env.new_string(CLASS_NAME)?;
+        let name = env.new_string(class_name)?;
         let class = env
             .call_method(
                 &loader,
@@ -180,6 +227,14 @@ mod java {
             )?
             .l()?;
         let class = JClass::cast_local(env, class)?;
+        if class_name == CREDENTIAL_CLASS_NAME {
+            // This utility has no Java-to-native callbacks or page bridge.
+            return env.new_global_ref(class);
+        }
+        if class_name == RUNTIME_CLASS_NAME {
+            super::runtime::register(env, &class)?;
+            return env.new_global_ref(class);
+        }
         // SAFETY: the signature is the Java declaration's, and the
         // function below takes exactly what it names.
         let method = unsafe {
@@ -536,6 +591,11 @@ mod awake {
     }
 }
 
+#[cfg(target_os = "android")]
+mod credentials;
+#[cfg(target_os = "android")]
+mod runtime;
+
 /// Called by the activity's native glue; the name is the contract.
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
@@ -554,6 +614,12 @@ fn android_main(app: slint::android::AndroidApp) {
     microphone::install(&app);
     links::install(&app);
     awake::install(&app);
+    if credentials::install(&app).is_err() {
+        log::error!("system credential storage is unavailable");
+    }
+    if let Err(error) = runtime::install(&app) {
+        log::error!("could not install the embedded Android runtime: {error}");
+    }
     if let Err(error) = concat::run() {
         log::error!("{error}");
     }

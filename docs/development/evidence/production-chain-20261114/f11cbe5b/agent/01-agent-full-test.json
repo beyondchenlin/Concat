@@ -1,0 +1,21 @@
+{
+  "revision": "f11cbe5bc21f901be689a742aba3bd5b6b1c7d77",
+  "tree": "7ce361323f36870922300bfe878e0e347f6a3f4b",
+  "command": [
+    "/home/agent/.cargo/bin/cargo",
+    "+1.93.1",
+    "test",
+    "--locked",
+    "--offline",
+    "-j",
+    "2",
+    "-p",
+    "concat-agent",
+    "--",
+    "--test-threads=2"
+  ],
+  "target": "/workspace/scratch/a2559d0f84f7/target-agent",
+  "started_utc": "2026-11-14T02:22:44Z",
+  "exit_code": 101,
+  "duration_seconds": 179.93
+}

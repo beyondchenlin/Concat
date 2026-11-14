@@ -1,0 +1,17 @@
+
+> bk-cat-agent-runtime@0.1.0 test:original
+> node --test test/original-components.test.mjs
+
+(node:25336) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ original pinned McpClient preserves per-call argument identity for the native durable invocation side channel (24.2908ms)
+✔ built browser bootstrap answers native commands and opens no writable store before native confirmation (2.197ms)
+✔ built pinned original Harness persists real conversation records in SQLite and reopens only after explicit reconciliation (50.9255ms)
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 218.8829

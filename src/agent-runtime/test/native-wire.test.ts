@@ -52,6 +52,22 @@ test("revocation delivered between acquire reply and subscription cannot be miss
   wire.close();
 });
 
+test("discard completion verification carries only native ownership and requires an exact positive receipt", async () => {
+  const b = bridge(); const wire = new NativeWireClient(b.api); const ports = messageNativePorts(wire);
+  const lease = { storageId: "fixed", handle: "native-owner", generation: "7" };
+  for (const reply of [{ verified: false }, {}, { verified: true, networkPermit: "forbidden" }]) {
+    const pending = ports.recovery.discardVerified(lease, new AbortController().signal);
+    const frame = b.sent.at(-1)!;
+    assert.deepEqual(frame.payload, { method: "recovery.discardVerified", ownerHandle: "native-owner", generation: "7" });
+    b.receive({ channel: NATIVE_CHANNEL, id: frame.id, result: reply });
+    await assert.rejects(pending, /原生未确认/);
+  }
+  const pending = ports.recovery.discardVerified(lease, new AbortController().signal);
+  b.receive({ channel: NATIVE_CHANNEL, id: b.sent.at(-1)!.id, result: { verified: true } });
+  await pending;
+  wire.close();
+});
+
 test("saturated native channel still admits revoke and cleanup; close rejects all outstanding work", async () => {
   const b = bridge(); const wire = new NativeWireClient(b.api);
   const pending = Array.from({ length: 1024 }, () => wire.call({ method: "recovery.read" }).catch(() => "closed"));
@@ -73,5 +89,26 @@ test("native ports bind the trusted invocation beside MCP JSON, and never fall b
   b.receive({ channel: NATIVE_CHANNEL, id: frame.id, result: null }); assert.equal(await call, undefined);
   await assert.rejects(ports.network.fetch({ storageId: "x", handle: "owner", generation: "4" }, "budget", "https://not-configured.invalid", {}));
   assert.equal(b.sent.length, 1);
+  wire.close();
+});
+
+
+test("only a live acquired owner acknowledges a genuinely received native save notification", async () => {
+  const b = bridge(); const wire = new NativeWireClient(b.api); const ports = messageNativePorts(wire);
+  const acquisition = ports.ownership.acquire("fixed");
+  b.receive({ channel: NATIVE_CHANNEL, id: b.sent[0]!.id,
+    result: { storageId: "fixed", handle: "native-owner", generation: "7" } });
+  await acquisition;
+  const saved = { channel: NATIVE_CHANNEL, event: "operation.saved", ownerHandle: "native-owner", generation: "7", operationId: "3" };
+  b.receive({ ...saved, generation: "6" });
+  assert.equal(b.sent.length, 1);
+  b.receive(saved);
+  const ack = b.sent[1]!;
+  assert.equal(ack.payload.method, "operation.acknowledge");
+  assert.equal(ack.payload.operationId, "3");
+  b.receive({ channel: NATIVE_CHANNEL, id: ack.id, result: null });
+  b.receive(saved); assert.equal(b.sent.length, 2);
+  b.receive({ channel: NATIVE_CHANNEL, event: "owner.revoked", ownerHandle: "native-owner", generation: "7" });
+  b.receive({ ...saved, operationId: "4" }); assert.equal(b.sent.length, 2);
   wire.close();
 });

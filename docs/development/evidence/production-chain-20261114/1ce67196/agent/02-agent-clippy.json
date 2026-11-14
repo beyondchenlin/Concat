@@ -1,0 +1,21 @@
+{
+  "revision": "1ce67196612f2c12e005c85b46f7fd6657f867b9",
+  "command": [
+    "/home/agent/.cargo/bin/cargo",
+    "+1.93.1",
+    "clippy",
+    "--locked",
+    "--offline",
+    "-j",
+    "2",
+    "-p",
+    "concat-agent",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "started_utc": "2026-11-14T02:33:06Z",
+  "exit_code": 101,
+  "duration_seconds": 19.11
+}

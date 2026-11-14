@@ -1,0 +1,11 @@
+PASS initial focus waits, starts once and rejects duplicate creation
+PASS pause, stop, saved-state, destruction and close before focus cannot revive
+PASS initial deadline rejects absent and late focus without extending itself
+PASS retired opened component is never restarted by focus recovery
+PASS four bundled resources are admitted
+PASS foreign origins, hidden paths and mutation methods are denied
+PASS messages require the trusted document and bounded data
+PASS same-origin reload permanently retires the old component
+PASS pause before creation cannot resurrect a component
+PASS a delayed callback cannot cross a native component handoff
+Android host policy: 10 cases passed

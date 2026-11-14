@@ -1,0 +1,185 @@
+{
+  "audioSourceProbe": {
+    "audio": {
+      "channels": 2,
+      "codec": "pcm_s16le",
+      "index": 0,
+      "language": "",
+      "sampleRate": 48000,
+      "title": ""
+    },
+    "audioTracks": [
+      {
+        "channels": 2,
+        "codec": "pcm_s16le",
+        "index": 0,
+        "language": "",
+        "sampleRate": 48000,
+        "title": ""
+      }
+    ],
+    "duration": 6.0,
+    "kind": "audio",
+    "path": "/workspace/scratch/a2559d0f84f7/validation/4230553c/native-sample/output/exact_plan_project/sources/generated-tone-clock.wav",
+    "video": null
+  },
+  "clipCount": 5,
+  "decoded": {
+    "audioSeconds": 3.008,
+    "colourChecks": [
+      {
+        "actualRgba": [
+          28,
+          58,
+          179,
+          255
+        ],
+        "expectedSourceSecond": 0,
+        "frame": 6
+      },
+      {
+        "actualRgba": [
+          61,
+          56,
+          176,
+          255
+        ],
+        "expectedSourceSecond": 1,
+        "frame": 30
+      },
+      {
+        "actualRgba": [
+          135,
+          60,
+          180,
+          255
+        ],
+        "expectedSourceSecond": 3,
+        "frame": 51
+      },
+      {
+        "actualRgba": [
+          167,
+          58,
+          176,
+          255
+        ],
+        "expectedSourceSecond": 4,
+        "frame": 81
+      }
+    ],
+    "frames": 90,
+    "probe": {
+      "audio": {
+        "channels": 2,
+        "codec": "aac",
+        "index": 1,
+        "language": "und",
+        "sampleRate": 48000,
+        "title": ""
+      },
+      "audioTracks": [
+        {
+          "channels": 2,
+          "codec": "aac",
+          "index": 1,
+          "language": "und",
+          "sampleRate": 48000,
+          "title": ""
+        }
+      ],
+      "duration": 3.0,
+      "kind": "video",
+      "path": "/workspace/scratch/a2559d0f84f7/validation/4230553c/native-sample/output/exact-plan-sample.mp4",
+      "video": {
+        "codec": "h264",
+        "colorRange": "limited",
+        "frameRate": 30.0,
+        "frameRateFraction": "30/1",
+        "height": 180,
+        "index": 0,
+        "width": 320
+      }
+    },
+    "soundChecks": [
+      {
+        "at": 0.25,
+        "expectedTone": true,
+        "rms": 0.2827893312857738
+      },
+      {
+        "at": 1.25,
+        "expectedTone": false,
+        "rms": 0.0
+      },
+      {
+        "at": 2.25,
+        "expectedTone": true,
+        "rms": 0.2827795392796001
+      }
+    ],
+    "twoCaptionPicturesObserved": true
+  },
+  "excluded": [
+    "paid model call",
+    "native window task authorization",
+    "selected script binding",
+    "device acceptance"
+  ],
+  "files": [
+    {
+      "bytes": 5123,
+      "path": "/workspace/scratch/a2559d0f84f7/validation/4230553c/native-sample/output/exact_plan_project/sources/generated-colour-clock.mp4",
+      "sha256": "2494dd1e2f7bde356a06a93194e12b9a80be4241b1dfd642473dba69aad2f000"
+    },
+    {
+      "bytes": 1152044,
+      "path": "/workspace/scratch/a2559d0f84f7/validation/4230553c/native-sample/output/exact_plan_project/sources/generated-tone-clock.wav",
+      "sha256": "8e0b3fd86f36c91796d0de13f93246fd5c62749d95408492be6e0cf849273583"
+    },
+    {
+      "bytes": 58730,
+      "path": "/workspace/scratch/a2559d0f84f7/validation/4230553c/native-sample/output/exact-plan-sample.mp4",
+      "sha256": "a8a772942baf052d9068b2fcb736c07a82d892226372b4cb837a1405f742f150"
+    },
+    {
+      "bytes": 10333,
+      "path": "/workspace/scratch/a2559d0f84f7/validation/4230553c/native-sample/output/exact_plan_project/concat.json",
+      "sha256": "52375fefb5f51a66e7c5db8b2e9af82de06f5236cb4c12e040df806279ef44b1"
+    }
+  ],
+  "fixtureOnly": true,
+  "nativeSaveReopenEqual": true,
+  "ok": true,
+  "openingRevision": 2,
+  "openingSessionId": 1,
+  "projectId": "bkcat-project:4d6cbef985fbb511638679b57ddada42",
+  "projectPath": "/workspace/scratch/a2559d0f84f7/validation/4230553c/native-sample/output/exact_plan_project",
+  "reopenedSessionId": 2,
+  "singleRedoRestoredAfter": true,
+  "singleUndoRestoredBefore": true,
+  "sourcePathScope": "native absolute paths on this host; cross-computer relocation not verified",
+  "staleSessionRefusal": "the plan belongs to another open project session",
+  "trackPreparation": "native project defaults; no production automatic track creation",
+  "tracks": {
+    "audio": "T3",
+    "captions": "T2",
+    "video": "T1"
+  },
+  "videoSourceProbe": {
+    "audio": null,
+    "audioTracks": [],
+    "duration": 6.0,
+    "kind": "video",
+    "path": "/workspace/scratch/a2559d0f84f7/validation/4230553c/native-sample/output/exact_plan_project/sources/generated-colour-clock.mp4",
+    "video": {
+      "codec": "h264",
+      "colorRange": "limited",
+      "frameRate": 30.0,
+      "frameRateFraction": "30/1",
+      "height": 180,
+      "index": 0,
+      "width": 320
+    }
+  }
+}

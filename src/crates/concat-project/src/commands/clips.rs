@@ -15,6 +15,56 @@ pub(super) fn apply(
     command: Command,
 ) -> Result<Outcome, CommandError> {
     match command {
+        Command::AddMediaClipExact {
+            media_id,
+            track_id,
+            kind,
+            start,
+            source_start,
+            source_end,
+        } => {
+            let duration = source_end - source_start;
+            exact_time_range(start, duration)?;
+            if source_start < 0.0 || source_end > crate::model::ranges::MAX_TIME {
+                return Err(CommandError::ExactRange);
+            }
+            let media = project
+                .media_by_id(&media_id)
+                .ok_or(CommandError::MediaGone)?
+                .clone();
+            let source_duration = media
+                .duration
+                .filter(|duration| duration.is_finite() && *duration > 0.0)
+                .ok_or(CommandError::ExactSourceUnknown)?;
+            if media.placeholder || media.path.trim().is_empty() {
+                return Err(CommandError::ExactSourceUnknown);
+            }
+            if source_end > source_duration {
+                return Err(CommandError::ExactSourceRange);
+            }
+            if media.kind != kind.media_kind() {
+                return Err(CommandError::ExactKind);
+            }
+            let timeline = project.active_mut();
+            exact_destination(timeline, &track_id, kind.clip_kind(), start, duration)?;
+            let id = mint.next("c");
+            let mut clip = Clip::blank(
+                id.clone(),
+                track_id,
+                kind.clip_kind(),
+                media.name.clone(),
+                start,
+                duration,
+            );
+            clip.media_id = media_id;
+            clip.source_start = source_start;
+            timeline.clips.push(Arc::new(clip));
+            Ok(Outcome {
+                created_id: Some(id),
+                applied: true,
+            })
+        }
+
         Command::AddClip {
             media_id,
             track_id,
@@ -851,6 +901,43 @@ pub(super) fn apply(
 
         _ => unreachable!("commands::apply routes only this module's commands here"),
     }
+}
+
+/// Reject times that the native clip normalizer would otherwise silently clamp.
+pub(crate) fn exact_time_range(start: f64, duration: f64) -> Result<(), CommandError> {
+    use crate::model::ranges::MAX_TIME;
+    if !start.is_finite() || !duration.is_finite() {
+        return Err(CommandError::NotANumber);
+    }
+    if start < 0.0 || duration < MIN_CLIP_DURATION || start + duration > MAX_TIME {
+        return Err(CommandError::ExactRange);
+    }
+    Ok(())
+}
+
+/// Native lanes are untyped. A strict plan must use an empty or same-kind lane
+/// explicitly, and its exact span must fit without the manual nearest-gap rule.
+pub(crate) fn exact_destination(
+    timeline: &Timeline,
+    track_id: &str,
+    kind: ClipKind,
+    start: f64,
+    duration: f64,
+) -> Result<(), CommandError> {
+    if timeline.track(track_id).is_none() {
+        return Err(CommandError::TrackGone);
+    }
+    if timeline
+        .clips
+        .iter()
+        .any(|clip| clip.track_id == track_id && clip.kind != kind)
+    {
+        return Err(CommandError::ExactKind);
+    }
+    if !timeline.is_free(track_id, start, duration, &[]) {
+        return Err(CommandError::ExactOverlap);
+    }
+    Ok(())
 }
 
 /// How far apart two clips may sit and still count as touching, in seconds.

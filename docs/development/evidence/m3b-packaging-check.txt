@@ -1,0 +1,5 @@
+PASS both packaging jobs prepare fixed resources before required native builds
+PASS composite action syntax, fixed tool version and staged licence inputs
+PASS missing and wrong reference checkouts are refused without checkout or reset
+PASS local npm entry point exists; no dependency installation was run
+NOT RUN: fresh dependency provisioning, hosted workflows, installer or APK packaging

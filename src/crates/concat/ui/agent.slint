@@ -1,0 +1,349 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+import { Theme } from "theme/theme.slint";
+import { AgentCallAuthorization } from "agent-call.slint";
+import { ScriptUi, ScriptWorkspace } from "script.slint";
+import { AgentSettingsUi } from "dialogs/model-settings.slint";
+import { Focus } from "util.slint";
+import { Button } from "primitives/modal.slint";
+import { ResizeBox } from "primitives/resize-box.slint";
+import { ThinScrollbar } from "primitives/scrollbar.slint";
+import { SourcePreview } from "workspace/media-pane.slint";
+
+export enum AgentView { chat, editor, script }
+
+/// A projection of a real persistent conversation entry, never a demo reply.
+export struct AgentMessageData {
+    author: string,
+    body: string,
+    pending: bool,
+}
+
+/// Native admission and task state. None of these fields grants authority.
+export struct AgentStatusData {
+    title: string,
+    detail: string,
+    missing: string,
+    error: string,
+    model: string,
+    can-send: bool,
+    can-stop: bool,
+    can-review: bool,
+    can-continue: bool,
+    can-discard: bool,
+    can-connect: bool,
+    recovery-summary: string,
+    busy: bool,
+    has-progress: bool,
+    progress: float,
+}
+
+export global AgentUi {
+    in-out property <AgentView> view: AgentView.chat;
+    in-out property <string> draft;
+    in-out property <[AgentMessageData]> messages;
+    in-out property <AgentStatusData> status: {
+        title: "聊天未就绪",
+        detail: "请先完成模型配置和调用授权。",
+        missing: "待设置：模型渠道、模型名称、调用凭据；待确认：调用授权。",
+        error: "",
+        model: "未配置模型",
+        can-send: false,
+        can-stop: false,
+        can-review: false,
+        can-continue: false,
+        can-discard: false,
+        can-connect: false,
+        recovery-summary: "",
+        busy: false,
+        has-progress: false,
+        progress: 0,
+    };
+
+    callback send-requested(text: string);
+    callback edit-requested(text: string);
+    callback stop-requested();
+    callback review-requested();
+    callback continue-requested();
+    callback discard-requested();
+    callback connect-requested();
+}
+
+/// The same three destinations on a desk and a phone. The full original
+/// editor remains reachable; switching never opens a second native session.
+export component AgentNavigation inherits Rectangle {
+    in property <bool> phone;
+    in property <string> project-name;
+    callback projects();
+    callback save();
+
+    height: root.phone ? 48px : 44px;
+    background: Theme.panel;
+
+    HorizontalLayout {
+        padding: 6px;
+        spacing: 6px;
+        if !root.phone: Text {
+            text: root.project-name;
+            color: Theme.fg;
+            font-size: Theme.fs-xl;
+            font-weight: Theme.weight-title;
+            vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+        Button {
+            label: "对话";
+            primary: AgentUi.view == AgentView.chat;
+            block: root.phone;
+            min-height: root.phone ? 36px : 30px;
+            max-height: root.phone ? 36px : 30px;
+            clicked => {
+                if (SourcePreview.open) { SourcePreview.closed(); }
+                AgentUi.view = AgentView.chat;
+                Focus.release();
+            }
+        }
+        Button {
+            label: "手动编辑";
+            primary: AgentUi.view == AgentView.editor;
+            block: root.phone;
+            min-height: root.phone ? 36px : 30px;
+            max-height: root.phone ? 36px : 30px;
+            clicked => { AgentUi.view = AgentView.editor; Focus.release(); }
+        }
+        Button {
+            label: "文案";
+            primary: AgentUi.view == AgentView.script;
+            block: root.phone;
+            min-height: root.phone ? 36px : 30px;
+            max-height: root.phone ? 36px : 30px;
+            clicked => { AgentUi.view = AgentView.script; ScriptUi.open-requested(); Focus.release(); }
+        }
+        Button {
+            label: "项目";
+            block: root.phone;
+            min-height: root.phone ? 36px : 30px;
+            max-height: root.phone ? 36px : 30px;
+            clicked => { root.projects(); }
+        }
+        if root.phone: Button {
+            label: "保存";
+            block: true;
+            min-height: 36px;
+            max-height: 36px;
+            clicked => { root.save(); }
+        }
+    }
+}
+
+export component AgentTaskStatus inherits VerticalLayout {
+    spacing: 5px;
+    Button {
+        label: "模型设置";
+        enabled: !AgentSettingsUi.busy;
+        clicked => { AgentSettingsUi.open-requested(); }
+    }
+    Text {
+        text: AgentUi.status.title;
+        color: AgentUi.status.error == "" ? Theme.fg : Theme.danger;
+        font-size: Theme.fs-xl;
+        font-weight: Theme.weight-title;
+        wrap: word-wrap;
+    }
+    if AgentUi.status.detail != "": Text {
+        text: AgentUi.status.detail;
+        color: Theme.fg-muted;
+        font-size: Theme.fs;
+        wrap: word-wrap;
+    }
+    if AgentUi.status.missing != "": Text {
+        text: AgentUi.status.missing;
+        color: Theme.fg-muted;
+        font-size: Theme.fs;
+        wrap: word-wrap;
+    }
+    if AgentUi.status.error != "": Text {
+        text: AgentUi.status.error;
+        color: Theme.danger;
+        font-size: Theme.fs;
+        wrap: word-wrap;
+    }
+    if AgentUi.status.recovery-summary != "": Text {
+        text: AgentUi.status.recovery-summary;
+        color: Theme.fg-muted;
+        font-size: Theme.fs;
+        wrap: word-wrap;
+    }
+    if AgentUi.status.can-review || AgentUi.status.can-continue || AgentUi.status.can-connect: HorizontalLayout {
+        spacing: 6px;
+        if AgentUi.status.can-review: Button {
+            label: "核对当前工程";
+            clicked => { AgentUi.review-requested(); }
+        }
+        if AgentUi.status.can-continue: Button {
+            label: "确认继续";
+            primary: true;
+            clicked => { AgentUi.continue-requested(); }
+        }
+        if AgentUi.status.can-connect: Button {
+            label: "连接会话";
+            clicked => { AgentUi.connect-requested(); }
+        }
+    }
+    if AgentUi.status.can-discard: Button {
+        label: "放弃未完成任务并打开会话";
+        clicked => { AgentUi.discard-requested(); }
+    }
+    if AgentUi.status.has-progress: Rectangle {
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.field;
+        Rectangle {
+            width: parent.width * Math.clamp(AgentUi.status.progress, 0, 1);
+            height: parent.height;
+            border-radius: 2px;
+            background: Theme.accent;
+        }
+    }
+}
+
+export component AgentChat inherits Rectangle {
+    in property <bool> phone;
+    background: Theme.panel;
+    border-radius: Theme.r-lg;
+
+    VerticalLayout {
+        padding: root.phone ? 8px : 14px;
+        spacing: 8px;
+        AgentTaskStatus { }
+        AgentCallAuthorization { }
+
+        // The view contains only native-published conversation records. A
+        // blocked send never manufactures a user or assistant message.
+        transcript := Rectangle {
+            vertical-stretch: 1;
+            min-height: 32px;
+            clip: true;
+            flick := Flickable {
+                width: parent.width;
+                height: parent.height;
+                content-width: self.width;
+                content-height: Math.max(self.height, entries.preferred-height);
+                entries := VerticalLayout {
+                    width: flick.width - 8px;
+                    height: self.preferred-height;
+                    spacing: 10px;
+                    alignment: start;
+                    if AgentUi.messages.length == 0: Text {
+                        text: "还没有对话。预览与手动编辑共享当前工程。";
+                        color: Theme.fg-dim;
+                        font-size: Theme.fs-lg;
+                        wrap: word-wrap;
+                    }
+                    for message in AgentUi.messages: Rectangle {
+                        height: entry.preferred-height;
+                        border-radius: Theme.r;
+                        background: Theme.well;
+                        entry := VerticalLayout {
+                            padding: 10px;
+                            spacing: 6px;
+                            Text {
+                                text: message.author + (message.pending ? " · 接收中" : "");
+                                color: Theme.fg-dim;
+                                font-size: Theme.fs-sm;
+                            }
+                            Text {
+                                text: message.body;
+                                color: Theme.fg;
+                                font-size: Theme.fs-lg;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+            }
+            ThinScrollbar {
+                x: parent.width - self.width;
+                height: parent.height;
+                viewport: flick.height;
+                content: flick.content-height;
+                offset: -flick.content-y;
+                scrolled(to) => { flick.content-y = -to; }
+            }
+        }
+
+        prompt-box := ResizeBox {
+            box-height: root.phone ? 64px : 96px;
+            min-box: 56px;
+            max-box: root.phone ? 104px : 180px;
+            content-height: prompt.preferred-height;
+            focused: prompt.has-focus;
+            prompt := TextInput {
+                y: prompt-box.pad-y;
+                width: parent.width;
+                height: Math.max(self.preferred-height, prompt-box.view-height);
+                text <=> AgentUi.draft;
+                single-line: false;
+                wrap: word-wrap;
+                color: Theme.fg;
+                font-size: Theme.fs-input;
+                selection-background-color: Theme.accent;
+                selection-foreground-color: Theme.on-accent;
+                accessible-label: "剪辑要求，发送前保留在本机草稿中";
+                cursor-position-changed(at) => { prompt-box.reveal(at.y, self.font-size * 1.4); }
+                key-pressed(event) => {
+                    if (event.text == Key.Home) { self.set-selection-offsets(0, 0); return accept; }
+                    if (event.text == Key.End) {
+                        self.set-selection-offsets(1000000000, 1000000000); return accept;
+                    }
+                    return reject;
+                }
+            }
+            if AgentUi.draft == "" && !prompt.has-focus: Text {
+                y: prompt-box.pad-y;
+                text: "描述需要添加的字幕或剪辑修改";
+                color: Theme.fg-dim;
+                font-size: Theme.fs-lg;
+                wrap: word-wrap;
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: AgentUi.status.model;
+                color: Theme.fg-dim;
+                font-size: Theme.fs-sm;
+                overflow: elide;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            Button {
+                label: "停止";
+                danger: true;
+                enabled: AgentUi.status.can-stop;
+                min-height: root.phone ? 40px : 32px;
+                max-height: root.phone ? 40px : 32px;
+                clicked => { AgentUi.stop-requested(); }
+            }
+            Button {
+                label: "只读对话";
+                primary: true;
+                enabled: AgentUi.status.can-send && AgentUi.draft != "";
+                min-height: root.phone ? 40px : 32px;
+                max-height: root.phone ? 40px : 32px;
+                clicked => { AgentUi.send-requested(AgentUi.draft); }
+            }
+            Button {
+                label: "按所选稿剪辑";
+                primary: true;
+                enabled: AgentUi.status.can-send && AgentUi.draft != "";
+                min-height: root.phone ? 40px : 32px;
+                max-height: root.phone ? 40px : 32px;
+                clicked => { AgentUi.edit-requested(AgentUi.draft); }
+            }
+        }
+    }
+}
+
+export component AgentScript inherits ScriptWorkspace {}

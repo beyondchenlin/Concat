@@ -14,6 +14,9 @@
 //! The panes move here one at a time from the window's controller; the
 //! export sheet is the first, and the shape the rest follow.
 
+pub mod agent;
+/// Native model-channel metadata and secure credential settings.
+pub mod agent_settings;
 pub mod captions;
 pub mod export;
 pub mod glide;
@@ -22,6 +25,7 @@ pub mod monitor;
 pub mod pace;
 pub mod project;
 pub mod relink;
+pub mod script;
 pub mod settings;
 pub mod sounds;
 pub mod speech;

@@ -1,0 +1,15 @@
+configuration::tests::a_different_valid_document_read_back_after_replacement_is_not_save_confirmation: test
+configuration::tests::failed_atomic_replacement_keeps_the_previous_complete_document: test
+configuration::tests::permanent_configuration_lock_refuses_overlapping_writers: test
+credentials::installation_tests::repeated_application_installation_keeps_the_original_store: test
+operations::readonly_tests::readonly_inspection_does_not_hold_ownership_while_waiting: test
+scripts::initialization_tests::first_creation_crashes_do_not_poison_the_fixed_database_path: test
+scripts::initialization_tests::first_open_crash_child: test
+sqlite::readonly_tests::readonly_inspection_does_not_hold_ownership_while_waiting: test
+sqlite::stop_tests::fast_stop_interrupts_a_real_read_and_allows_rollback: test
+sqlite::stop_tests::fast_stop_interrupts_a_real_write_without_releasing_its_owner: test
+tests::a_read_only_file_never_issues_a_generation: test
+tests::drained_handoff_unlocks_while_an_inherited_descriptor_remains_open: test
+tests::inherited_descriptor_does_not_release_a_live_operation_before_drain: test
+
+13 tests, 0 benchmarks
