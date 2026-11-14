@@ -30,6 +30,7 @@ pub mod probe;
 /// Isolated native document integration driver, excluded from ordinary builds.
 #[cfg(feature = "bk-cat-native-probe")]
 pub mod script_probe;
+pub(crate) mod tasks;
 
 type JournalSlot = Arc<Mutex<Option<Arc<OperationJournal>>>>;
 type InvocationSlot = Arc<Mutex<Option<Invocation>>>;
@@ -39,6 +40,7 @@ type InvocationSlot = Arc<Mutex<Option<Invocation>>>;
 /// Only trusted native platform glue may hold this object. Its recovery and
 /// lifecycle methods are deliberately absent from the model's tool catalogue.
 pub struct AgentBridge {
+    dirs: AppDirs,
     owner: Arc<SessionOwner>,
     token: OwnerToken,
     live: Arc<Live>,
@@ -73,6 +75,7 @@ impl AgentBridge {
             invocation: Arc::clone(&invocation),
         };
         Ok(Self {
+            dirs: dirs.clone(),
             owner,
             token,
             live,

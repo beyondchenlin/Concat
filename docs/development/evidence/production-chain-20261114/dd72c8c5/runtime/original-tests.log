@@ -1,0 +1,36 @@
+✔ original pinned McpClient preserves per-call argument identity for the native durable invocation side channel (124.457606ms)
+✔ built browser bootstrap answers native commands and opens no writable store before native confirmation (16.555507ms)
+✔ built pinned original Harness persists real conversation records in SQLite and reopens only after explicit reconciliation (115.70788ms)
+✔ configured original provider submits, persists a real generated answer and reopens it without another request (128.254291ms)
+✖ original model tool round carries native-bound Pi invocation and stays read-only for script generation (61.23293ms)
+✔ all three original adapters use the explicit service base and output ceiling with no implicit model retry (158.505772ms)
+✔ native configuration refuses secrets, unsafe addresses and lossy revisions before opening a provider (0.767094ms)
+✔ built production bootstrap submits through native task binding, streams through wire and emits only the original durable answer (44.886215ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 7
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1143.065892
+
+✖ failing tests:
+
+test at test/original-components.test.mjs:379:1
+✖ original model tool round carries native-bound Pi invocation and stays read-only for script generation (61.23293ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  0 !== 1
+  
+      at TestContext.<anonymous> (file:///workspace/scratch/a2559d0f84f7/verify-dd72c8c5/src/agent-runtime/test/original-components.test.mjs:398:12)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 0,
+    expected: 1,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }

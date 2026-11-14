@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 
-use concat_agent::script_locations::with_project_location;
+use concat_agent::script_locations::{with_project_location, with_read_only_project_location};
 use concat_agent::scripts::ScriptStore;
 use sha2::{Digest, Sha256};
 
@@ -64,6 +64,60 @@ fn read_identity(path: &Path) -> Result<Option<String>, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.to_string()),
     }
+}
+
+#[test]
+fn recovery_location_read_never_creates_missing_registration() {
+    let root = Directory::new();
+    let original = root.project("original", FIRST);
+    let ran = AtomicBool::new(false);
+    assert!(
+        with_read_only_project_location(&root.0, FIRST, &original, read_identity, || {
+            ran.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .is_err()
+    );
+    assert!(!ran.load(Ordering::SeqCst));
+    assert!(!root.0.join("project-locations").exists());
+    with_project_location(&root.0, FIRST, &original, read_identity, || Ok(())).unwrap();
+    fs::remove_file(root.record("json")).unwrap();
+    assert!(
+        with_read_only_project_location(&root.0, FIRST, &original, read_identity, || Ok(()))
+            .is_err()
+    );
+    assert!(!root.record("json").exists());
+}
+
+#[test]
+fn recovery_location_read_refuses_copies_and_allows_moves_without_rewriting() {
+    let root = Directory::new();
+    let original = root.project("original", FIRST);
+    let copy = root.project("copy", FIRST);
+    with_project_location(&root.0, FIRST, &original, read_identity, || Ok(())).unwrap();
+    let before = fs::read(root.record("json")).unwrap();
+    let ran = AtomicBool::new(false);
+    assert!(
+        with_read_only_project_location(&root.0, FIRST, &copy, read_identity, || {
+            ran.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .unwrap_err()
+        .contains("副本")
+    );
+    assert!(!ran.load(Ordering::SeqCst));
+    let moved = root.0.join("moved");
+    fs::rename(&original, &moved).unwrap();
+    root.project("original", SECOND);
+    assert_eq!(
+        with_read_only_project_location(&root.0, FIRST, &moved, read_identity, || Ok(71)).unwrap(),
+        71
+    );
+    assert_eq!(fs::read(root.record("json")).unwrap(), before);
+    // The inspection released the existing kernel lock and did not steal the
+    // registry update which belongs to the next explicit document operation.
+    with_project_location(&root.0, FIRST, &moved, read_identity, || Ok(())).unwrap();
+    assert_ne!(fs::read(root.record("json")).unwrap(), before);
 }
 
 #[test]
@@ -185,9 +239,12 @@ fn the_kernel_lock_covers_the_document_action_and_is_released_after_failure() {
     });
     entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
     let refused = with_project_location(&root.0, FIRST, &path, read_identity, || Ok(()));
+    let read_refused =
+        with_read_only_project_location(&root.0, FIRST, &path, read_identity, || Ok(()));
     release_tx.send(()).unwrap();
     assert!(worker.join().unwrap().is_err());
     assert!(refused.is_err());
+    assert!(read_refused.is_err());
     assert!(
         root.record("lock").is_file(),
         "the permanent lock inode must not be unlinked"

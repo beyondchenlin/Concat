@@ -1,0 +1,48 @@
+{
+  "commit": "4230553c095d29e749d71a03d1507327a9846a23",
+  "tree": "4caf0183aa749afbf5aa47640daa709e9bf6d618",
+  "command": [
+    "/home/agent/.cargo/bin/cargo",
+    "+1.93.1",
+    "test",
+    "--locked",
+    "-p",
+    "concat",
+    "--lib",
+    "-j",
+    "2",
+    "--",
+    "--test-threads=2"
+  ],
+  "started": "2026-11-14T02:51:15.406406+00:00",
+  "finished": "2026-11-14T03:04:56.173063+00:00",
+  "exit_code": 101,
+  "duration_seconds": 820.77,
+  "target": "/workspace/scratch/a2559d0f84f7/target-native",
+  "runtime_manifest": {
+    "piCommit": "d36266e06669c6991a7c9509d1da04d18d30378d",
+    "piVersion": "1.5.2",
+    "runtimeVersion": "0.1.0",
+    "protocolVersion": "2025-11-25",
+    "sqliteSchemaVersion": 2,
+    "format": "browser-iife",
+    "target": "es2022",
+    "bytes": 2640082,
+    "sha256": "f22d44bbf294482ba8ad6966bfe302af320b8d20d3f1a95fa3b0acf573f93e8c",
+    "files": {
+      "index.html": {
+        "bytes": 569,
+        "sha256": "8db44e492885e8e059aaf15b18fd83d5aacd6101a91dbcd1510676aea62fe1cc"
+      },
+      "runtime.js": {
+        "bytes": 2640082,
+        "sha256": "f22d44bbf294482ba8ad6966bfe302af320b8d20d3f1a95fa3b0acf573f93e8c"
+      },
+      "bootstrap.js": {
+        "bytes": 11072,
+        "sha256": "dd44b6cf2c0854b3bded4c2ae91882aeea0b6dc9a3490760fa1fa88ee93f1d0b"
+      }
+    }
+  },
+  "scope": "Linux native library tests; not Windows or Android device acceptance"
+}

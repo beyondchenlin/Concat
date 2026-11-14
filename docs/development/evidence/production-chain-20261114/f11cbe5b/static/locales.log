@@ -1,0 +1,26 @@
+ar       العربية              1060 lines,   0 missing,   0 stale,  31 still English
+az       Azərbaycanca         1060 lines,   0 missing,   0 stale,  21 still English
+bn       বাংলা                1060 lines,   0 missing,   0 stale,  31 still English
+de       Deutsch              1060 lines,   0 missing,   0 stale, 107 still English
+es       Español              1060 lines,   0 missing,   0 stale,  76 still English
+fa       فارسی                1060 lines,   0 missing,   0 stale,  33 still English
+fr       Français             1060 lines,   0 missing,   0 stale, 119 still English
+he       עברית                1060 lines,   0 missing,   0 stale,  31 still English
+hi       हिन्दी               1060 lines,   0 missing,   0 stale,  32 still English
+hr       Hrvatski             1060 lines,   0 missing,   0 stale,  54 still English
+id       Bahasa Indonesia     1060 lines,   0 missing,   0 stale,  44 still English
+it       Italiano             1060 lines,   0 missing,   0 stale,  83 still English
+ja       日本語                  1060 lines,   0 missing,   0 stale,  31 still English
+ko       한국어                  1060 lines,   0 missing,   0 stale,  54 still English
+nl       Nederlands           1060 lines,   0 missing,   0 stale,  80 still English
+pl       Polski               1060 lines,   0 missing,   0 stale,  45 still English
+pt-BR    Português (Brasil)   1060 lines,   0 missing,   0 stale,  40 still English
+ru       Русский              1060 lines,   0 missing,   0 stale,  21 still English
+th       ไทย                  1060 lines,   0 missing,   0 stale,  31 still English
+tr       Türkçe               1060 lines,   0 missing,   0 stale,  63 still English
+uk       Українська           1060 lines,   0 missing,   0 stale,  31 still English
+ur       اردو                 1060 lines,   0 missing,   0 stale,   0 still English
+vi       Tiếng Việt           1060 lines,   0 missing,   0 stale,  36 still English
+zh-Hans  简体中文                 1060 lines,   0 missing,   0 stale,   0 still English
+zh-TW    繁體中文                 1060 lines,   0 missing,   0 stale,  31 still English
+warning: 1125 lines are the English word for word; --same lists them, --strict fails on them

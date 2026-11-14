@@ -321,6 +321,43 @@ impl OperationJournal {
         })?
     }
 
+    /// Return the authoritative native editor receipt only for the original
+    /// Pi invocation and the exact project/session/revision it was allowed to
+    /// edit. The caller must compare the public tool reply against the
+    /// serialized/translated form of this receipt before reporting success.
+    pub fn changed_receipt(
+        &self,
+        invocation: &Invocation,
+        project_path: &str,
+        expected_session: u64,
+        expected_revision: u64,
+    ) -> Result<Option<Value>, JournalError> {
+        invocation.validate()?;
+        let connection = self.connection()?;
+        self.permit.with_valid(|| -> Result<Option<Value>, JournalError> {
+            let record: Option<(String, String, String, String)> =
+                connection.query_row(
+                    "SELECT expected_revision,result_session,result_revision,receipt FROM operations \
+                     WHERE conversation=?1 AND task=?2 AND call=?3 AND project=?4 AND session=?5 \
+                     AND result_session IS NOT NULL AND result_revision IS NOT NULL AND receipt IS NOT NULL",
+                    params![invocation.conversation_id.to_string(), invocation.task_id.to_string(),
+                        invocation.call_id, project_path, expected_session.to_string()],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                ).optional()?;
+            let Some((original_revision, session, revision, receipt)) = record else {
+                return Ok(None);
+            };
+            let revision = revision.parse::<u64>().map_err(|_| JournalError::InvalidSchema)?;
+            let receipt: Value = serde_json::from_str(&receipt).map_err(|_| JournalError::InvalidSchema)?;
+            let valid = original_revision == expected_revision.to_string()
+                && session == expected_session.to_string()
+                && revision > expected_revision
+                && receipt.get("sessionId").and_then(Value::as_u64) == Some(expected_session)
+                && receipt.get("revision").and_then(Value::as_u64) == Some(revision);
+            Ok(valid.then_some(receipt))
+        })?
+    }
+
     /// Set a separate terminal receipt only for a proven zero-change native
     /// refusal. Busy, failed, or unknown outcomes remain ambiguous intents.
     /// No saved/notified state is invented for an edit that never happened.

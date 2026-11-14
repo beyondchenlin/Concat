@@ -1,0 +1,37 @@
+[
+  {
+    "package": "cmake",
+    "version": "3.31.6-2",
+    "url": "https://deb.debian.org/debian/pool/main/c/cmake/cmake_3.31.6-2_amd64.deb",
+    "sha256": "dee2fc94973325240604ffbca677a3f16b462fb6520946bd81be1ecbac770a02",
+    "bytes": 11969144
+  },
+  {
+    "package": "cmake-data",
+    "version": "3.31.6-2",
+    "url": "https://deb.debian.org/debian/pool/main/c/cmake/cmake-data_3.31.6-2_all.deb",
+    "sha256": "d9060145be892f43cd1888024114ceab019c81479d4b0a3383fe14cebe2295cb",
+    "bytes": 2268208
+  },
+  {
+    "package": "ninja-build",
+    "version": "1.12.1-1",
+    "url": "https://deb.debian.org/debian/pool/main/n/ninja-build/ninja-build_1.12.1-1_amd64.deb",
+    "sha256": "bc172ce9270bd6fcd6d5335a83ff9d3c7ba0d13ec624cfdfa1b5aa06901dc453",
+    "bytes": 142132
+  },
+  {
+    "package": "librhash1",
+    "version": "1.4.5-1",
+    "url": "https://deb.debian.org/debian/pool/main/r/rhash/librhash1_1.4.5-1_amd64.deb",
+    "sha256": "9bf56d7d8ce3e7680a0dd8e3cfe8acdf50e0aa3b98b0a907cf744a4d1711af72",
+    "bytes": 132184
+  },
+  {
+    "package": "libuv1t64",
+    "version": "1.50.0-2",
+    "url": "https://deb.debian.org/debian/pool/main/libu/libuv1/libuv1t64_1.50.0-2_amd64.deb",
+    "sha256": "5fec8035002e0c745b64d1c5b3e1dc42790d1a77574315b976cf3e4aab9ddc0a",
+    "bytes": 153752
+  }
+]

@@ -1,0 +1,74 @@
+✔ original pinned McpClient preserves per-call argument identity for the native durable invocation side channel (119.000037ms)
+✔ built browser bootstrap answers native commands and opens no writable store before native confirmation (6.584928ms)
+✖ built pinned original Harness persists real conversation records in SQLite and reopens only after explicit reconciliation (39.820257ms)
+✖ configured original provider submits, persists a real generated answer and reopens it without another request (15.610274ms)
+✖ original model tool round carries native-bound Pi invocation and stays read-only for script generation (11.511745ms)
+✖ all three original adapters use the explicit service base and output ceiling with no implicit model retry (11.498788ms)
+✔ native configuration refuses secrets, unsafe addresses and lossy revisions before opening a provider (0.918016ms)
+✖ built production bootstrap submits through native task binding, streams through wire and emits only the original durable answer (55.638312ms)
+ℹ tests 8
+ℹ suites 0
+ℹ pass 3
+ℹ fail 5
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 648.00259
+
+✖ failing tests:
+
+test at test/original-components.test.mjs:246:1
+✖ built pinned original Harness persists real conversation records in SQLite and reopens only after explicit reconciliation (39.820257ms)
+  TypeError [Error]: ModelsImpl is not a constructor
+      at createModels (runtime.js:2063:12)
+      at nativeModels (runtime.js:61058:20)
+      at Object.open (runtime.js:61420:21)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async #activate (runtime.js:42449:22)
+      at async TestContext.<anonymous> (file:///workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime/test/original-components.test.mjs:257:5)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+
+test at test/original-components.test.mjs:318:1
+✖ configured original provider submits, persists a real generated answer and reopens it without another request (15.610274ms)
+  TypeError [Error]: ModelsImpl is not a constructor
+      at createModels (runtime.js:2063:12)
+      at nativeModels (runtime.js:61058:20)
+      at Object.open (runtime.js:61420:21)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async #activate (runtime.js:42449:22)
+      at async TestContext.<anonymous> (file:///workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime/test/original-components.test.mjs:336:5)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+
+test at test/original-components.test.mjs:362:1
+✖ original model tool round carries native-bound Pi invocation and stays read-only for script generation (11.511745ms)
+  TypeError [Error]: ModelsImpl is not a constructor
+      at createModels (runtime.js:2063:12)
+      at nativeModels (runtime.js:61058:20)
+      at Object.open (runtime.js:61420:21)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async #activate (runtime.js:42449:22)
+      at async TestContext.<anonymous> (file:///workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime/test/original-components.test.mjs:375:5)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+
+test at test/original-components.test.mjs:385:1
+✖ all three original adapters use the explicit service base and output ceiling with no implicit model retry (11.498788ms)
+  TypeError [Error]: ModelsImpl is not a constructor
+      at createModels (runtime.js:2063:12)
+      at nativeModels (runtime.js:61058:20)
+      at Object.open (runtime.js:61420:21)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async #activate (runtime.js:42449:22)
+      at async TestContext.<anonymous> (file:///workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime/test/original-components.test.mjs:403:7)
+      at async Test.run (node:internal/test_runner/test:1409:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:974:7)
+
+test at test/original-components.test.mjs:446:1
+✖ built production bootstrap submits through native task binding, streams through wire and emits only the original durable answer (55.638312ms)
+  Error: ModelsImpl is not a constructor
+      at Object.postMessage (file:///workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime/test/original-components.test.mjs:465:82)
+      at reply (bootstrap-production.js:101:14)
+      at bootstrap-production.js:238:9
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)

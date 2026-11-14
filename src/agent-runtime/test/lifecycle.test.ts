@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { AgentRuntime } from "../src/runtime.ts";
 import { ExecutionGate } from "../src/gate.ts";
 import { guardedDatabase, guardedStorage, NativeMcpTransport } from "../src/native-adapters.ts";
-import type { NativePorts, OwnerLease, PiEngine, PiEngineFactory, SchedulingAction } from "../src/ports.ts";
+import type { ExecutionGrant, NativePorts, OwnerLease, PiEngine, PiEngineFactory, SchedulingAction } from "../src/ports.ts";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -28,7 +28,10 @@ function fixture() {
       async drainAndRelease() { log.push("release"); held = false; },
       onRevoked(_lease, callback) { listener = callback; return () => { listener = undefined; }; },
     },
-    recovery: { async read() { log.push("read-recovery"); return { ...snapshot }; } },
+    recovery: {
+      async read() { log.push("read-recovery"); return { ...snapshot }; },
+      async discardVerified() { log.push("discard-verified"); },
+    },
     sqlite: { async open() { throw new Error("SQLite was not expected in lifecycle-port tests"); } },
     mcp: { async send() { log.push("mcp"); return undefined; } },
     network: { async fetch() { log.push("network"); throw new Error("network must not run in this test"); } },
@@ -47,7 +50,7 @@ function fixture() {
 
 const actions: SchedulingAction[] = [
   "createConversation", "submit", "waitSubmission", "abortSubmission", "resume", "abortTask", "signal",
-  "waitForTask", "waitForIdle", "compact", "abortConversation", "resetConversation",
+  "waitForTask", "waitForIdle", "compact", "abortConversation", "resetConversation", "nativeSubmit", "nativeWait",
 ];
 
 test("startup only acquires ownership and reads recovery; every scheduling entry stays closed", async () => {
@@ -72,14 +75,91 @@ test("confirmation opens Pi once but does not resume or call a model", async () 
   assert.deepEqual(f.log.slice(-3), ["revoke", "engine-close", "release"]);
 });
 
-test("stale approval and discard with interrupted work never open writable Pi", async () => {
+test("a recovery grant alone is not network permission and task permissions never survive completion or stop", () => {
+  const f = fixture();
+  const gate = new ExecutionGate(); gate.acquiring(); gate.owned(f.lease);
+  gate.activating(f.lease, { generation: "1", snapshotId: "snapshot", allowInitializeEmptyStore: false }); gate.ready(f.lease);
+  assert.throws(() => gate.networkPermit(f.lease), /no approved/);
+  gate.authorizeNetwork(f.lease, "task-one"); assert.equal(gate.networkPermit(f.lease), "task-one");
+  assert.throws(() => gate.authorizeNetwork(f.lease, "task-two"), /another task/);
+  gate.finishNetwork("wrong-task"); assert.equal(gate.networkPermit(f.lease), "task-one");
+  gate.finishNetwork("task-one"); assert.throws(() => gate.networkPermit(f.lease), /no approved/);
+  gate.authorizeNetwork(f.lease, "task-two"); gate.stop();
+  assert.throws(() => gate.networkPermit(f.lease)); assert.throws(() => gate.authorizeNetwork(f.lease, "task-three"));
+});
+
+test("stale approval and discard without native conversation scope never open writable Pi", async () => {
   const f = fixture();
   f.snapshot.hasInterruptedWork = true;
   await f.runtime.start();
   await assert.rejects(f.runtime.confirmRecovery({ ...f.approval, snapshotId: "old" }), /snapshot/);
-  await assert.rejects(f.runtime.confirmRecovery({ ...f.approval, decision: "discard" }), /discard reconciliation/);
   assert.deepEqual(f.log, ["acquire", "read-recovery"]);
+  await assert.rejects(f.runtime.confirmRecovery({ ...f.approval, decision: "discard" }), /原生明确放弃授权/);
+  assert.deepEqual(f.log, ["acquire", "read-recovery", "confirm", "revoke", "release"]);
+  assert.equal(f.runtime.phase, "closed", "an invalid already-issued grant must be revoked too");
+});
+
+test("discard rejects invalid scope and mixed model authority before opening the engine", async () => {
+  const cases: { ids: unknown; extra?: Partial<ExecutionGrant>; decision?: "continue" | "discard" }[] = [
+    ...[null, "2", [], [2, 2], [-1], [Number.MAX_SAFE_INTEGER + 1], [NaN], new Array(2), Array(65537).fill(1)].map((ids) => ({ ids })),
+    { ids: [2], extra: { networkPermit: "model-permit-must-not-be-granted" } },
+    { ids: [2], extra: { allowInitializeEmptyStore: true } },
+    { ids: [2], decision: "continue" },
+  ];
+  for (const { ids, extra, decision = "discard" } of cases) {
+    const f = fixture(); f.snapshot.hasInterruptedWork = true;
+    f.ports.ownership.confirm = async () => {
+      f.log.push("confirm");
+      return { generation: "1", snapshotId: "snapshot", allowInitializeEmptyStore: false, discardConversationIds: ids, ...extra } as ExecutionGrant;
+    };
+    await f.runtime.start();
+    await assert.rejects(f.runtime.confirmRecovery({ ...f.approval, decision }), /原生放弃授权/);
+    assert.equal(f.runtime.phase, "closed");
+    assert.deepEqual(f.log, ["acquire", "read-recovery", "confirm", "revoke", "release"]);
+  }
+});
+
+test("discard stays storage-only through original cleanup and one-shot native completion verification", async () => {
+  const f = fixture(); f.snapshot.hasInterruptedWork = true;
+  const scope = [2, 7];
+  f.ports.ownership.confirm = async () => ({ generation: "1", snapshotId: "snapshot", allowInitializeEmptyStore: false, discardConversationIds: scope });
+  const opened = deferred<PiEngine>(); const entered = deferred<void>(); const verified = deferred<void>(); const verificationStarted = deferred<void>();
+  let admittedGate: ExecutionGate | undefined;
+  f.factory.open = async ({ gate, lease, grant }) => {
+    admittedGate = gate;
+    assert.deepEqual(grant.discardConversationIds, [2, 7]);
+    assert.equal(Object.isFrozen(grant.discardConversationIds), true);
+    assert.equal(gate.phase, "activating"); gate.assertStorageWrite(lease);
+    assert.throws(() => gate.networkPermit(lease), /reconciliation/);
+    assert.throws(() => gate.authorizeNetwork(lease, "never"), /reconciliation/);
+    entered.resolve();
+    return opened.promise;
+  };
+  f.ports.recovery.discardVerified = async () => { f.log.push("discard-verified"); verificationStarted.resolve(); await verified.promise; };
+  await f.runtime.start();
+  const activation = f.runtime.confirmRecovery({ ...f.approval, decision: "discard" });
+  await entered.promise;
+  scope.push(99);
+  await assert.rejects(f.runtime.dispatch("nativeSubmit", {}), /reconciliation/);
+  opened.resolve(f.engine); await verificationStarted.promise;
+  assert.equal(f.runtime.phase, "activating");
+  assert.throws(() => admittedGate!.networkPermit(f.lease), /reconciliation/);
+  await assert.rejects(f.runtime.dispatch("resume"), /reconciliation/);
+  verified.resolve(); await activation;
+  assert.equal(f.runtime.phase, "ready");
+  assert.throws(() => admittedGate!.networkPermit(f.lease), /no approved/);
+  assert.equal(f.log.filter((item) => item === "discard-verified").length, 1);
   await f.runtime.stop();
+});
+
+test("failed native discard verification stops and closes the opened original engine", async () => {
+  const f = fixture(); f.snapshot.hasInterruptedWork = true;
+  f.ports.ownership.confirm = async () => ({ generation: "1", snapshotId: "snapshot", allowInitializeEmptyStore: false, discardConversationIds: [2] });
+  f.ports.recovery.discardVerified = async () => { f.log.push("discard-verified"); throw new Error("native unfinished records remain"); };
+  await f.runtime.start();
+  await assert.rejects(f.runtime.confirmRecovery({ ...f.approval, decision: "discard" }), /unfinished/);
+  assert.equal(f.runtime.phase, "closed");
+  assert.deepEqual(f.log.slice(-5), ["engine-open", "discard-verified", "revoke", "engine-close", "release"]);
 });
 
 test("overlapping recovery confirmation has one native grant and one Pi open", async () => {

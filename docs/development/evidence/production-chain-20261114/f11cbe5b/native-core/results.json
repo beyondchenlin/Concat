@@ -1,0 +1,98 @@
+[
+  {
+    "name": "01-project-test",
+    "command": [
+      "cargo",
+      "+1.93.1",
+      "test",
+      "-p",
+      "concat-project",
+      "--locked",
+      "-j",
+      "2",
+      "--",
+      "--test-threads=2"
+    ],
+    "started": "2026-11-14T02:22:38.124555+00:00",
+    "finished": "2026-11-14T02:23:20.711426+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "02-host-test",
+    "command": [
+      "cargo",
+      "+1.93.1",
+      "test",
+      "-p",
+      "concat-host",
+      "--locked",
+      "-j",
+      "2",
+      "--",
+      "--test-threads=2"
+    ],
+    "started": "2026-11-14T02:23:20.712093+00:00",
+    "finished": "2026-11-14T02:27:26.608777+00:00",
+    "exit_code": 101
+  },
+  {
+    "name": "05-host-test-after-clang-resource",
+    "command": [
+      "cargo",
+      "+1.93.1",
+      "test",
+      "-p",
+      "concat-host",
+      "--locked",
+      "-j",
+      "2",
+      "--",
+      "--test-threads=2"
+    ],
+    "started": "2026-11-14T02:29:19.022350+00:00",
+    "finished": "2026-11-14T02:43:20.835194+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "06-mcp-test",
+    "command": [
+      "cargo",
+      "+1.93.1",
+      "test",
+      "-p",
+      "concat-mcp",
+      "--locked",
+      "-j",
+      "2",
+      "--",
+      "--test-threads=2"
+    ],
+    "started": "2026-11-14T02:43:20.851079+00:00",
+    "finished": "2026-11-14T02:44:07.787828+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "07-native-strict",
+    "command": [
+      "cargo",
+      "+1.93.1",
+      "clippy",
+      "-p",
+      "concat-project",
+      "-p",
+      "concat-host",
+      "-p",
+      "concat-mcp",
+      "--all-targets",
+      "--locked",
+      "-j",
+      "2",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "started": "2026-11-14T02:44:07.789253+00:00",
+    "finished": "2026-11-14T02:47:17.088502+00:00",
+    "exit_code": 0
+  }
+]

@@ -1,0 +1,38 @@
+[
+  {
+    "name": "01-project-test",
+    "command": [
+      "cargo",
+      "+1.93.1",
+      "test",
+      "-p",
+      "concat-project",
+      "--locked",
+      "-j",
+      "2",
+      "--",
+      "--test-threads=2"
+    ],
+    "started": "2026-11-14T02:22:38.124555+00:00",
+    "finished": "2026-11-14T02:23:20.711426+00:00",
+    "exit_code": 0
+  },
+  {
+    "name": "02-host-test",
+    "command": [
+      "cargo",
+      "+1.93.1",
+      "test",
+      "-p",
+      "concat-host",
+      "--locked",
+      "-j",
+      "2",
+      "--",
+      "--test-threads=2"
+    ],
+    "started": "2026-11-14T02:23:20.712093+00:00",
+    "finished": "2026-11-14T02:27:26.608777+00:00",
+    "exit_code": 101
+  }
+]

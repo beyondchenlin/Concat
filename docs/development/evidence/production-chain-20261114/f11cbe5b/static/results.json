@@ -1,0 +1,41 @@
+{
+  "commit": "f11cbe5bc21f901be689a742aba3bd5b6b1c7d77",
+  "tree": "7ce361323f36870922300bfe878e0e347f6a3f4b",
+  "results": [
+    {
+      "name": "format",
+      "command": [
+        "/home/agent/.cargo/bin/cargo",
+        "+1.93.1",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "cwd": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src",
+      "exit_code": 0,
+      "started": "2026-11-14T02:22:47.157822+00:00"
+    },
+    {
+      "name": "locales",
+      "command": [
+        "python3",
+        "scripts/locales.py",
+        "--check"
+      ],
+      "cwd": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b",
+      "exit_code": 0,
+      "started": "2026-11-14T02:22:49.898910+00:00"
+    },
+    {
+      "name": "models",
+      "command": [
+        "python3",
+        "scripts/models.py",
+        "--check"
+      ],
+      "cwd": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b",
+      "exit_code": 0,
+      "started": "2026-11-14T02:22:50.101930+00:00"
+    }
+  ]
+}

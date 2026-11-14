@@ -1,0 +1,96 @@
+{
+  "commands": [
+    {
+      "kind": "video",
+      "mediaId": "m1",
+      "op": "addMediaClipExact",
+      "sourceEnd": 2.0,
+      "sourceStart": 0.5,
+      "start": 0.0,
+      "trackId": "T1"
+    },
+    {
+      "kind": "video",
+      "mediaId": "m1",
+      "op": "addMediaClipExact",
+      "sourceEnd": 4.5,
+      "sourceStart": 3.0,
+      "start": 1.5,
+      "trackId": "T1"
+    },
+    {
+      "kind": "audio",
+      "mediaId": "m2",
+      "op": "addMediaClipExact",
+      "sourceEnd": 4.0,
+      "sourceStart": 1.0,
+      "start": 0.0,
+      "trackId": "T3"
+    },
+    {
+      "above": false,
+      "duration": 1.5,
+      "offsetY": null,
+      "op": "addTextClip",
+      "start": 0.0,
+      "style": {
+        "align": "center",
+        "background": "",
+        "backgroundPaddingX": 0.0315,
+        "backgroundPaddingY": 0.018,
+        "backgroundRadius": 0.0135,
+        "color": "#ffffff",
+        "content": "PLAN A",
+        "fontFamily": "Hanken Grotesk",
+        "fontSize": 0.14,
+        "fontWeight": 700.0,
+        "italic": false,
+        "lineHeight": 1.2,
+        "maxHeight": 0.0,
+        "maxWidth": 0.0,
+        "opacity": 1.0,
+        "shadow": false,
+        "strikethrough": false,
+        "strokeColor": "#000000",
+        "strokeWidth": 0.0,
+        "textCase": "original",
+        "tracking": 0.0,
+        "underline": false
+      },
+      "trackId": "T2"
+    },
+    {
+      "above": false,
+      "duration": 1.5,
+      "offsetY": null,
+      "op": "addTextClip",
+      "start": 1.5,
+      "style": {
+        "align": "center",
+        "background": "",
+        "backgroundPaddingX": 0.0315,
+        "backgroundPaddingY": 0.018,
+        "backgroundRadius": 0.0135,
+        "color": "#ffffff",
+        "content": "PLAN B",
+        "fontFamily": "Hanken Grotesk",
+        "fontSize": 0.14,
+        "fontWeight": 700.0,
+        "italic": false,
+        "lineHeight": 1.2,
+        "maxHeight": 0.0,
+        "maxWidth": 0.0,
+        "opacity": 1.0,
+        "shadow": false,
+        "strikethrough": false,
+        "strokeColor": "#000000",
+        "strokeWidth": 0.0,
+        "textCase": "original",
+        "tracking": 0.0,
+        "underline": false
+      },
+      "trackId": "T2"
+    }
+  ],
+  "op": "batch"
+}

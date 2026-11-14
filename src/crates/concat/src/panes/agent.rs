@@ -2,13 +2,13 @@
 
 //! Native readiness, recovery and task presentation for the embedded runtime.
 //! This owns no model client, scheduler, persistence or editable project.
-//! Conversation-entry publication awaits the model-configuration integration;
-//! until it is available, the conversation view stays empty.
+//! Visible messages are bounded projections of the original persisted session.
 
 use concat_agent::{OwnerStatus, Phase};
-use slint::ComponentHandle;
+use slint::{ComponentHandle, ModelRc, VecModel};
+use std::rc::Rc;
 
-use crate::ui::{AgentStatusData, AgentUi, App};
+use crate::ui::{AgentCallUi, AgentMessageData, AgentStatusData, AgentUi, App};
 
 /// Facts supplied by the native platform host. Never store credentials in
 /// this presenter or in a Slint property; only their availability belongs here.
@@ -53,14 +53,66 @@ pub struct AgentPane {
     /// Read-only recovery evidence from the current, authenticated component.
     pub recovery_summary: String,
     pub can_recover: bool,
+    /// Explicit cancellation of reviewed interrupted work, never fee consent.
+    pub can_discard: bool,
     pub can_review: bool,
     pub runtime_loading: bool,
     pub runtime_loaded: bool,
+    messages: Vec<AgentMessageData>,
+    call_limits: String,
 }
 
 impl AgentPane {
     pub(crate) fn apply_runtime(&mut self, runtime: &crate::embedded::RuntimeView) {
         self.readiness.runtime_ready = runtime.phase == "ready" && !runtime.closed;
+        if !self.readiness.runtime_ready {
+            self.readiness.calls_authorized = false;
+        }
+        self.task.running = runtime.task_running;
+        self.task.title = runtime.task_title.clone();
+        self.task.detail = if runtime.task_running {
+            "正在接收真实模型与原生工具执行结果。".into()
+        } else {
+            String::new()
+        };
+        if let Some(configuration) = &runtime.configuration {
+            self.call_limits =
+                configuration["maxOutputTokens"]
+                    .as_u64()
+                    .map_or_else(String::new, |limit| {
+                        format!(
+                            "本次最多4次模型请求，每次输出最多{limit}个词元；费用按服务商计费。"
+                        )
+                    });
+        }
+        self.messages.clear();
+        if let Some(presentation) = &runtime.presentation {
+            if let Some(messages) = presentation["messages"].as_array() {
+                self.messages.extend(messages.iter().filter_map(|message| {
+                    let author = match message["role"].as_str()? {
+                        "user" => "我",
+                        "assistant" => "助手",
+                        "tool" => "执行结果",
+                        _ => return None,
+                    };
+                    Some(AgentMessageData {
+                        author: author.into(),
+                        body: message["text"].as_str()?.into(),
+                        pending: false,
+                    })
+                }));
+            }
+            if let Some(partial) = presentation["partialText"]
+                .as_str()
+                .filter(|text| !text.is_empty())
+            {
+                self.messages.push(AgentMessageData {
+                    author: "助手".into(),
+                    body: partial.into(),
+                    pending: true,
+                });
+            }
+        }
         self.runtime_loading = matches!(
             runtime.phase.as_str(),
             "loading" | "acquiring" | "activating"
@@ -68,9 +120,15 @@ impl AgentPane {
         self.runtime_loaded = runtime.loaded && !runtime.closed;
         self.can_review = runtime.phase == "recovery";
         self.can_recover = false;
+        self.can_discard = false;
         self.error = runtime.error.clone();
         self.recovery_summary.clear();
         if let Some(snapshot) = &runtime.snapshot {
+            self.can_discard = self.can_review
+                && snapshot["snapshotId"].is_string()
+                && snapshot["projectPath"].is_string()
+                && snapshot["hasInterruptedWork"] == true
+                && snapshot["canDiscardInterrupted"] == true;
             if let Some(reason) = snapshot["blockedReason"].as_str() {
                 self.recovery_summary = reason.to_owned();
             } else if self.can_review {
@@ -134,6 +192,7 @@ impl AgentPane {
             model: model.into(),
             can_review: self.can_review,
             can_continue: self.can_recover,
+            can_discard: self.can_discard,
             recovery_summary: self.recovery_summary.as_str().into(),
             ..AgentStatusData::default()
         };
@@ -144,6 +203,9 @@ impl AgentPane {
                 data.detail = "智能任务没有启动，仍可使用手动编辑。".into();
                 data.error = error.into();
                 data.can_connect = true;
+                data.can_review = false;
+                data.can_continue = false;
+                data.can_discard = false;
                 return data;
             }
         };
@@ -160,6 +222,7 @@ impl AgentPane {
         if owner.phase != Phase::RecoveryRequired {
             data.can_review = false;
             data.can_continue = false;
+            data.can_discard = false;
         }
         match owner.phase {
             Phase::RecoveryRequired => {
@@ -246,7 +309,27 @@ impl AgentPane {
     /// Native UI-thread publication only. It does not touch conversation
     /// storage or the current project and is safe in read-only recovery.
     pub fn publish(&self, app: &App, owner: Result<OwnerStatus, String>) {
-        app.global::<AgentUi>().set_status(self.data(owner));
+        let can_authorize = owner
+            .as_ref()
+            .is_ok_and(|status| status.phase == Phase::Ready)
+            && self.readiness.runtime_ready
+            && self.readiness.credentials_ready
+            && !self.task.running
+            && !self.readiness.provider.is_empty()
+            && !self.readiness.model.is_empty();
+        let call = app.global::<AgentCallUi>();
+        call.set_allowed(self.readiness.calls_authorized);
+        call.set_can_authorize(can_authorize);
+        call.set_limits(if self.call_limits.is_empty() {
+            "每次任务最多4次模型请求；请先配置模型输出上限。".into()
+        } else {
+            self.call_limits.as_str().into()
+        });
+        let ui = app.global::<AgentUi>();
+        ui.set_status(self.data(owner));
+        ui.set_messages(ModelRc::from(Rc::new(VecModel::from(
+            self.messages.clone(),
+        ))));
     }
 }
 
@@ -322,6 +405,40 @@ mod tests {
         );
         assert!(!pane.data(owner(Phase::Draining)).can_stop);
         assert!(!pane.data(owner(Phase::Released)).can_stop);
+    }
+
+    #[test]
+    fn explicit_discard_is_a_native_recovery_action_without_send_or_fee_authority() {
+        let mut pane = configured();
+        let mut runtime = crate::embedded::RuntimeView {
+            loaded: true,
+            phase: "recovery".into(),
+            snapshot: Some(serde_json::json!({
+                "snapshotId":"native-review", "projectPath":"native-project",
+                "schemaVersion":2, "hasInterruptedWork":true,
+                "canDiscardInterrupted":true,
+                "blockedReason":"存在未完成任务；只允许明确放弃本工程旧任务。",
+            })),
+            ..crate::embedded::RuntimeView::default()
+        };
+        pane.apply_runtime(&runtime);
+        let recovery = pane.data(owner(Phase::RecoveryRequired));
+        assert!(recovery.can_discard);
+        assert!(recovery.can_review);
+        assert!(!recovery.can_continue);
+        assert!(!recovery.can_send);
+        assert!(!pane.readiness.calls_authorized);
+        assert!(!pane.data(owner(Phase::Ready)).can_discard);
+        assert!(!pane.data(owner(Phase::Draining)).can_discard);
+        assert!(!pane.data(owner(Phase::Released)).can_discard);
+        assert!(!pane.data(Err("会话所有权已失效。".into())).can_discard);
+        runtime.snapshot.as_mut().unwrap()["canDiscardInterrupted"] = serde_json::json!(false);
+        pane.apply_runtime(&runtime);
+        assert!(!pane.data(owner(Phase::RecoveryRequired)).can_discard);
+        runtime.phase = "activating".into();
+        runtime.snapshot.as_mut().unwrap()["canDiscardInterrupted"] = serde_json::json!(true);
+        pane.apply_runtime(&runtime);
+        assert!(!pane.data(owner(Phase::RecoveryRequired)).can_discard);
     }
 
     #[test]

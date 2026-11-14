@@ -257,6 +257,26 @@ impl ScriptDraft {
         }
     }
 
+    /// Restore an editor-owned draft without resetting its local edit epoch.
+    /// Native callers use this when a model result arrives after asynchronous
+    /// editing. The epoch must come from the editor, never from model output.
+    /// Matching text alone is insufficient: editing away and back is still an
+    /// intervening edit and must refuse automatic candidate acceptance.
+    pub fn from_editor(
+        snapshot: ScriptSnapshot,
+        text: String,
+        edit_revision: u64,
+    ) -> Result<Self, ScriptError> {
+        validate_content(&text)?;
+        as_i64(edit_revision)?;
+        Ok(Self {
+            snapshot,
+            text,
+            edit_revision,
+            candidate_id: None,
+        })
+    }
+
     /// Current text, including unsaved edits.
     pub fn text(&self) -> &str {
         &self.text

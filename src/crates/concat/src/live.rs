@@ -26,6 +26,7 @@ use std::time::Duration;
 use concat_agent::{OwnerToken, SessionOwner};
 use concat_api::{ApiError, ErrorCode, WindowLink};
 use concat_host::Session;
+use concat_host::agent_media::ExactMediaChecks;
 use concat_host::session::EditorView;
 use concat_project::Command;
 use concat_project::model::VideoSettings;
@@ -119,6 +120,7 @@ impl PendingRegistry {
 /// or constructing another editable project.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CurrentProject {
+    pub project_id: String,
     pub path: String,
     pub session_id: u64,
     pub revision: u64,
@@ -149,6 +151,7 @@ impl Live {
     pub(crate) fn current_project(&self) -> Result<Option<CurrentProject>, ApiError> {
         self.on_window_target(None, false, |studio| {
             Ok(studio.session.as_ref().map(|session| CurrentProject {
+                project_id: session.project_identity().to_owned(),
                 path: session.path().to_owned(),
                 session_id: session.session_id(),
                 revision: session.revision(),
@@ -319,7 +322,33 @@ impl WindowLink for Live {
         expected_revision: u64,
         command: Command,
     ) -> Result<EditorView, ApiError> {
+        Self::require_background_thread()?;
+        // Keep the source probe counted as in-flight work so host retirement
+        // cannot report a drained owner while native file access is ongoing.
+        // Holding the permit does not hold its gate; the slow probe is outside
+        // both the owner mutex and the UI callback.
+        let probe_permit = self.owner.begin(&self.token).map_err(ownership_error)?;
+        let captured = self.read(path, move |studio| {
+            let session = session(studio)?;
+            session
+                .check_revision(expected_session, expected_revision)
+                .map_err(|message| ApiError::new(ErrorCode::Refused, message))?;
+            Ok(session.project().clone())
+        })?;
+        let media = ExactMediaChecks::probe(&captured, &command, || {
+            probe_permit
+                .with_valid(|| ())
+                .map_err(|error| error.to_string())
+        })
+        .map_err(|message| ApiError::new(ErrorCode::Refused, message))?;
         self.on_window(path, true, move |studio| {
+            crate::embedded::validate_current_edit(studio, expected_session, expected_revision)
+                .map_err(|message| ApiError::new(ErrorCode::Refused, message))?;
+            let current = session(studio)?;
+            current
+                .check_revision(expected_session, expected_revision)
+                .and_then(|()| media.recheck(current.project()))
+                .map_err(|message| ApiError::new(ErrorCode::Refused, message))?;
             studio
                 .apply_agent(command, expected_session, expected_revision)
                 .map_err(|message| ApiError::new(ErrorCode::Refused, message))

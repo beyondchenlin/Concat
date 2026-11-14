@@ -2,6 +2,7 @@
 
 import { RuntimeRefused } from "./gate.ts";
 import { nativeSqlitePort } from "./sqlite-port.ts";
+import { nativeNetworkFetch } from "./native-network.ts";
 import type { NativePorts, OwnerLease, RecoverySnapshot, ExecutionGrant } from "./ports.ts";
 
 export const NATIVE_CHANNEL = "bk-cat-runtime-v1";
@@ -28,6 +29,7 @@ export class NativeWireClient {
   readonly #revocations = new Set<(lease: Pick<OwnerLease, "handle" | "generation">) => void>();
   readonly #revoked = new Set<string>();
   readonly #savedAcks = new Set<string>();
+  readonly #closeListeners = new Set<() => void>();
   #owner: OwnerLease | undefined;
   #sequence = 0;
   #closed = false;
@@ -77,7 +79,7 @@ export class NativeWireClient {
 
   call(payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     if (this.#closed) return Promise.reject(new RuntimeRefused("native message channel is closed"));
-    const cleanup = ["ownership.revoke", "ownership.drainAndRelease", "sqlite.rollback", "sqlite.close"].includes(String(payload.method));
+    const cleanup = ["ownership.revoke", "ownership.drainAndRelease", "sqlite.rollback", "sqlite.close", "network.cancel"].includes(String(payload.method));
     if (this.#pending.size >= 1024 && !cleanup) return Promise.reject(new RuntimeRefused("native channel request limit reached"));
     signal?.throwIfAborted();
     const id = `js:${this.#prefix}:${++this.#sequence}`;
@@ -109,6 +111,19 @@ export class NativeWireClient {
     this.#owner = Object.freeze({ ...lease });
   }
 
+  assertOwner(lease: OwnerLease): void {
+    if (this.#closed || !this.#owner || this.#owner.handle !== lease.handle || this.#owner.generation !== lease.generation
+      || this.#owner.storageId !== lease.storageId || this.#revoked.has(JSON.stringify([lease.handle, lease.generation]))) {
+      throw new RuntimeRefused("native network owner is no longer active");
+    }
+  }
+
+  onClosed(listener: () => void): () => void {
+    if (this.#closed) { listener(); return () => {}; }
+    this.#closeListeners.add(listener);
+    return () => { this.#closeListeners.delete(listener); };
+  }
+
   #savedFailure(message: string): void {
     if (this.#closed) return;
     try {
@@ -132,6 +147,8 @@ export class NativeWireClient {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    for (const listener of this.#closeListeners) listener();
+    this.#closeListeners.clear();
     this.#bridge.removeEventListener("message", this.#receive);
     for (const pending of this.#pending.values()) {
       pending.detach(); pending.reject(new RuntimeRefused("native message channel was closed"));
@@ -173,6 +190,12 @@ export function messageNativePorts(wire: NativeWireClient): NativePorts {
     },
     recovery: {
       async read(lease, signal) { return record(await bound(lease, "recovery.read", {}, signal)) as unknown as RecoverySnapshot; },
+      async discardVerified(lease, signal) {
+        const result = record(await bound(lease, "recovery.discardVerified", {}, signal));
+        if (result.verified !== true || Object.keys(result).length !== 1) {
+          throw new RuntimeRefused("原生未确认历史任务已全部结束，会话未恢复就绪。");
+        }
+      },
     },
     sqlite: nativeSqlitePort({ send: (frame, signal) => wire.call({ ...frame }, signal) }),
     mcp: {
@@ -183,10 +206,11 @@ export function messageNativePorts(wire: NativeWireClient): NativePorts {
       },
     },
     network: {
-      async fetch() {
-        // This first host profile has no native stream transport or model
-        // service configuration. No browser fetch fallback is permitted.
-        throw new RuntimeRefused("native model streaming transport and cost authorization are not configured");
+      fetch: (lease, networkPermit, input, init) => nativeNetworkFetch(wire, lease, networkPermit, input, init),
+    },
+    tasks: {
+      async bind(lease, taskId, conversationId, signal) {
+        await bound(lease, "task.bind", { taskId, conversationId }, signal);
       },
     },
   };

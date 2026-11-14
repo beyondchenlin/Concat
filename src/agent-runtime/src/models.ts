@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { createModels, type CredentialStore, type Models, type Provider } from "@earendil-works/pi-ai";
+// Use the public core module directly. With lazy API chunks, importing this
+// function through Pi's side-effect-free root barrel lets the browser bundler
+// omit the core module's initializer while retaining the hoisted function.
+import { createModels } from "@earendil-works/pi-ai/models";
+import type { CredentialStore, Models, Provider } from "@earendil-works/pi-ai";
 import { combinedSignal, ExecutionGate, RuntimeRefused } from "./gate.ts";
 import type { NativePorts, OwnerLease } from "./ports.ts";
+import type { NativeModelConfiguration } from "./model-configuration.ts";
 
 /** Supplied only from the native user's explicit project model settings. */
 export interface ModelConfiguration {
   readonly providers: readonly Provider[];
   /** The native implementation scopes access to this product and lease. */
   readonly credentials: CredentialStore;
+  readonly native?: NativeModelConfiguration;
+  readonly pricingKnown?: false;
 }
 
 /**
@@ -60,6 +67,13 @@ export function nativeModels(
     return response;
   };
   const wrappedProviders = new WeakMap<Provider, Provider>();
+  const requestOptions = (options: Record<string, unknown> & { signal?: AbortSignal }) => ({
+    ...options, signal: combinedSignal(gate.signal, options.signal), fetch, transport: "sse", maxRetries: 0,
+    ...(configuration.native ? {
+      timeoutMs: configuration.native.requestTimeoutMs, maxTokens: configuration.native.maxOutputTokens,
+      cacheRetention: "none",
+    } : {}),
+  });
   const guardProvider = (provider: Provider): Provider => {
     const existing = wrappedProviders.get(provider);
     if (existing) return existing;
@@ -75,7 +89,7 @@ export function nativeModels(
           gate.assertReady(lease);
           const index = optionAt[property];
           const options = (args[index] ?? {}) as Record<string, unknown> & { signal?: AbortSignal };
-          args[index] = { ...options, signal: combinedSignal(gate.signal, options.signal), fetch, transport: "sse", maxRetries: 0 };
+          args[index] = requestOptions(options);
           return Reflect.apply(value, target, args);
         };
         return () => { throw new RuntimeRefused("provider operation is not reviewed for the embedded runtime"); };
@@ -99,7 +113,7 @@ export function nativeModels(
         gate.assertReady(lease);
         const index = optionAt[property];
         const options = (args[index] ?? {}) as Record<string, unknown> & { signal?: AbortSignal };
-        args[index] = { ...options, signal: combinedSignal(gate.signal, options.signal), fetch, transport: "sse", maxRetries: 0 };
+        args[index] = requestOptions(options);
         return Reflect.apply(value, target, args);
       };
       return () => { throw new RuntimeRefused("model configuration or refresh belongs to native settings"); };

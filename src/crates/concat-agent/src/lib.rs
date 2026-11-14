@@ -35,8 +35,12 @@ use std::time::{Duration, Instant};
 
 /// Non-secret native model channels, versioned independently of projects and sessions.
 pub mod configuration;
+/// Native project bindings for original Pi conversation identities, without messages or scheduling.
+pub mod conversations;
 /// Product-scoped platform secure credentials, never persisted in model metadata.
 pub mod credentials;
+/// Bounded native model transport; credentials never enter the embedded page.
+pub mod network;
 /// Durable native edit intent, receipt, disk-save and notification states.
 pub mod operations;
 /// Persistent project-location admission for independent script versions.

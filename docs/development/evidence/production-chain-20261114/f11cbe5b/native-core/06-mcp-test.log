@@ -1,0 +1,72 @@
+Command: cargo +1.93.1 test -p concat-mcp --locked -j 2 -- --test-threads=2
+   Compiling serde_derive_internals v0.30.0
+   Compiling ref-cast-impl v1.0.27
+   Compiling ref-cast v1.0.27
+   Compiling serde v1.0.229
+   Compiling serde_json v1.0.151
+   Compiling dyn-clone v1.0.20
+   Compiling concat-server v0.2.10 (/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/crates/concat-server)
+   Compiling schemars_derive v1.2.3
+   Compiling schemars v1.2.3
+   Compiling concat-project v0.2.10 (/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/crates/concat-project)
+   Compiling concat-effects v0.2.10 (/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/crates/concat-effects)
+   Compiling concat-vision v0.2.10 (/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/crates/concat-vision)
+   Compiling concat-export v0.2.10 (/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/crates/concat-export)
+   Compiling concat-host v0.2.10 (/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/crates/concat-host)
+   Compiling concat-api v0.2.10 (/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/crates/concat-api)
+   Compiling concat-mcp v0.2.10 (/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/crates/concat-mcp)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 44.55s
+     Running unittests src/lib.rs (/workspace/scratch/a2559d0f84f7/target-native/debug/deps/concat_mcp-2a9b92cc7b24a3a9)
+
+running 22 tests
+test backend::tests::a_lost_guarded_reply_never_discovers_reconnects_or_replays ... ok
+test protocol::tests::a_cancelled_queued_guarded_frame_cannot_be_replayed ... ok
+test protocol::tests::a_connection_cannot_switch_to_a_different_protocol_after_initialize ... ok
+test protocol::tests::cancellation_overflow_refuses_every_later_guarded_write ... ok
+test protocol::tests::close_finishes_the_backend_once_and_never_reopens_the_session ... ok
+test protocol::tests::a_line_that_is_not_utf8_is_refused_and_the_session_goes_on ... ok
+test protocol::tests::embedded_tool_dispatch_preserves_guard_fields_and_refuses_duplicate_ids ... ok
+test protocol::tests::guarded_schema_and_typed_dispatch_refuse_missing_or_wrong_versions ... ok
+test protocol::tests::hidden_legacy_tools_and_unknown_methods_never_reach_the_backend ... ok
+test protocol::tests::pinned_pi_handshake_retains_its_version_and_requires_initialized ... ok
+test protocol::tests::every_supported_legacy_handshake_is_negotiated_without_relabeling ... ok
+test schema::tests::a_batch_keeps_the_one_reference_it_must_and_carries_its_definition ... ok
+test schema::tests::a_command_carries_the_project_path ... ok
+test schema::tests::a_method_is_cut_out_without_its_tag_and_with_its_references_inlined ... ok
+test schema::tests::the_embedded_list_contains_only_one_edit_vocabulary ... ok
+test protocol::tests::stdio_still_accepts_the_fixed_pi_handshake_version ... ok
+test summary::tests::a_view_reads_as_the_active_timeline_in_time_order ... ok
+test schema::tests::the_tool_list_fits_an_agents_context ... ok
+test tools::tests::a_wrong_argument_is_refused_by_the_schema_and_by_the_type_alike ... ok
+test tools::tests::every_tool_has_a_schema_and_a_sample_and_names_are_unique ... ok
+test tools::tests::every_sample_fits_its_schema_and_reads_as_its_request ... ok
+test tools::tests::export_wait_progress_follows_the_stages_the_exporter_reports ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.97s
+
+     Running unittests src/bin/concat-mcp.rs (/workspace/scratch/a2559d0f84f7/target-native/debug/deps/concat_mcp-c01dc7d134cca211)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/e2e.rs (/workspace/scratch/a2559d0f84f7/target-native/debug/deps/e2e-a87f83814e60d982)
+
+running 4 tests
+concat mcp: serving through {"mode":"headless","writesUnder":["/tmp/.tmpYMcUpQ"]}
+concat mcp: serving through {"mode":"headless","writesUnder":["/tmp/.tmpk8NOQz"]}
+test a_modern_client_discovers_and_is_told_which_versions_are_spoken ... ok
+concat mcp: serving through {"mode":"headless","writesUnder":["/tmp/.tmpm1RMlq"]}
+test guarded_edits_refuse_a_headless_copy_without_changing_it ... ok
+concat mcp: serving through {"address":"127.0.0.1:44375","mode":"window"}
+test an_agent_edits_previews_and_exports_a_project_headless ... ok
+test through_a_running_server_the_agent_shares_its_api ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.09s
+
+   Doc-tests concat_mcp
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

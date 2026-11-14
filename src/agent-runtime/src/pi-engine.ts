@@ -3,7 +3,7 @@
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import {
   Harness, createRegistry, type ConversationId, type SubmissionId, type TaskId,
-  type ToolRegistration,
+  type ToolRegistration, type AgentChange, type Storage,
 } from "@earendil-works/pi-durable";
 import { CURRENT_SQLITE_SCHEMA_VERSION, SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 // The pinned package root also re-exports its Node stdio transport. Use
@@ -13,10 +13,11 @@ import { McpClient } from "@bk-cat/pi-reference/mcp/client";
 import { normalizeMcpInputSchema } from "@bk-cat/pi-reference/mcp/input-schema";
 import { toLlmContent } from "@bk-cat/pi-reference/mcp/content";
 import { RuntimeRefused } from "./gate.ts";
-import { argumentObject, conversationOptions, submissionDraft } from "./commands.ts";
+import { argumentObject, conversationOptions, submissionDraft, nativeTaskInput, type NativeTaskInput } from "./commands.ts";
 import { nativeModels, type ModelConfiguration } from "./models.ts";
 import { EMBEDDED_TOOLS, guardedDatabase, guardedStorage, NativeMcpTransport } from "./native-adapters.ts";
 import type { EngineOpenOptions, PiEngine, PiEngineFactory, SchedulingAction } from "./ports.ts";
+import { discardOriginalWork, reviewDiscardStorage } from "./recovery-discard.ts";
 
 /** Builds only the original pinned Pi Harness and portable SqliteStorage. */
 export function piEngineFactory(configuration: ModelConfiguration): PiEngineFactory {
@@ -33,6 +34,7 @@ export function piEngineFactory(configuration: ModelConfiguration): PiEngineFact
       const transport = new NativeMcpTransport(ports, lease, gate);
       let storage: SqliteStorage | undefined;
       let harness: Harness | undefined;
+      const nativeTask: NativeTaskState = {};
       try {
         gate.assertStorageWrite(lease);
         storage = await SqliteStorage.open(guardedDatabase(database, gate, lease));
@@ -54,6 +56,10 @@ export function piEngineFactory(configuration: ModelConfiguration): PiEngineFact
           executionMode: "sequential",
           async execute(args, api, context) {
             gate.assertReady(lease);
+            if (!nativeTask.active || nativeTask.active.conversationId !== api.conversationId
+              || (tool.name === "edit_apply_guarded" && nativeTask.active.mode !== "edit")) {
+              throw new RuntimeRefused("this native task does not authorize the requested tool");
+            }
             const argumentsObject = { ...args as Record<string, unknown> };
             const result = await transport.withInvocation(argumentsObject, {
               taskId: api.taskId, conversationId: api.conversationId, callId: api.callId,
@@ -64,7 +70,13 @@ export function piEngineFactory(configuration: ModelConfiguration): PiEngineFact
         }));
         registry.install({ name: "bk-cat-native", tools });
         const context = withAbortSignal(gate.signal, BACKGROUND_CONTEXT);
-        harness = await Harness.open(guardedStorage(storage, gate, lease), {
+        const ownedStorage = guardedStorage(storage, gate, lease);
+        if (grant.discardConversationIds !== undefined) {
+          // Original Harness.open itself persists restart reconciliation. Read
+          // every live record before allowing that write to a shared store.
+          await reviewDiscardStorage(ownedStorage, grant.discardConversationIds, gate, lease, context);
+        }
+        harness = await Harness.open(ownedStorage, {
           models: nativeModels(configuration, ports, gate, lease),
           registry,
           settings: {
@@ -87,6 +99,11 @@ export function piEngineFactory(configuration: ModelConfiguration): PiEngineFact
         }, context);
         const opened = harness;
         gate.assertStorageWrite(lease);
+        if (grant.discardConversationIds !== undefined) {
+          await discardOriginalWork(opened, grant.discardConversationIds, gate, lease, context);
+          await reviewDiscardStorage(ownedStorage, grant.discardConversationIds, gate, lease, context, true);
+          gate.assertStorageWrite(lease);
+        }
         return {
           async inspect() {
             gate.assertOwned(lease);
@@ -110,7 +127,7 @@ export function piEngineFactory(configuration: ModelConfiguration): PiEngineFact
           },
           async run(action, raw) {
             gate.assertReady(lease);
-            return runOriginal(opened, action, raw, options);
+            return runOriginal(opened, ownedStorage, action, raw, options, configuration, tools, nativeTask);
           },
           async close() {
             const results = await Promise.allSettled([opened.close(BACKGROUND_CONTEXT), client.close()]);
@@ -123,6 +140,9 @@ export function piEngineFactory(configuration: ModelConfiguration): PiEngineFact
           harness ? harness.close(BACKGROUND_CONTEXT) : storage ? storage.close(BACKGROUND_CONTEXT) : database.close(),
           client.close(),
         ]);
+        if (grant.discardConversationIds !== undefined && !(error instanceof RuntimeRefused)) {
+          throw new RuntimeRefused("原版会话核对或取消失败，已有记录保留，运行组件未进入就绪状态。");
+        }
         throw error;
       }
     },
@@ -130,12 +150,107 @@ export function piEngineFactory(configuration: ModelConfiguration): PiEngineFact
 }
 
 /** Direct calls into original Pi. No custom scheduling, retry or task loop. */
-async function runOriginal(harness: Harness, action: SchedulingAction, raw: unknown, options: EngineOpenOptions): Promise<unknown> {
+async function runOriginal(
+  harness: Harness, storage: Storage, action: SchedulingAction, raw: unknown, options: EngineOpenOptions,
+  configuration: ModelConfiguration, tools: readonly ToolRegistration[], nativeTask: NativeTaskState,
+): Promise<unknown> {
   const { gate, lease } = options;
   const context = withAbortSignal(gate.signal, BACKGROUND_CONTEXT);
   const input = raw === undefined ? {} : argumentObject(raw);
   gate.assertReady(lease);
   switch (action) {
+    case "nativeSubmit": {
+      const input = nativeTaskInput(raw);
+      const model = configuration.native;
+      if (!model || !options.ports.tasks) throw new RuntimeRefused("native model settings or task binding are unavailable");
+      if (nativeTask.active) throw new RuntimeRefused("another native task is active");
+      if (model.protocol === "openai-responses" && model.maxOutputTokens < 16) {
+        throw new RuntimeRefused("the responses protocol requires an output limit of at least 16 tokens");
+      }
+      nativeTask.active = { ...input };
+      try {
+        // Pi.submit resumes the shared scheduler. Do not use a new input to
+        // reactivate interrupted tasks anywhere in this store.
+        const unfinished = await harness.inspect(context);
+        gate.assertReady(lease);
+        if (unfinished.tasks.length || unfinished.submissions.length) {
+          throw new RuntimeRefused("unfinished durable work requires explicit native reconciliation");
+        }
+        const instructions = input.mode === "script"
+          ? "按用户要求创作或改写中文文案。最终回答只包含文案正文。当前任务只允许读取信息，不得修改剪辑工程。"
+          : input.mode === "edit"
+            ? "在当前原生工程中按用户明确选择的文案版本和任务要求剪辑。先读取工程和时间线，仅使用受保护编辑工具；工具拒绝时说明实际原因，不得宣称执行成功。"
+            : "回答用户关于当前工程的问题。当前任务只允许读取信息，不得修改剪辑工程。";
+        const change: AgentChange = {
+          model: { provider: model.id, modelId: model.model }, instructions, maxTurns: 4,
+          tools: tools.filter((tool) => input.mode === "edit" || tool.name !== "edit_apply_guarded"),
+          compaction: { enabled: false },
+        };
+        const conversation = input.conversationId === undefined
+          ? await harness.createConversation({ ownership: { kind: "ownerless" }, agent: change }, context)
+          : await harness.conversation(input.conversationId as ConversationId, context);
+        gate.assertReady(lease);
+        if (!conversation) throw new RuntimeRefused("the saved conversation no longer exists");
+        if (input.conversationId !== undefined) await conversation.configure(change, context);
+        gate.assertReady(lease);
+        await options.ports.tasks.bind(lease, input.taskId, conversation.id, gate.signal);
+        gate.assertReady(lease);
+        nativeTask.active = { ...input, conversationId: conversation.id };
+        gate.authorizeNetwork(lease, input.networkPermit);
+        const submission = await conversation.submit({ type: "input", requestId: input.taskId, content: input.input, whenBusy: "reject" }, context);
+        gate.assertReady(lease);
+        nativeTask.active = { ...nativeTask.active, submissionId: submission.id };
+        return { taskId: input.taskId, conversationId: conversation.id, submissionId: submission.id };
+      } catch (error) {
+        gate.finishNetwork(input.networkPermit);
+        nativeTask.active = undefined;
+        throw error;
+      }
+    }
+    case "nativeWait": {
+      const active = nativeTask.active;
+      if (!active || input.taskId !== active.taskId || active.submissionId === undefined || active.conversationId === undefined) {
+        throw new RuntimeRefused("native task completion does not match the admitted submission");
+      }
+      try {
+        const submission = await harness.submission(active.submissionId as SubmissionId, context);
+        gate.assertReady(lease);
+        if (!submission) throw new RuntimeRefused("native durable submission is missing");
+        const result = await submission.wait(context);
+        gate.assertReady(lease);
+        if (result.conversationId !== active.conversationId || result.requestId !== active.taskId) {
+          throw new RuntimeRefused("durable submission identity changed");
+        }
+        let text = "";
+        if (result.status === "done" && result.answer !== undefined) {
+          // The original Harness has no entry reader. Read the exact committed
+          // answer through the same fenced original storage, scoped to the
+          // admitted conversation, and reject even a visible ancestor's entry.
+          const stored = await storage.entry(active.conversationId as ConversationId, result.answer, context);
+          gate.assertReady(lease);
+          const answer = stored?.entry;
+          if (!answer || answer.id !== result.answer || answer.conversationId !== active.conversationId) {
+            throw new RuntimeRefused("durable answer is missing");
+          }
+          text = (answer.model ?? []).filter((message) => message.role === "assistant")
+            .flatMap((message) => message.content.filter((part) => part.type === "text").map((part) => part.text)).join("\n");
+          // JSON can expand control characters to six bytes; this bounded
+          // answer still fits the 2 MiB native frame with identity metadata.
+          if (new TextEncoder().encode(text).byteLength > 256 * 1024) {
+            throw new RuntimeRefused("durable answer exceeds the native message limit");
+          }
+        }
+        const allowedReasons = new Set(["aborted", "no_model", "turn_limit", "error", "failed", "interrupted", "restart_limit", "tool_error", "tool_errors", "length"]);
+        return {
+          taskId: active.taskId, conversationId: active.conversationId, submissionId: active.submissionId,
+          status: result.status, text,
+          ...(result.status === "unanswered" ? { reason: allowedReasons.has(result.reason) ? result.reason : "failed" } : {}),
+        };
+      } finally {
+        gate.finishNetwork(active.networkPermit);
+        nativeTask.active = undefined;
+      }
+    }
     case "resume": harness.resume(); return undefined;
     case "waitForIdle": return harness.waitForIdle(context);
     case "createConversation": {
@@ -172,6 +287,10 @@ async function runOriginal(harness: Harness, action: SchedulingAction, raw: unkn
       throw new RuntimeRefused("unreviewed Pi scheduling action");
     }
   }
+}
+
+interface NativeTaskState {
+  active?: NativeTaskInput & { conversationId?: number; submissionId?: number };
 }
 
 function id(value: unknown): number {

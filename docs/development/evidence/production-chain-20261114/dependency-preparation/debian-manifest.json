@@ -1,0 +1,151 @@
+{
+  "release_url": "https://deb.debian.org/debian/dists/trixie/InRelease",
+  "packages_url": "https://deb.debian.org/debian/dists/trixie/main/binary-amd64/Packages.xz",
+  "index_sha256": "7778d3e3f303b7ddb8ce0fe7c8d57473a076c6bf2e8f241f75421d2396352498",
+  "release_sha256": "0584fba32e13e0ab8285fb16c27adea1ec03a73669c18702821094fd6ca86675",
+  "signature_verified": true,
+  "packages": [
+    {
+      "Package": "libasound2-data",
+      "Version": "1.2.14-1+deb13u1",
+      "Architecture": "all",
+      "Filename": "pool/main/a/alsa-lib/libasound2-data_1.2.14-1+deb13u1_all.deb",
+      "Size": "21188",
+      "SHA256": "04688afdff3769c0f685541daed7b2f6f0cb946799ddf1d5847ddf11fe245559",
+      "download_url": "https://deb.debian.org/debian/pool/main/a/alsa-lib/libasound2-data_1.2.14-1+deb13u1_all.deb",
+      "actual_sha256": "04688afdff3769c0f685541daed7b2f6f0cb946799ddf1d5847ddf11fe245559"
+    },
+    {
+      "Package": "libasound2-dev",
+      "Version": "1.2.14-1+deb13u1",
+      "Architecture": "amd64",
+      "Depends": "libasound2t64 (= 1.2.14-1+deb13u1)",
+      "Filename": "pool/main/a/alsa-lib/libasound2-dev_1.2.14-1+deb13u1_amd64.deb",
+      "Size": "120152",
+      "SHA256": "dfa8e8a133ef8704093d03464d86a3e86d26232baf1e3827aa030cb68c437e1c",
+      "download_url": "https://deb.debian.org/debian/pool/main/a/alsa-lib/libasound2-dev_1.2.14-1+deb13u1_amd64.deb",
+      "actual_sha256": "dfa8e8a133ef8704093d03464d86a3e86d26232baf1e3827aa030cb68c437e1c"
+    },
+    {
+      "Package": "libasound2t64",
+      "Version": "1.2.14-1+deb13u1",
+      "Architecture": "amd64",
+      "Depends": "libasound2-data (>= 1.2.14-1+deb13u1), libc6 (>= 2.38)",
+      "Filename": "pool/main/a/alsa-lib/libasound2t64_1.2.14-1+deb13u1_amd64.deb",
+      "Size": "380896",
+      "SHA256": "5495496142d57e5ad6d581ac5456ec3c87f872c109a2bfb815d154b673eebc67",
+      "download_url": "https://deb.debian.org/debian/pool/main/a/alsa-lib/libasound2t64_1.2.14-1+deb13u1_amd64.deb",
+      "actual_sha256": "5495496142d57e5ad6d581ac5456ec3c87f872c109a2bfb815d154b673eebc67"
+    },
+    {
+      "Package": "libbz2-1.0",
+      "Version": "1.0.8-6",
+      "Architecture": "amd64",
+      "Depends": "libc6 (>= 2.4)",
+      "Filename": "pool/main/b/bzip2/libbz2-1.0_1.0.8-6_amd64.deb",
+      "Size": "37912",
+      "SHA256": "cba4cda04244b5e481bb15524bc3c983a7d1b6f330013b9b381706a2fcb65310",
+      "download_url": "https://deb.debian.org/debian/pool/main/b/bzip2/libbz2-1.0_1.0.8-6_amd64.deb",
+      "actual_sha256": "cba4cda04244b5e481bb15524bc3c983a7d1b6f330013b9b381706a2fcb65310"
+    },
+    {
+      "Package": "libbz2-dev",
+      "Version": "1.0.8-6",
+      "Architecture": "amd64",
+      "Depends": "libbz2-1.0 (= 1.0.8-6), libc6-dev | libc-dev",
+      "Filename": "pool/main/b/bzip2/libbz2-dev_1.0.8-6_amd64.deb",
+      "Size": "31368",
+      "SHA256": "b395471bf69087a18a6baa04d68a9d50497b20f8a2602d9729c7069f820bbe6b",
+      "download_url": "https://deb.debian.org/debian/pool/main/b/bzip2/libbz2-dev_1.0.8-6_amd64.deb",
+      "actual_sha256": "b395471bf69087a18a6baa04d68a9d50497b20f8a2602d9729c7069f820bbe6b"
+    },
+    {
+      "Package": "libfontconfig-dev",
+      "Version": "2.15.0-2.3",
+      "Architecture": "amd64",
+      "Depends": "libfontconfig1 (= 2.15.0-2.3), libexpat1-dev, libfreetype-dev (>= 2.8.1), uuid-dev, pkgconf",
+      "Filename": "pool/main/f/fontconfig/libfontconfig-dev_2.15.0-2.3_amd64.deb",
+      "Size": "414252",
+      "SHA256": "e7c533d87da316da3b127d136c0d1f0238a936c4b0797cb5ab67ebac3cf7151e",
+      "download_url": "https://deb.debian.org/debian/pool/main/f/fontconfig/libfontconfig-dev_2.15.0-2.3_amd64.deb",
+      "actual_sha256": "e7c533d87da316da3b127d136c0d1f0238a936c4b0797cb5ab67ebac3cf7151e"
+    },
+    {
+      "Package": "libfontconfig1",
+      "Version": "2.15.0-2.3",
+      "Architecture": "amd64",
+      "Depends": "libc6 (>= 2.38), libexpat1 (>= 2.0.1), libfreetype6 (>= 2.9.1), fontconfig-config (>= 2.15.0-2.3)",
+      "Filename": "pool/main/f/fontconfig/libfontconfig1_2.15.0-2.3_amd64.deb",
+      "Size": "391576",
+      "SHA256": "7ae91ec59857cc8e375eb2bdd371a4a69daea38f7787d06d474a847867d852b1",
+      "download_url": "https://deb.debian.org/debian/pool/main/f/fontconfig/libfontconfig1_2.15.0-2.3_amd64.deb",
+      "actual_sha256": "7ae91ec59857cc8e375eb2bdd371a4a69daea38f7787d06d474a847867d852b1"
+    },
+    {
+      "Package": "libfreetype-dev",
+      "Version": "2.13.3+dfsg-1+deb13u1",
+      "Architecture": "amd64",
+      "Depends": "libfreetype6 (= 2.13.3+dfsg-1+deb13u1), libbrotli-dev, libbz2-dev, libc6-dev | libc-dev, libpng-dev, zlib1g-dev | libz-dev",
+      "Filename": "pool/main/f/freetype/libfreetype-dev_2.13.3+dfsg-1+deb13u1_amd64.deb",
+      "Size": "622868",
+      "SHA256": "f58107859d9fa44206e64cf35bdbd4febdec66a33e456ce2e5e3712f01b6c895",
+      "download_url": "https://deb.debian.org/debian/pool/main/f/freetype/libfreetype-dev_2.13.3+dfsg-1+deb13u1_amd64.deb",
+      "actual_sha256": "f58107859d9fa44206e64cf35bdbd4febdec66a33e456ce2e5e3712f01b6c895"
+    },
+    {
+      "Package": "libfreetype6",
+      "Version": "2.13.3+dfsg-1+deb13u1",
+      "Architecture": "amd64",
+      "Depends": "libbrotli1 (>= 0.6.0), libbz2-1.0, libc6 (>= 2.33), libpng16-16t64 (>= 1.6.46), zlib1g (>= 1:1.1.4)",
+      "Filename": "pool/main/f/freetype/libfreetype6_2.13.3+dfsg-1+deb13u1_amd64.deb",
+      "Size": "452308",
+      "SHA256": "e4947f3291528f03d574f2b01d5c5fc45c58c47480f32888a5cdf0f231ab584e",
+      "download_url": "https://deb.debian.org/debian/pool/main/f/freetype/libfreetype6_2.13.3+dfsg-1+deb13u1_amd64.deb",
+      "actual_sha256": "e4947f3291528f03d574f2b01d5c5fc45c58c47480f32888a5cdf0f231ab584e"
+    },
+    {
+      "Package": "libpng-dev",
+      "Version": "1.6.48-1+deb13u5",
+      "Architecture": "amd64",
+      "Depends": "libpng16-16t64 (= 1.6.48-1+deb13u5), zlib1g-dev",
+      "Filename": "pool/main/libp/libpng1.6/libpng-dev_1.6.48-1+deb13u5_amd64.deb",
+      "Size": "367368",
+      "SHA256": "9027d5ace59ce266124c87054302805f49f9cb1ec4a6c8264a64596c7916fbff",
+      "download_url": "https://deb.debian.org/debian/pool/main/libp/libpng1.6/libpng-dev_1.6.48-1+deb13u5_amd64.deb",
+      "actual_sha256": "9027d5ace59ce266124c87054302805f49f9cb1ec4a6c8264a64596c7916fbff"
+    },
+    {
+      "Package": "libpng16-16t64",
+      "Version": "1.6.48-1+deb13u5",
+      "Architecture": "amd64",
+      "Depends": "libc6 (>= 2.29), zlib1g (>= 1:1.2.3.4)",
+      "Filename": "pool/main/libp/libpng1.6/libpng16-16t64_1.6.48-1+deb13u5_amd64.deb",
+      "Size": "283204",
+      "SHA256": "2465b4e9fa85cff54dc10a6da3e64074d8d9292c86e4a8f989b809d6b158e97e",
+      "download_url": "https://deb.debian.org/debian/pool/main/libp/libpng1.6/libpng16-16t64_1.6.48-1+deb13u5_amd64.deb",
+      "actual_sha256": "2465b4e9fa85cff54dc10a6da3e64074d8d9292c86e4a8f989b809d6b158e97e"
+    },
+    {
+      "Package": "libxkbcommon-dev",
+      "Version": "1.7.0-2",
+      "Architecture": "amd64",
+      "Depends": "libxkbcommon0 (= 1.7.0-2)",
+      "Filename": "pool/main/libx/libxkbcommon/libxkbcommon-dev_1.7.0-2_amd64.deb",
+      "Size": "53644",
+      "SHA256": "b62327152ae59bec442c0d7ae893520a3a3a2381100c83332e4a3497157ce5ec",
+      "download_url": "https://deb.debian.org/debian/pool/main/libx/libxkbcommon/libxkbcommon-dev_1.7.0-2_amd64.deb",
+      "actual_sha256": "b62327152ae59bec442c0d7ae893520a3a3a2381100c83332e4a3497157ce5ec"
+    },
+    {
+      "Package": "libxkbcommon0",
+      "Version": "1.7.0-2",
+      "Architecture": "amd64",
+      "Depends": "xkb-data, libc6 (>= 2.38)",
+      "Filename": "pool/main/libx/libxkbcommon/libxkbcommon0_1.7.0-2_amd64.deb",
+      "Size": "112700",
+      "SHA256": "f75ee544f55acc6a271debfab3ea4ae0458afc89d81cfe1a71137e07d4895b86",
+      "download_url": "https://deb.debian.org/debian/pool/main/libx/libxkbcommon/libxkbcommon0_1.7.0-2_amd64.deb",
+      "actual_sha256": "f75ee544f55acc6a271debfab3ea4ae0458afc89d81cfe1a71137e07d4895b86"
+    }
+  ]
+}
