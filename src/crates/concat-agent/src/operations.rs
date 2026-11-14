@@ -321,21 +321,20 @@ impl OperationJournal {
         })?
     }
 
-    /// The native UI may report an editable task as having changed the
-    /// timeline only when the exact original tool invocation has a persisted
-    /// changed-editor receipt. A successful model answer, MCP text, or an
-    /// unchanged native command is not evidence of an edit.
-    pub fn has_changed_receipt(
+    /// Return the authoritative native editor receipt only for the original
+    /// Pi invocation and the exact project/session/revision it was allowed to
+    /// edit. The caller must compare the public tool reply against the
+    /// serialized/translated form of this receipt before reporting success.
+    pub fn changed_receipt(
         &self,
         invocation: &Invocation,
         project_path: &str,
         expected_session: u64,
         expected_revision: u64,
-        editor_reply: &Value,
-    ) -> Result<bool, JournalError> {
+    ) -> Result<Option<Value>, JournalError> {
         invocation.validate()?;
         let connection = self.connection()?;
-        self.permit.with_valid(|| -> Result<bool, JournalError> {
+        self.permit.with_valid(|| -> Result<Option<Value>, JournalError> {
             let record: Option<(String, Option<String>, Option<String>, Option<String>)> =
                 connection.query_row(
                     "SELECT expected_revision,result_session,result_revision,receipt FROM operations \
@@ -345,16 +344,16 @@ impl OperationJournal {
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 ).optional()?;
             let Some((original_revision, Some(session), Some(revision), Some(receipt))) = record else {
-                return Ok(false);
+                return Ok(None);
             };
             let revision = revision.parse::<u64>().map_err(|_| JournalError::InvalidSchema)?;
             let receipt: Value = serde_json::from_str(&receipt).map_err(|_| JournalError::InvalidSchema)?;
-            Ok(original_revision == expected_revision.to_string()
+            let valid = original_revision == expected_revision.to_string()
                 && session == expected_session.to_string()
                 && revision > expected_revision
-                && editor_reply.get("sessionId").and_then(Value::as_u64) == Some(expected_session)
-                && editor_reply.get("revision").and_then(Value::as_u64) == Some(revision)
-                && receipt == *editor_reply)
+                && receipt.get("sessionId").and_then(Value::as_u64) == Some(expected_session)
+                && receipt.get("revision").and_then(Value::as_u64) == Some(revision);
+            Ok(valid.then_some(receipt))
         })?
     }
 
