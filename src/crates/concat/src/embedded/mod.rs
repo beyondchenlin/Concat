@@ -908,9 +908,8 @@ impl EmbeddedRuntime {
                 .filter(|intent| intent.id == id)
                 .ok_or("任务完成不属于当前原生请求。")?;
             let native_edit_verified = self.native.tasks.finish(id, conversation)?;
-            let edit_without_changes = successful
-                && intent.mode == TaskMode::Edit
-                && !native_edit_verified;
+            let edit_without_changes =
+                successful && intent.mode == TaskMode::Edit && !native_edit_verified;
             self.accepted_submission
                 .lock()
                 .map_err(|_| "任务接受回执不可用。")?
@@ -932,7 +931,9 @@ impl EmbeddedRuntime {
             let mut view = self.view.lock().map_err(|_| "本次任务状态不可用。")?;
             view.task_running = false;
             if edit_without_changes {
-                view.error = "模型已经结束，但本次没有可核实的原生剪辑修改；不能把文字回复当作剪辑成功。".into();
+                view.error =
+                    "模型已经结束，但本次没有可核实的原生剪辑修改；不能把文字回复当作剪辑成功。"
+                        .into();
             } else if successful {
                 view.error.clear();
             } else if view.error.is_empty() {

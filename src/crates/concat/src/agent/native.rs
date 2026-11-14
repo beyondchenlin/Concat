@@ -446,14 +446,19 @@ impl NativeSession {
                             .into(),
                     );
                 }
-                let guarded_edit = message.get("method").and_then(Value::as_str) == Some("tools/call")
+                let guarded_edit = message.get("method").and_then(Value::as_str)
+                    == Some("tools/call")
                     && message.pointer("/params/name").and_then(Value::as_str)
                         == Some("edit_apply_guarded");
                 self.tasks
                     .authorize_tool(&mut message, invocation.as_ref())?;
-                let response = self.bridge.handle_with_invocation(message, invocation.clone())?;
+                let response = self
+                    .bridge
+                    .handle_with_invocation(message, invocation.clone())?;
                 if guarded_edit {
-                    let reply = response.as_ref().ok_or("原生剪辑工具没有返回结果，需核对当前工程。")?;
+                    let reply = response
+                        .as_ref()
+                        .ok_or("原生剪辑工具没有返回结果，需核对当前工程。")?;
                     self.tasks.record_edit_result(
                         invocation.as_ref().ok_or("原生工具调用身份缺失。")?,
                         reply,

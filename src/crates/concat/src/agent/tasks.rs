@@ -406,7 +406,9 @@ impl NativeTasks {
             .lock()
             .map_err(|_| "任务状态不可用。")?
             .as_ref()
-            .filter(|task| task.mode == TaskMode::Edit && task.conversation == Some(invocation.conversation_id))
+            .filter(|task| {
+                task.mode == TaskMode::Edit && task.conversation == Some(invocation.conversation_id)
+            })
             .cloned()
             .ok_or("原生剪辑结果不属于当前任务。")?;
         let journal = self
@@ -426,16 +428,24 @@ impl NativeTasks {
             )
             .map_err(|_| "无法核对原生剪辑写入记录，未确认剪辑完成。")?;
         if !changed {
-            if reply["revision"].as_u64().is_some_and(|revision| revision > task.project.revision) {
-                return Err("原生剪辑回执声称已修改，但缺少匹配的持久操作记录；请核对工程。".into());
+            if reply["revision"]
+                .as_u64()
+                .is_some_and(|revision| revision > task.project.revision)
+            {
+                return Err(
+                    "原生剪辑回执声称已修改，但缺少匹配的持久操作记录；请核对工程。".into(),
+                );
             }
             return Ok(());
         }
         let mut current = self.task.lock().map_err(|_| "任务状态不可用。")?;
         let current = current
             .as_mut()
-            .filter(|current| current.id == task.id && current.permit == task.permit
-                && current.conversation == task.conversation)
+            .filter(|current| {
+                current.id == task.id
+                    && current.permit == task.permit
+                    && current.conversation == task.conversation
+            })
             .ok_or("核对剪辑回执期间原生任务已退役。")?;
         current.changed_by_native_tool = true;
         Ok(())
@@ -449,7 +459,9 @@ impl NativeTasks {
         {
             return Err("拒绝了不属于当前任务的完成回调。".into());
         }
-        let edited = task.as_ref().is_some_and(|task| task.changed_by_native_tool);
+        let edited = task
+            .as_ref()
+            .is_some_and(|task| task.changed_by_native_tool);
         if let Some(task) = task.take() {
             task.network.cancel();
         }
@@ -1111,16 +1123,35 @@ mod tests {
         let response = json!({"jsonrpc":"2.0","id":1,"result":{
             "isError":false,"structuredContent":reply,
         }});
-        assert!(fixture.tasks.record_edit_result(&invocation, &response).is_err(),
-            "a fabricated positive result cannot bypass the operation journal");
-        assert!(fixture.tasks.record_edit_result(&invocation,
-            &json!({"result":{"isError":false}})).is_err());
-        fixture.tasks.record_edit_result(&invocation,
-            &json!({"result":{"isError":true,"structuredContent":reply}})).unwrap();
-        fixture.tasks.record_edit_result(&invocation,
-            &json!({"result":{"isError":false,"structuredContent":{
-                "sessionId":17,"revision":3
-            }}})).unwrap();
+        assert!(
+            fixture
+                .tasks
+                .record_edit_result(&invocation, &response)
+                .is_err(),
+            "a fabricated positive result cannot bypass the operation journal"
+        );
+        assert!(
+            fixture
+                .tasks
+                .record_edit_result(&invocation, &json!({"result":{"isError":false}}))
+                .is_err()
+        );
+        fixture
+            .tasks
+            .record_edit_result(
+                &invocation,
+                &json!({"result":{"isError":true,"structuredContent":reply}}),
+            )
+            .unwrap();
+        fixture
+            .tasks
+            .record_edit_result(
+                &invocation,
+                &json!({"result":{"isError":false,"structuredContent":{
+                    "sessionId":17,"revision":3
+                }}}),
+            )
+            .unwrap();
         assert!(!fixture.tasks.finish(TASK, CONVERSATION).unwrap());
     }
 
@@ -1134,21 +1165,55 @@ mod tests {
         let request = json!({"method":"edit.applyGuarded","path":project.path,
             "expectedSession":project.session_id,"expectedRevision":project.revision,
             "command":{"op":"batch","commands":[]}});
-        let operation = match journal.prepare(&invocation, &request, &project.path,
-            project.session_id, project.revision).unwrap() {
+        let operation = match journal
+            .prepare(
+                &invocation,
+                &request,
+                &project.path,
+                project.session_id,
+                project.revision,
+            )
+            .unwrap()
+        {
             concat_agent::operations::Admission::New(id) => id,
             other => panic!("new original Pi call expected: {other:?}"),
         };
         let reply = json!({"sessionId":project.session_id,
             "revision":project.revision + 1,"applied":true});
         let response = json!({"result":{"isError":false,"structuredContent":reply}});
-        assert!(fixture.tasks.record_edit_result(&invocation, &response).is_err());
-        journal.record_receipt(operation, project.session_id, project.revision + 1, &reply).unwrap();
-        let forged = Invocation { call_id: "not-the-original-call".into(), ..invocation.clone() };
-        assert!(fixture.tasks.record_edit_result(&forged, &response).is_err());
-        let cross_conversation = Invocation { conversation_id: CONVERSATION + 1, ..invocation.clone() };
-        assert!(fixture.tasks.record_edit_result(&cross_conversation, &response).is_err());
-        fixture.tasks.record_edit_result(&invocation, &response).unwrap();
+        assert!(
+            fixture
+                .tasks
+                .record_edit_result(&invocation, &response)
+                .is_err()
+        );
+        journal
+            .record_receipt(operation, project.session_id, project.revision + 1, &reply)
+            .unwrap();
+        let forged = Invocation {
+            call_id: "not-the-original-call".into(),
+            ..invocation.clone()
+        };
+        assert!(
+            fixture
+                .tasks
+                .record_edit_result(&forged, &response)
+                .is_err()
+        );
+        let cross_conversation = Invocation {
+            conversation_id: CONVERSATION + 1,
+            ..invocation.clone()
+        };
+        assert!(
+            fixture
+                .tasks
+                .record_edit_result(&cross_conversation, &response)
+                .is_err()
+        );
+        fixture
+            .tasks
+            .record_edit_result(&invocation, &response)
+            .unwrap();
         assert!(fixture.tasks.finish(TASK, CONVERSATION).unwrap());
     }
 }
