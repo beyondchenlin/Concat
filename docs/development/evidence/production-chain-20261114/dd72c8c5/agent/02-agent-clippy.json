@@ -1,0 +1,24 @@
+{
+  "revision": "dd72c8c59fb3c66f4a61e49f0afcd3c471d4e59b",
+  "tree": "f9af8ec7fc765dce7061fe8f54a8ebd107c9d2d7",
+  "command": [
+    "/home/agent/.cargo/bin/cargo",
+    "+1.93.1",
+    "clippy",
+    "--locked",
+    "--offline",
+    "-j",
+    "2",
+    "-p",
+    "concat-agent",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "target": "/workspace/scratch/a2559d0f84f7/target-agent",
+  "cleaned_package": "concat-agent",
+  "started_utc": "2026-11-14T02:38:33Z",
+  "exit_code": 0,
+  "duration_seconds": 3.72
+}

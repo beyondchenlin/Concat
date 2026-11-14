@@ -30,11 +30,33 @@ const sandbox = vm.createContext({
   // These are real standard web implementations, not model/network stubs.
   // The pinned SDK checks FormData even when encoding a plain JSON request;
   // Node's VM does not expose its host's web globals automatically.
-  Request, Response, Headers, FormData, Blob, File, structuredClone,
+  Request, Response, Headers, FormData, Blob, File,
   ReadableStream, TextDecoder, TextEncoder, Uint8Array,
   setTimeout, clearTimeout, queueMicrotask, performance, crypto: webcrypto, btoa, atob,
   fetch: () => { forbiddenFetch++; throw new Error("Direct browser network is forbidden in this test"); },
 });
+// Node's native structuredClone returns host-realm plain objects. A real
+// browser returns objects in the caller's web realm; original Pi's strict JSON
+// admission checks that prototype identity. Keep native cloning (including
+// rejection, aliasing and cycles) and transfer only plain-object/array graphs
+// into the isolated browser realm before original tool validation consumes it.
+const webPrototypes = vm.runInContext("({ object: Object.prototype, array: Array.prototype })", sandbox);
+const webJsonParse = vm.runInContext("JSON.parse", sandbox);
+const nativeJsonReply = (value) => webJsonParse(JSON.stringify(value));
+sandbox.structuredClone = (value, options) => {
+  const cloned = structuredClone(value, options);
+  const seen = new Set();
+  const adoptPlain = (item) => {
+    if (!item || typeof item !== "object" || seen.has(item)) return;
+    seen.add(item);
+    const prototype = Object.getPrototypeOf(item);
+    if (prototype !== Object.prototype && prototype !== Array.prototype) return;
+    for (const key of Object.keys(item)) adoptPlain(item[key]);
+    Object.setPrototypeOf(item, prototype === Array.prototype ? webPrototypes.array : webPrototypes.object);
+  };
+  adoptPlain(cloned);
+  return cloned;
+};
 vm.runInContext(bundle.toString("utf8"), sandbox, { filename: "runtime.js" });
 const api = sandbox.BKCatRuntime;
 assert.equal(typeof api.AgentRuntime, "function");
@@ -213,16 +235,19 @@ function fixture(file, generation, configured, transport) {
         mcpCalls.push(message);
         if (message.method === "initialize") {
           assert.equal(message.params.protocolVersion, "2025-11-25");
-          return { jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-11-25", serverInfo: { name: "explicit-fixture", version: "1" }, capabilities: { tools: {} } } };
+          return nativeJsonReply({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-11-25", serverInfo: { name: "explicit-fixture", version: "1" }, capabilities: { tools: {} } } });
         }
         if (message.method === "notifications/initialized") return undefined;
-        if (message.method === "tools/list") return { jsonrpc: "2.0", id: message.id, result: { tools: [
+        // The real NativeWire receives JSON in the web realm. Preserve that
+        // boundary even in this direct-port fixture; host-realm arrays are
+        // rejected by the original durable strict-JSON checks.
+        if (message.method === "tools/list") return nativeJsonReply({ jsonrpc: "2.0", id: message.id, result: { tools: [
           "concat_version", "project_get", "timeline_read", "edit_apply_guarded",
-        ].map((name) => ({ name, description: "Protocol fixture only", inputSchema: { type: "object", properties: {} } })) } };
+        ].map((name) => ({ name, description: "Protocol fixture only", inputSchema: { type: "object", properties: {} } })) } });
         if (transport && message.method === "tools/call") {
           assert.equal(message.params.name, "project_get", "only the fixture's real read path is implemented");
           assert.ok(taskBindings.some((binding) => binding.conversationId === invocation.conversationId));
-          return { jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: "Explicit read-only project fixture" }] } };
+          return nativeJsonReply({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: "Explicit read-only project fixture" }] } });
         }
         throw new Error(`Unexpected model/native tool call ${message.method}`);
       },
@@ -325,9 +350,13 @@ function completionResponse(parts) {
 function durableFailure(file) {
   const reader = new DatabaseSync(file, { readOnly: true });
   try {
-    return JSON.stringify(reader.prepare("SELECT record FROM submissions ORDER BY id").all()
+    const submissions = reader.prepare("SELECT record FROM submissions ORDER BY id").all()
       .map((row) => JSON.parse(row.record))
-      .map(({ id, status, reason, detail }) => ({ id, status, reason, detail })));
+      .map(({ id, status, reason, detail }) => ({ id, status, reason, detail }));
+    const tools = reader.prepare("SELECT record FROM entries ORDER BY id").all()
+      .map((row) => JSON.parse(row.record))
+      .flatMap((entry) => entry.model ?? []).filter((message) => message.role === "toolResult");
+    return JSON.stringify({ submissions, tools });
   } finally { reader.close(); }
 }
 
@@ -379,12 +408,15 @@ test("configured original provider submits, persists a real generated answer and
 test("original model tool round carries native-bound Pi invocation and stays read-only for script generation", { timeout: 15000 }, async () => {
   const directory = mkdtempSync(resolve(tmpdir(), "bkcat-model-tools-"));
   let requests = 0;
-  const f = fixture(resolve(directory, "session.sqlite3"), 1, api.nativeModelConfiguration(nativeConfiguration()), async () => {
+  const f = fixture(resolve(directory, "session.sqlite3"), 1, api.nativeModelConfiguration(nativeConfiguration()), async (_lease, _permit, input, init) => {
     requests++;
     if (requests === 1) return completionResponse([
       { delta: { role: "assistant", tool_calls: [{ index: 0, id: "read-project", type: "function", function: { name: "project_get", arguments: "{}" } }] } },
       { finish: "tool_calls" },
     ]);
+    const body = JSON.parse(await new Request(input, init).text());
+    assert.ok(body.messages.some((message) => message.role === "tool"
+      && message.content === "Explicit read-only project fixture"), "the second model request must receive the successful original tool result");
     return completionResponse([{ delta: { role: "assistant", content: "读取工程后的候选正文" } }, { finish: "stop" }]);
   });
   try {
@@ -395,7 +427,8 @@ test("original model tool round carries native-bound Pi invocation and stays rea
     assert.equal(completed.status, "done", completed.status === "done" ? undefined : durableFailure(resolve(directory, "session.sqlite3")));
     assert.equal(completed.text, "读取工程后的候选正文");
     assert.equal(requests, 2);
-    assert.equal(f.mcpCalls.filter((message) => message.method === "tools/call").length, 1);
+    const calls = f.mcpCalls.filter((message) => message.method === "tools/call");
+    assert.equal(calls.length, 1, calls.length === 1 ? undefined : durableFailure(resolve(directory, "session.sqlite3")));
     assert.equal(forbiddenFetch, 0);
   } finally { await f.runtime.stop().catch(() => {}); rmSync(directory, { recursive: true, force: true }); }
 });
