@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { createProvider, envApiKeyAuth, type Model, type ProviderStreams } from "@earendil-works/pi-ai";
+import { createProvider } from "@earendil-works/pi-ai/models";
+import { envApiKeyAuth, type Model, type ProviderStreams } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";

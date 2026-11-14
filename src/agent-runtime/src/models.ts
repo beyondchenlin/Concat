@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { createModels, type CredentialStore, type Models, type Provider } from "@earendil-works/pi-ai";
+// Use the public core module directly. With lazy API chunks, importing this
+// function through Pi's side-effect-free root barrel lets the browser bundler
+// omit the core module's initializer while retaining the hoisted function.
+import { createModels } from "@earendil-works/pi-ai/models";
+import type { CredentialStore, Models, Provider } from "@earendil-works/pi-ai";
 import { combinedSignal, ExecutionGate, RuntimeRefused } from "./gate.ts";
 import type { NativePorts, OwnerLease } from "./ports.ts";
 import type { NativeModelConfiguration } from "./model-configuration.ts";

@@ -1,0 +1,5 @@
+src/pi-engine.ts(211,40): error TS2339: Property 'entry' does not exist on type 'Harness'.
+src/pi-engine.ts(214,47): error TS7006: Parameter 'message' implicitly has an 'any' type.
+src/pi-engine.ts(215,23): error TS7006: Parameter 'message' implicitly has an 'any' type.
+src/pi-engine.ts(215,59): error TS7006: Parameter 'part' implicitly has an 'any' type.
+src/pi-engine.ts(215,95): error TS7006: Parameter 'part' implicitly has an 'any' type.

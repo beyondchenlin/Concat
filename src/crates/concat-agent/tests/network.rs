@@ -813,10 +813,20 @@ fn enforces_event_and_response_bounds_and_cancels_backpressured_stream() {
         });
         let head = fixture.network.open(fixture.request()).unwrap();
         let (bytes, failure) = drain(&fixture.network, stream_id(&head));
-        assert!(failure.is_some());
+        let failure = failure.expect("a response limit must terminate the real stream");
         assert!(bytes.len() <= 32 * 1024 * 1024);
         if huge_single_event {
             assert!(bytes.is_empty());
+            assert!(
+                failure.contains("单个事件") && failure.contains("超过允许大小"),
+                "{failure}"
+            );
+        } else {
+            assert_eq!(failure, "模型响应超过允许大小。");
+            assert!(
+                bytes.len() >= 31 * 1024 * 1024,
+                "the full-response limit path must receive prior valid events"
+            );
         }
         server.join().unwrap();
     }

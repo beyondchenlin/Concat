@@ -3,7 +3,7 @@
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import {
   Harness, createRegistry, type ConversationId, type SubmissionId, type TaskId,
-  type ToolRegistration, type AgentChange,
+  type ToolRegistration, type AgentChange, type Storage,
 } from "@earendil-works/pi-durable";
 import { CURRENT_SQLITE_SCHEMA_VERSION, SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 // The pinned package root also re-exports its Node stdio transport. Use
@@ -69,7 +69,8 @@ export function piEngineFactory(configuration: ModelConfiguration): PiEngineFact
         }));
         registry.install({ name: "bk-cat-native", tools });
         const context = withAbortSignal(gate.signal, BACKGROUND_CONTEXT);
-        harness = await Harness.open(guardedStorage(storage, gate, lease), {
+        const ownedStorage = guardedStorage(storage, gate, lease);
+        harness = await Harness.open(ownedStorage, {
           models: nativeModels(configuration, ports, gate, lease),
           registry,
           settings: {
@@ -115,7 +116,7 @@ export function piEngineFactory(configuration: ModelConfiguration): PiEngineFact
           },
           async run(action, raw) {
             gate.assertReady(lease);
-            return runOriginal(opened, action, raw, options, configuration, tools, nativeTask);
+            return runOriginal(opened, ownedStorage, action, raw, options, configuration, tools, nativeTask);
           },
           async close() {
             const results = await Promise.allSettled([opened.close(BACKGROUND_CONTEXT), client.close()]);
@@ -136,7 +137,7 @@ export function piEngineFactory(configuration: ModelConfiguration): PiEngineFact
 
 /** Direct calls into original Pi. No custom scheduling, retry or task loop. */
 async function runOriginal(
-  harness: Harness, action: SchedulingAction, raw: unknown, options: EngineOpenOptions,
+  harness: Harness, storage: Storage, action: SchedulingAction, raw: unknown, options: EngineOpenOptions,
   configuration: ModelConfiguration, tools: readonly ToolRegistration[], nativeTask: NativeTaskState,
 ): Promise<unknown> {
   const { gate, lease } = options;
@@ -208,9 +209,15 @@ async function runOriginal(
         }
         let text = "";
         if (result.status === "done" && result.answer !== undefined) {
-          const answer = await harness.entry(result.answer, context);
+          // The original Harness has no entry reader. Read the exact committed
+          // answer through the same fenced original storage, scoped to the
+          // admitted conversation, and reject even a visible ancestor's entry.
+          const stored = await storage.entry(active.conversationId as ConversationId, result.answer, context);
           gate.assertReady(lease);
-          if (!answer || answer.conversationId !== active.conversationId) throw new RuntimeRefused("durable answer is missing");
+          const answer = stored?.entry;
+          if (!answer || answer.id !== result.answer || answer.conversationId !== active.conversationId) {
+            throw new RuntimeRefused("durable answer is missing");
+          }
           text = (answer.model ?? []).filter((message) => message.role === "assistant")
             .flatMap((message) => message.content.filter((part) => part.type === "text").map((part) => part.text)).join("\n");
           // JSON can expand control characters to six bytes; this bounded

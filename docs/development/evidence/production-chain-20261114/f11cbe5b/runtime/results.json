@@ -1,0 +1,160 @@
+{
+  "recordedAt": "2026-11-14T02:28:22.086194+00:00",
+  "pullRequest": "https://github.com/beyondchenlin/Concat/pull/13",
+  "sourceCommit": "f11cbe5bc21f901be689a742aba3bd5b6b1c7d77",
+  "sourceTree": "7ce361323f36870922300bfe878e0e347f6a3f4b",
+  "sourceDirectory": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b",
+  "sourceTrackedCleanBeforeAndAfter": true,
+  "originalPiCommit": "d36266e06669c6991a7c9509d1da04d18d30378d",
+  "originalPiVersion": "1.5.2",
+  "originalPiDirectory": "/workspace/scratch/84c9af9701bd/bk-cat-verify/.build/pi-reference",
+  "nodeVersion": "v24.22.1",
+  "generatedFreshBuild": true,
+  "checks": [
+    {
+      "name": "build",
+      "command": "BK_CAT_PI_REFERENCE=/workspace/scratch/84c9af9701bd/bk-cat-verify/.build/pi-reference node scripts/build.mjs",
+      "cwd": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime",
+      "exitCode": 0,
+      "log": "/workspace/scratch/a2559d0f84f7/validation/f11cbe5b/runtime/build.log",
+      "logSha256": "6933e00886a51f0f8e2ea4e52ba9b7a6786a998b29804fdab64c6a086c7f8524",
+      "status": "passed"
+    },
+    {
+      "name": "typecheck",
+      "command": "BK_CAT_PI_REFERENCE=/workspace/scratch/84c9af9701bd/bk-cat-verify/.build/pi-reference node scripts/typecheck.mjs",
+      "cwd": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime",
+      "exitCode": 1,
+      "log": "/workspace/scratch/a2559d0f84f7/validation/f11cbe5b/runtime/typecheck.log",
+      "logSha256": "25db0d20f426166897f4351252116a0c9421c97019f6ccb3c4575f0bc43e3097",
+      "status": "failed",
+      "errors": [
+        "TS2339: Harness.entry does not exist",
+        "4 x TS7006: inferred answer callback parameters have implicit any"
+      ]
+    },
+    {
+      "name": "script-tests",
+      "command": "node --test test/*.test.ts",
+      "cwd": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime",
+      "exitCode": 0,
+      "log": "/workspace/scratch/a2559d0f84f7/validation/f11cbe5b/runtime/script-tests.log",
+      "logSha256": "9ceba5f841596da5851fe90931c773311881d72d772bd9aee72680900e822247",
+      "status": "passed",
+      "tests": 49,
+      "passed": 49,
+      "failed": 0
+    },
+    {
+      "name": "original-tests",
+      "command": "BK_CAT_PI_REFERENCE=/workspace/scratch/84c9af9701bd/bk-cat-verify/.build/pi-reference node --test test/original-components.test.mjs",
+      "cwd": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime",
+      "exitCode": 1,
+      "log": "/workspace/scratch/a2559d0f84f7/validation/f11cbe5b/runtime/original-tests.log",
+      "logSha256": "70979ac7fa9245656e3669370f46e5bef1d7440f5503420850400e9d756fd1b5",
+      "status": "failed",
+      "tests": 8,
+      "passed": 3,
+      "failed": 5,
+      "error": "ModelsImpl is not a constructor; all five original Harness open paths stopped before paid model generation"
+    }
+  ],
+  "manifest": {
+    "piCommit": "d36266e06669c6991a7c9509d1da04d18d30378d",
+    "piVersion": "1.5.2",
+    "runtimeVersion": "0.1.0",
+    "protocolVersion": "2025-11-25",
+    "sqliteSchemaVersion": 2,
+    "format": "browser-iife",
+    "target": "es2022",
+    "bytes": 2639761,
+    "sha256": "541f6923ab123351f05b31eb8ab165e7afb9ded1e16c3c1ca2570a3223bb89e0",
+    "files": {
+      "index.html": {
+        "bytes": 569,
+        "sha256": "8db44e492885e8e059aaf15b18fd83d5aacd6101a91dbcd1510676aea62fe1cc"
+      },
+      "runtime.js": {
+        "bytes": 2639761,
+        "sha256": "541f6923ab123351f05b31eb8ab165e7afb9ded1e16c3c1ca2570a3223bb89e0"
+      },
+      "bootstrap.js": {
+        "bytes": 11072,
+        "sha256": "dd44b6cf2c0854b3bded4c2ae91882aeea0b6dc9a3490760fa1fa88ee93f1d0b"
+      }
+    }
+  },
+  "artifacts": [
+    {
+      "path": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime/dist/PI-LICENSE.txt",
+      "bytes": 1069,
+      "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
+    },
+    {
+      "path": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime/dist/PI-MCP-THIRD-PARTY-NOTICES/modelcontextprotocol-typescript-sdk.txt",
+      "bytes": 1071,
+      "sha256": "5e13dbbc1d120fc2a03cecde7c91424ae2d7de11b63d58ded2f4431e261ee50d"
+    },
+    {
+      "path": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime/dist/android-assets/licenses/BK-CAT-LICENSE.txt",
+      "bytes": 34523,
+      "sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0"
+    },
+    {
+      "path": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime/dist/android-assets/licenses/PI-LICENSE.txt",
+      "bytes": 1069,
+      "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
+    },
+    {
+      "path": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime/dist/android-assets/licenses/PI-MCP-THIRD-PARTY-NOTICES/modelcontextprotocol-typescript-sdk.txt",
+      "bytes": 1071,
+      "sha256": "5e13dbbc1d120fc2a03cecde7c91424ae2d7de11b63d58ded2f4431e261ee50d"
+    },
+    {
+      "path": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime/dist/android-assets/licenses/PI-SOURCE.txt",
+      "bytes": 209,
+      "sha256": "be4d66bcb7289f8be7b61d96b909c86efb955ad7632af58a45d166d599bc8693"
+    },
+    {
+      "path": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime/dist/android-assets/licenses/THIRD_PARTY_NOTICES.md",
+      "bytes": 24407,
+      "sha256": "91220a9b3948b4b3af497c8f642bcd79674b73de0676215c4e3a6072735891cc"
+    },
+    {
+      "path": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime/dist/bootstrap.js",
+      "bytes": 11072,
+      "sha256": "dd44b6cf2c0854b3bded4c2ae91882aeea0b6dc9a3490760fa1fa88ee93f1d0b"
+    },
+    {
+      "path": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime/dist/index.html",
+      "bytes": 569,
+      "sha256": "8db44e492885e8e059aaf15b18fd83d5aacd6101a91dbcd1510676aea62fe1cc"
+    },
+    {
+      "path": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime/dist/manifest.json",
+      "bytes": 742,
+      "sha256": "f30457a2639becedabce1fe66031f0ebb1c1eac1c525c0bcf4f13b687002ffe1"
+    },
+    {
+      "path": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime/dist/metafile.json",
+      "bytes": 442860,
+      "sha256": "e7e71d234882ce90bad7454a9dd420370e443eaffca6fca0e9704034bb502be4"
+    },
+    {
+      "path": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime/dist/runtime.js",
+      "bytes": 2639761,
+      "sha256": "541f6923ab123351f05b31eb8ab165e7afb9ded1e16c3c1ca2570a3223bb89e0"
+    },
+    {
+      "path": "/workspace/scratch/a2559d0f84f7/verify-f11cbe5b/src/agent-runtime/dist/tsconfig.check.json",
+      "bytes": 11230,
+      "sha256": "0e305e8cb18060dc57b3cd8a361bb755cdfdd799b5f30976f707079652060fe4"
+    }
+  ],
+  "limitations": [
+    "Original SQLite integration runs the built pinned original runtime using a real Node SQLite database and explicit native owner/network/tool fixtures.",
+    "No paid model service, Rust host process, window, Android device, installer, video export or end-to-end product acceptance executed by these checks.",
+    "The first typecheck and original runtime failures were preserved without rerunning or editing this fixed verification tree.",
+    "Source fixes exist only in the author branch until a later remote fixed commit is fetched and verified."
+  ]
+}

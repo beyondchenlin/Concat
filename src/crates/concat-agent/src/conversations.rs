@@ -101,7 +101,7 @@ impl ConversationBindings {
     pub fn open(owner: &SessionOwner, token: &OwnerToken) -> Result<Self, BindingError> {
         let permit = owner.begin(token)?;
         let path = binding_path(owner.storage_root())?;
-        let (connection, file) = permit.with_valid(|| {
+        let (mut connection, file) = permit.with_valid(|| {
             if !path.try_exists()? {
                 initialize(&path)?;
             }
@@ -132,6 +132,8 @@ impl ConversationBindings {
         if conversation_id > MAX_CONVERSATION_ID {
             return Err(BindingError::InvalidInput);
         }
+        let conversation_id =
+            i64::try_from(conversation_id).map_err(|_| BindingError::InvalidInput)?;
         let mut connection = self.connection.lock().map_err(|_| BindingError::Poisoned)?;
         self.permit.with_valid(|| {
             check_file_identity(&self.path, &self.file)?;
@@ -211,14 +213,18 @@ fn read_latest(
     project_id: &str,
     mode: &str,
 ) -> Result<Option<u64>, BindingError> {
-    let value: Option<u64> = connection.query_row(
+    let value: Option<i64> = connection.query_row(
         "SELECT conversation_id FROM conversation_bindings WHERE project_id=?1 AND mode=?2 ORDER BY sequence DESC LIMIT 1",
         params![project_id, mode], |row| row.get(0),
     ).optional()?;
-    if value.is_some_and(|value| value > MAX_CONVERSATION_ID) {
-        return Err(BindingError::InvalidStorage);
-    }
-    Ok(value)
+    value
+        .map(|value| {
+            u64::try_from(value)
+                .ok()
+                .filter(|value| *value <= MAX_CONVERSATION_ID)
+                .ok_or(BindingError::InvalidStorage)
+        })
+        .transpose()
 }
 
 fn binding_path(root: &Path) -> Result<PathBuf, BindingError> {
@@ -526,6 +532,19 @@ mod tests {
             ));
         }
         assert_eq!(bindings.latest(PROJECT, "chat").unwrap(), None);
+        // The largest original Pi safe integer must round-trip through
+        // SQLite's signed storage without truncation or narrowing.
+        bindings.bind(PROJECT, "chat", MAX_CONVERSATION_ID).unwrap();
+        assert_eq!(
+            bindings.latest(PROJECT, "chat").unwrap(),
+            Some(MAX_CONVERSATION_ID)
+        );
+        drop(bindings);
+        let reopened = ConversationBindings::open(&owner, &owner.token()).unwrap();
+        assert_eq!(
+            reopened.latest(PROJECT, "chat").unwrap(),
+            Some(MAX_CONVERSATION_ID)
+        );
     }
 
     #[cfg(unix)]

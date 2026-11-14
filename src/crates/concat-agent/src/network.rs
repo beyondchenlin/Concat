@@ -69,6 +69,7 @@ enum Frame {
 struct Stream {
     receiver: mpsc::Receiver<Frame>,
     cancellation: Arc<Cancellation>,
+    failure: Arc<Mutex<Option<&'static str>>>,
 }
 
 struct TransportPolicy {
@@ -226,6 +227,10 @@ impl ModelNetwork {
                 .insert(id.clone(), (sequence, Arc::clone(&stream_cancel)));
             let reader_cancel = Arc::clone(&stream_cancel);
             let (sender, mut receiver) = mpsc::channel(2);
+            // A terminal error cannot depend on free space in the bounded
+            // body mailbox. Recording it never waits for the UI consumer.
+            let failure = Arc::new(Mutex::new(None));
+            let worker_failure = Arc::clone(&failure);
             let cancellation = Arc::clone(&self.cancellation);
             let active = Arc::clone(&self.active);
             let policy = TransportPolicy {
@@ -262,10 +267,10 @@ impl ModelNetwork {
                         if let Err(message) = result {
                             // If the reader disappeared, dropping the sender still
                             // releases the operation permit and native ownership.
-                            let _ = sender.try_send(Frame::Failed(message));
+                            fail_stream(&sender, &worker_failure, message);
                         }
                     }),
-                    Err(_) => { let _ = sender.try_send(Frame::Failed("无法启动原生模型网络组件。")); }
+                    Err(_) => { fail_stream(&sender, &worker_failure, "无法启动原生模型网络组件。"); }
                 }
             }).map_err(|_| "无法创建模型请求工作线程。".to_owned())?;
             match receiver.blocking_recv() {
@@ -280,6 +285,7 @@ impl ModelNetwork {
                             Stream {
                                 receiver,
                                 cancellation: reader_cancel,
+                                failure,
                             },
                         );
                     Ok(head)
@@ -290,7 +296,9 @@ impl ModelNetwork {
                 }
                 _ => {
                     self.remove_stream(&id);
-                    Err("模型请求未返回可验证的响应头。".into())
+                    Err(terminal_failure(&failure)
+                        .unwrap_or("模型请求未返回可验证的响应头。")
+                        .into())
                 }
             }
         })();
@@ -345,7 +353,9 @@ impl ModelNetwork {
             }
             _ => {
                 self.remove_stream(stream_id);
-                Err("模型响应中途结束，未自动重试；请检查本次任务状态。".into())
+                Err(terminal_failure(&stream.failure)
+                    .unwrap_or("模型响应中途结束，未自动重试；请检查本次任务状态。")
+                    .into())
             }
         }
     }
@@ -388,6 +398,23 @@ impl ModelNetwork {
                 .compare_exchange(sequence, 0, Ordering::AcqRel, Ordering::Acquire);
         }
     }
+}
+
+fn fail_stream(
+    sender: &mpsc::Sender<Frame>,
+    failure: &Mutex<Option<&'static str>>,
+    message: &'static str,
+) {
+    *failure
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(message);
+    let _ = sender.try_send(Frame::Failed(message));
+}
+
+fn terminal_failure(failure: &Mutex<Option<&'static str>>) -> Option<&'static str> {
+    *failure
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl Drop for ModelNetwork {
@@ -718,6 +745,7 @@ async fn transfer(
     headers.insert(HeaderName::from_static(name), authorization);
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
         .no_proxy()
         .connect_timeout(Duration::from_secs(20))
         .pool_max_idle_per_host(0)
