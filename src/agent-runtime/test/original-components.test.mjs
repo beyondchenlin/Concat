@@ -27,7 +27,11 @@ for (const [name, expected] of Object.entries(manifest.files)) {
 let forbiddenFetch = 0;
 const sandbox = vm.createContext({
   AbortController, AbortSignal, DOMException, URL, URLSearchParams,
-  Request, Response, Headers, ReadableStream, TextDecoder, TextEncoder, Uint8Array,
+  // These are real standard web implementations, not model/network stubs.
+  // The pinned SDK checks FormData even when encoding a plain JSON request;
+  // Node's VM does not expose its host's web globals automatically.
+  Request, Response, Headers, FormData, Blob, File, structuredClone,
+  ReadableStream, TextDecoder, TextEncoder, Uint8Array,
   setTimeout, clearTimeout, queueMicrotask, performance, crypto: webcrypto, btoa, atob,
   fetch: () => { forbiddenFetch++; throw new Error("Direct browser network is forbidden in this test"); },
 });
@@ -315,6 +319,18 @@ function completionResponse(parts) {
   return new Response(chunks, { headers: { "content-type": "text/event-stream" } });
 }
 
+// Only deterministic fixtures use this reader. Keep the original failure
+// detail in a failing assertion before its temporary database is cleaned up;
+// no service credentials or live model response enter this test environment.
+function durableFailure(file) {
+  const reader = new DatabaseSync(file, { readOnly: true });
+  try {
+    return JSON.stringify(reader.prepare("SELECT record FROM submissions ORDER BY id").all()
+      .map((row) => JSON.parse(row.record))
+      .map(({ id, status, reason, detail }) => ({ id, status, reason, detail })));
+  } finally { reader.close(); }
+}
+
 test("configured original provider submits, persists a real generated answer and reopens it without another request", { timeout: 15000 }, async () => {
   const directory = mkdtempSync(resolve(tmpdir(), "bkcat-native-model-"));
   const file = resolve(directory, "session.sqlite3");
@@ -339,7 +355,8 @@ test("configured original provider submits, persists a real generated answer and
       taskId: "native-task-1", networkPermit: "only-this-task", input: "生成一个短视频文案", mode: "script",
     });
     const final = await first.runtime.dispatch("nativeWait", { taskId: "native-task-1" });
-    assert.equal(final.status, "done"); assert.equal(final.text, "独立候选正文");
+    assert.equal(final.status, "done", final.status === "done" ? undefined : durableFailure(file));
+    assert.equal(final.text, "独立候选正文");
     assert.equal(final.submissionId, admitted.submissionId); assert.equal(final.conversationId, admitted.conversationId);
     assert.equal(first.taskBindings.length, 1); assert.equal(requests.length, 1);
     await first.runtime.stop();
@@ -375,7 +392,8 @@ test("original model tool round carries native-bound Pi invocation and stays rea
     await f.runtime.confirmRecovery({ snapshotId: snapshot.snapshotId, decision: "continue", approvalId: "native-recovery" });
     await f.runtime.dispatch("nativeSubmit", { taskId: "native-read-task", networkPermit: "read-permit", input: "读取工程并生成文案", mode: "script" });
     const completed = await f.runtime.dispatch("nativeWait", { taskId: "native-read-task" });
-    assert.equal(completed.status, "done"); assert.equal(completed.text, "读取工程后的候选正文");
+    assert.equal(completed.status, "done", completed.status === "done" ? undefined : durableFailure(resolve(directory, "session.sqlite3")));
+    assert.equal(completed.text, "读取工程后的候选正文");
     assert.equal(requests, 2);
     assert.equal(f.mcpCalls.filter((message) => message.method === "tools/call").length, 1);
     assert.equal(forbiddenFetch, 0);
@@ -404,7 +422,7 @@ test("all three original adapters use the explicit service base and output ceili
       await f.runtime.dispatch("nativeSubmit", { taskId: `task-${protocol}`, networkPermit: "one-permit", input: "测试渠道", mode: "chat" });
       const done = await f.runtime.dispatch("nativeWait", { taskId: `task-${protocol}` });
       assert.equal(done.status, "unanswered"); assert.equal(done.text, "");
-      assert.equal(captured.length, 1, protocol);
+      assert.equal(captured.length, 1, captured.length === 1 ? protocol : `${protocol}: ${durableFailure(resolve(directory, "session.sqlite3"))}`);
       assert.equal(captured[0].url, `${configuration.endpoint.replace(/\/+$/, "")}${suffix}`);
       assert.equal(captured[0].body.model, "explicit-model");
       assert.equal(captured[0].body.stream, true);
@@ -508,7 +526,8 @@ test("built production bootstrap submits through native task binding, streams th
     const admitted = await command("production-submit", { method: "runtime.submit", taskId: "production-task", networkPermit: "production-permit", mode: "script", input: "生成一段短视频文案" });
     const final = await completed;
     assert.equal(final.taskId, "production-task"); assert.equal(final.submissionId, admitted.submissionId);
-    assert.equal(final.status, "done"); assert.equal(final.text, "经生产入口保存的候选");
+    assert.equal(final.status, "done", final.status === "done" ? undefined : durableFailure(resolve(directory, "session.sqlite3")));
+    assert.equal(final.text, "经生产入口保存的候选");
     assert.equal(opens, 1); assert.equal(forbiddenFetch, 0);
     assert.ok(sent.some((frame) => frame.event === "conversation.presentation" && frame.messages.some((message) => message.role === "user" && message.text === "生成一段短视频文案")));
     assert.ok(sent.findIndex((frame) => frame.payload?.method === "task.bind") < sent.findIndex((frame) => frame.payload?.method === "network.open"));

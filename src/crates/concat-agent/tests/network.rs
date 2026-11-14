@@ -53,7 +53,9 @@ struct Fixture {
 impl Fixture {
     fn new(listener: &TcpListener, protocol: ModelProtocol) -> Self {
         let directory = tempfile::tempdir().unwrap();
-        let owner = Arc::new(SessionOwner::acquire(directory.path().join("owner")).unwrap());
+        let owner_root = directory.path().join("owner");
+        std::fs::create_dir(&owner_root).unwrap();
+        let owner = Arc::new(SessionOwner::acquire(&owner_root).unwrap());
         owner
             .confirm_recovery(
                 &owner.token(),

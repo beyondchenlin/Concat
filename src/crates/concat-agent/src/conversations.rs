@@ -111,7 +111,7 @@ impl ConversationBindings {
             Ok::<_, BindingError>((connection, file))
         })??;
         let stop = permit.stop_signal();
-        connection.progress_handler(1_000, Some(move || stop.requested()));
+        connection.progress_handler(1_000, Some(move || stop.requested()))?;
         Ok(Self {
             connection: Mutex::new(connection),
             file,
