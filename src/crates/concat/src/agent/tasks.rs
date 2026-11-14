@@ -59,6 +59,7 @@ struct AuthorizedTask {
     selected: Option<VersionBinding>,
     conversation: Option<u64>,
     expected_conversation: Option<u64>,
+    changed_by_native_tool: bool,
     network: Arc<ModelNetwork>,
 }
 
@@ -231,6 +232,7 @@ impl NativeTasks {
             selected: intent.selected.clone(),
             expected_conversation: existing,
             conversation: None,
+            changed_by_native_tool: false,
             network,
         });
         Ok(payload)
@@ -384,7 +386,62 @@ impl NativeTasks {
         Ok(())
     }
 
-    pub(crate) fn finish(&self, id: &str, conversation: u64) -> Result<(), String> {
+    /// Only a successful, original Pi-bound guarded tool response backed by
+    /// the durable native editor receipt can count as an actual edit. Model
+    /// prose, a read-only tool, a rejected call and a no-op cannot set this.
+    pub(crate) fn record_edit_result(
+        &self,
+        invocation: &Invocation,
+        response: &Value,
+    ) -> Result<(), String> {
+        if response.pointer("/result/isError") != Some(&Value::Bool(false)) {
+            return Ok(());
+        }
+        let reply = response
+            .pointer("/result/structuredContent")
+            .filter(|value| value.is_object())
+            .ok_or("原生剪辑工具未返回可核对的工程回执。")?;
+        let task = self
+            .task
+            .lock()
+            .map_err(|_| "任务状态不可用。")?
+            .as_ref()
+            .filter(|task| task.mode == TaskMode::Edit && task.conversation == Some(invocation.conversation_id))
+            .cloned()
+            .ok_or("原生剪辑结果不属于当前任务。")?;
+        let journal = self
+            .bridge
+            .journal
+            .lock()
+            .map_err(|_| "原生编辑记录不可用。")?
+            .clone()
+            .ok_or("原生编辑记录尚未打开。")?;
+        let changed = journal
+            .has_changed_receipt(
+                invocation,
+                &task.project.path,
+                task.project.session_id,
+                task.project.revision,
+                reply,
+            )
+            .map_err(|_| "无法核对原生剪辑写入记录，未确认剪辑完成。")?;
+        if !changed {
+            if reply["revision"].as_u64().is_some_and(|revision| revision > task.project.revision) {
+                return Err("原生剪辑回执声称已修改，但缺少匹配的持久操作记录；请核对工程。".into());
+            }
+            return Ok(());
+        }
+        let mut current = self.task.lock().map_err(|_| "任务状态不可用。")?;
+        let current = current
+            .as_mut()
+            .filter(|current| current.id == task.id && current.permit == task.permit
+                && current.conversation == task.conversation)
+            .ok_or("核对剪辑回执期间原生任务已退役。")?;
+        current.changed_by_native_tool = true;
+        Ok(())
+    }
+
+    pub(crate) fn finish(&self, id: &str, conversation: u64) -> Result<bool, String> {
         let mut task = self.task.lock().map_err(|_| "任务状态不可用。")?;
         if !task
             .as_ref()
@@ -392,6 +449,7 @@ impl NativeTasks {
         {
             return Err("拒绝了不属于当前任务的完成回调。".into());
         }
+        let edited = task.as_ref().is_some_and(|task| task.changed_by_native_tool);
         if let Some(task) = task.take() {
             task.network.cancel();
         }
@@ -399,7 +457,7 @@ impl NativeTasks {
             .lock()
             .map_err(|_| "模型接收状态不可用。")?
             .take();
-        Ok(())
+        Ok(edited)
     }
 
     pub(crate) fn cancel(&self) {
@@ -651,6 +709,7 @@ mod tests {
                 }),
                 expected_conversation,
                 conversation: None,
+                changed_by_native_tool: false,
                 network: Arc::clone(&network),
             });
             Self {
@@ -1034,12 +1093,62 @@ mod tests {
         assert!(fixture.tasks.finish("another-task", CONVERSATION).is_err());
         assert!(fixture.tasks.finish(TASK, CONVERSATION + 1).is_err());
         fixture.network.check_current().unwrap();
-        fixture.tasks.finish(TASK, CONVERSATION).unwrap();
+        assert!(!fixture.tasks.finish(TASK, CONVERSATION).unwrap());
         assert!(fixture.network.check_current().is_err());
         assert!(fixture.tasks.network(PERMIT).is_err());
         assert!(fixture.tasks.bind(TASK, CONVERSATION).is_err());
         assert!(fixture.tasks.finish(TASK, CONVERSATION).is_err());
         assert!(!fixture.tasks.may_present(CONVERSATION, None));
         assert!(fixture.tasks.may_present(CONVERSATION, Some(CONVERSATION)));
+    }
+
+    #[test]
+    fn model_prose_and_unrecorded_tool_replies_do_not_count_as_native_edits() {
+        let fixture = Fixture::new(TaskMode::Edit, None);
+        fixture.tasks.bind(TASK, CONVERSATION).unwrap();
+        let invocation = fixture.invocation(CONVERSATION);
+        let reply = json!({"sessionId":17,"revision":4,"applied":true});
+        let response = json!({"jsonrpc":"2.0","id":1,"result":{
+            "isError":false,"structuredContent":reply,
+        }});
+        assert!(fixture.tasks.record_edit_result(&invocation, &response).is_err(),
+            "a fabricated positive result cannot bypass the operation journal");
+        assert!(fixture.tasks.record_edit_result(&invocation,
+            &json!({"result":{"isError":false}})).is_err());
+        fixture.tasks.record_edit_result(&invocation,
+            &json!({"result":{"isError":true,"structuredContent":reply}})).unwrap();
+        fixture.tasks.record_edit_result(&invocation,
+            &json!({"result":{"isError":false,"structuredContent":{
+                "sessionId":17,"revision":3
+            }}})).unwrap();
+        assert!(!fixture.tasks.finish(TASK, CONVERSATION).unwrap());
+    }
+
+    #[test]
+    fn only_an_original_bound_and_persisted_changed_edit_marks_completion() {
+        let fixture = Fixture::new(TaskMode::Edit, None);
+        fixture.tasks.bind(TASK, CONVERSATION).unwrap();
+        let invocation = fixture.invocation(CONVERSATION);
+        let project = fixture.project();
+        let journal = fixture.bridge.journal.lock().unwrap().clone().unwrap();
+        let request = json!({"method":"edit.applyGuarded","path":project.path,
+            "expectedSession":project.session_id,"expectedRevision":project.revision,
+            "command":{"op":"batch","commands":[]}});
+        let operation = match journal.prepare(&invocation, &request, &project.path,
+            project.session_id, project.revision).unwrap() {
+            concat_agent::operations::Admission::New(id) => id,
+            other => panic!("new original Pi call expected: {other:?}"),
+        };
+        let reply = json!({"sessionId":project.session_id,
+            "revision":project.revision + 1,"applied":true});
+        let response = json!({"result":{"isError":false,"structuredContent":reply}});
+        assert!(fixture.tasks.record_edit_result(&invocation, &response).is_err());
+        journal.record_receipt(operation, project.session_id, project.revision + 1, &reply).unwrap();
+        let forged = Invocation { call_id: "not-the-original-call".into(), ..invocation.clone() };
+        assert!(fixture.tasks.record_edit_result(&forged, &response).is_err());
+        let cross_conversation = Invocation { conversation_id: CONVERSATION + 1, ..invocation.clone() };
+        assert!(fixture.tasks.record_edit_result(&cross_conversation, &response).is_err());
+        fixture.tasks.record_edit_result(&invocation, &response).unwrap();
+        assert!(fixture.tasks.finish(TASK, CONVERSATION).unwrap());
     }
 }

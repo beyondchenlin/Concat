@@ -160,6 +160,10 @@ fn accept(listener: &TcpListener) -> TcpStream {
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
+                // Windows may inherit the listener's nonblocking mode on the
+                // accepted socket. The fixture deliberately uses blocking
+                // reads with a finite timeout; make that explicit on both OSes.
+                stream.set_nonblocking(false).unwrap();
                 stream.set_read_timeout(Some(WAIT)).unwrap();
                 stream.set_write_timeout(Some(WAIT)).unwrap();
                 return stream;

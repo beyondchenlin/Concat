@@ -523,4 +523,33 @@ fn unchanged_native_revision_finishes_without_inventing_a_save() {
     assert_eq!(inspection.applied_not_saved, 0);
     assert_eq!(inspection.saved_not_notified, 0);
     assert!(journal.take_saved_notifications().unwrap().is_empty());
+    assert!(!journal.has_changed_receipt(
+        &invocation(), path, 7, 1, &json!({"sessionId":7,"revision":1})
+    ).unwrap());
+}
+
+#[test]
+fn model_answer_is_not_edit_evidence_without_the_exact_durable_changed_receipt() {
+    let folder = Directory::new();
+    let owner = SessionOwner::acquire(folder.path()).unwrap();
+    approve(&owner);
+    let journal = OperationJournal::open(&owner, &owner.token()).unwrap();
+    let path = folder.path().to_str().unwrap();
+    let changed = json!({"sessionId":7,"revision":2,"applied":true});
+    assert!(!journal.has_changed_receipt(&invocation(), path, 7, 1, &changed).unwrap());
+    let operation = prepare(&journal, path);
+    assert!(!journal.has_changed_receipt(&invocation(), path, 7, 1, &changed).unwrap());
+    journal.record_receipt(operation, 7, 2, &changed).unwrap();
+    assert!(journal.has_changed_receipt(&invocation(), path, 7, 1, &changed).unwrap());
+    assert!(!journal.has_changed_receipt(&invocation(), path, 7, 1,
+        &json!({"sessionId":7,"revision":2,"applied":false})).unwrap());
+    assert!(!journal.has_changed_receipt(&invocation(), path, 7, 2, &changed).unwrap());
+    assert!(!journal.has_changed_receipt(&invocation(), "another-project", 7, 1, &changed).unwrap());
+    assert!(!journal.has_changed_receipt(&Invocation {
+        conversation_id: 12, task_id: 35, call_id: "call/child".into(),
+    }, path, 7, 1, &changed).unwrap());
+    assert!(!journal.has_changed_receipt(&Invocation {
+        conversation_id: 12, task_id: 34, call_id: "another-call".into(),
+    }, path, 7, 1, &changed).unwrap());
+    assert_eq!(inspect_operations(&owner, &owner.token()).unwrap().applied_not_saved, 1);
 }
