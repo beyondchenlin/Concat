@@ -334,12 +334,23 @@ impl NativeTasks {
             .and_then(Value::as_str)
             .ok_or("工具名称缺失。")?
             .to_owned();
-        if matches!(
-            name.as_str(),
-            "concat_version" | "effects_list" | "template_list"
-        ) {
-            // These catalogues are read-only and do not accept a project path.
-            // Conversation, ownership and network grants were checked above.
+        if name == "concat_version" {
+            return Ok(());
+        }
+        if matches!(name.as_str(), "effects_list" | "template_list") {
+            // Metadata queries have no project path. Refuse injected arguments
+            // here, before the native MCP schema and backend are reached.
+            let args = message
+                .pointer("/params/arguments")
+                .and_then(Value::as_object)
+                .ok_or("只读目录工具参数无效。")?;
+            if (name == "template_list" && !args.is_empty())
+                || (name == "effects_list"
+                    && (args.keys().any(|key| key != "kind")
+                        || args.get("kind").is_some_and(|kind| !kind.is_string())))
+            {
+                return Err("只读目录工具不得携带工程路径或未审查的参数。".into());
+            }
             return Ok(());
         }
         let args = message
@@ -1027,9 +1038,26 @@ mod tests {
                 "template_list",
             ] {
                 let mut message = fixture.message(tool);
+                if matches!(tool, "effects_list" | "template_list") {
+                    message["params"]["arguments"] = json!({});
+                }
                 fixture.authorize(&mut message, CONVERSATION).unwrap();
                 assert!(fixture.authorize(&mut message, CONVERSATION + 1).is_err());
                 assert!(fixture.tasks.authorize_tool(&mut message, None).is_err());
+            }
+            let mut filtered_effects = fixture.message("effects_list");
+            filtered_effects["params"]["arguments"] = json!({"kind":"effect"});
+            fixture
+                .authorize(&mut filtered_effects, CONVERSATION)
+                .unwrap();
+            for tool in ["effects_list", "template_list"] {
+                // A model cannot smuggle another project's path or arbitrary
+                // input through globally read-only metadata tools.
+                assert!(
+                    fixture
+                        .authorize(&mut fixture.message(tool), CONVERSATION)
+                        .is_err()
+                );
             }
             for tool in ["edit_apply_guarded", "project_delete", "media_upload"] {
                 assert!(
