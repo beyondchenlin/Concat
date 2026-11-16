@@ -1051,6 +1051,12 @@ impl EmbeddedRuntime {
         self.publish();
     }
 
+    pub(crate) fn tool_permission_view(
+        &self,
+    ) -> Result<crate::agent::tool_approval::PermissionView, String> {
+        self.native.tool_approval.view()
+    }
+
     pub(crate) fn set_tool_mode_from_ui(&self, index: i32) -> Result<(), String> {
         if self.revoked.load(Ordering::Acquire) || self.view().phase != "ready" {
             return Err("请先连接并核对智能体会话，再修改操作权限。".into());

@@ -75,7 +75,10 @@ impl NativeToolPermissions {
         let state = self.state.lock().map_err(|_| "工具授权状态不可用。")?;
         Ok(PermissionView {
             mode: state.mode.index(),
-            pending_summary: state.pending.as_ref().map(|request| request.summary.clone()),
+            pending_summary: state
+                .pending
+                .as_ref()
+                .map(|request| request.summary.clone()),
         })
     }
 
@@ -149,9 +152,7 @@ impl NativeToolPermissions {
         let (safe_append_only, description) = describe_edit(message)?;
         let fingerprint = format!(
             "{:x}",
-            Sha256::digest(
-                serde_json::to_vec(message).map_err(|_| "剪辑工具参数无法核对。")?
-            )
+            Sha256::digest(serde_json::to_vec(message).map_err(|_| "剪辑工具参数无法核对。")?)
         );
         let mut state = self.state.lock().map_err(|_| "工具授权状态不可用。")?;
         if state.stopped {
@@ -213,7 +214,9 @@ impl NativeToolPermissions {
                 );
                 return Err("等待剪辑批准超时，工程未修改。".into());
             }
-            let (next, _) = self.wake.wait_timeout(state, remaining)
+            let (next, _) = self
+                .wake
+                .wait_timeout(state, remaining)
                 .map_err(|_| "等待剪辑批准时状态不可用。")?;
             state = next;
         }
@@ -235,13 +238,18 @@ impl NativeToolPermissions {
 /// Changes to existing clips, unknown operations, templates and mixed batches
 /// always ask. Neither class bypasses the native edit schema/ownership checks.
 fn describe_edit(message: &Value) -> Result<(bool, String), String> {
-    let command = message.pointer("/params/arguments/command")
+    let command = message
+        .pointer("/params/arguments/command")
         .and_then(Value::as_object)
         .ok_or("缺少结构化剪辑命令，未申请执行权限。")?;
-    let op = command.get("op").and_then(Value::as_str)
+    let op = command
+        .get("op")
+        .and_then(Value::as_str)
         .ok_or("剪辑命令没有有效操作类型。")?;
     let commands: Vec<&Value> = if op == "batch" {
-        let items = command.get("commands").and_then(Value::as_array)
+        let items = command
+            .get("commands")
+            .and_then(Value::as_array)
             .ok_or("批量剪辑命令无效。")?;
         if items.is_empty() || items.len() > 64 {
             return Err("批量剪辑命令数量必须在1到64项之间。".into());
@@ -253,7 +261,9 @@ fn describe_edit(message: &Value) -> Result<(bool, String), String> {
     let mut safe = true;
     let mut kinds = Vec::with_capacity(commands.len());
     for item in &commands {
-        let kind = item.get("op").and_then(Value::as_str)
+        let kind = item
+            .get("op")
+            .and_then(Value::as_str)
             .ok_or("剪辑批次中有缺少操作类型的命令。")?;
         if kind == "batch" {
             return Err("不允许嵌套批量剪辑命令。".into());
@@ -261,11 +271,24 @@ fn describe_edit(message: &Value) -> Result<(bool, String), String> {
         if !matches!(kind, "addMediaClipExact" | "addTextClip") {
             safe = false;
         }
-        kinds.push(kind);
+        // Never display raw model-supplied operation names in a native prompt.
+        // Long or control-character values could otherwise disrupt the UI.
+        kinds.push(match kind {
+            "addMediaClipExact" => "精确添加素材",
+            "addTextClip" => "添加字幕或贴片文字",
+            "moveClips" => "移动片段",
+            "splitClips" => "分割片段",
+            "removeClips" => "删除片段",
+            "applySingleMainTemplate" => "应用主轨模板",
+            _ => "其他剪辑操作",
+        });
     }
     let labels = kinds.iter().take(4).copied().collect::<Vec<_>>().join("、");
     let suffix = if kinds.len() > 4 { " 等" } else { "" };
-    Ok((safe, format!("准备执行 {} 项剪辑（{}{suffix}）", kinds.len(), labels)))
+    Ok((
+        safe,
+        format!("准备执行 {} 项剪辑（{}{suffix}）", kinds.len(), labels),
+    ))
 }
 
 #[cfg(test)]
@@ -286,13 +309,19 @@ mod tests {
     }
 
     fn original() -> Invocation {
-        Invocation { conversation_id: 9, task_id: 4, call_id: "original-pi-call".into() }
+        Invocation {
+            conversation_id: 9,
+            task_id: 4,
+            call_id: "original-pi-call".into(),
+        }
     }
 
     fn wait_pending(gate: &NativeToolPermissions) {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            if gate.view().unwrap().pending_summary.is_some() { return; }
+            if gate.view().unwrap().pending_summary.is_some() {
+                return;
+            }
             assert!(Instant::now() < deadline, "approval did not become visible");
             thread::yield_now();
         }
@@ -315,7 +344,8 @@ mod tests {
     fn assisted_only_auto_grants_known_append_only_edits() {
         let gate = Arc::new(NativeToolPermissions::default());
         gate.set_mode_from_ui(1).unwrap();
-        gate.admit(&frame("addMediaClipExact"), Some(&original())).unwrap();
+        gate.admit(&frame("addMediaClipExact"), Some(&original()))
+            .unwrap();
         assert!(gate.view().unwrap().pending_summary.is_none());
         let worker = Arc::clone(&gate);
         let handle = thread::spawn(move || worker.admit(&frame("removeClips"), Some(&original())));
@@ -329,7 +359,8 @@ mod tests {
         let gate = Arc::new(NativeToolPermissions::default());
         assert!(gate.set_mode_from_ui(42).is_err());
         gate.set_mode_from_ui(2).unwrap();
-        gate.admit(&frame("removeClips"), Some(&original())).unwrap();
+        gate.admit(&frame("removeClips"), Some(&original()))
+            .unwrap();
         gate.set_mode_from_ui(0).unwrap();
         let worker = Arc::clone(&gate);
         let handle = thread::spawn(move || worker.admit(&frame("removeClips"), Some(&original())));

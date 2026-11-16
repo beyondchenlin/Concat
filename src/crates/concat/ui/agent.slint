@@ -106,17 +106,13 @@ export global AgentUi {
     callback continue-requested();
     callback discard-requested();
     callback connect-requested();
-}
-
-/// Project-edit privileges live only in the native session. This global is a
-/// read-only presentation plus native window callbacks, not a web capability.
-export global AgentToolUi {
-    in property <int> mode: 0;
-    in property <bool> connected: false;
-    in property <bool> pending: false;
-    in property <string> summary;
-    callback mode-requested(index: int);
-    callback decision-requested(approve: bool);
+    // The native session owns these values; the page cannot set authority.
+    in property <int> tool-mode: 0;
+    in property <bool> tool-connected: false;
+    in property <bool> tool-pending: false;
+    in property <string> tool-summary;
+    callback tool-mode-requested(index: int);
+    callback tool-decision-requested(approve: bool);
 }
 
 /// The same three destinations on a desk and a phone. The full original
@@ -260,13 +256,13 @@ export component AgentChat inherits Rectangle {
             Text { text: "操作权限"; color: Theme.fg-muted; font-size: Theme.fs-sm; }
             Select {
                 options: ["请求批准", "帮我批准", "完全访问权限"];
-                current: AgentToolUi.mode;
-                enabled: AgentToolUi.connected && !AgentToolUi.pending;
+                current: AgentUi.tool-mode;
+                enabled: AgentUi.tool-connected && !AgentUi.tool-pending;
                 flat: true; snug: true; horizontal-stretch: 1;
-                changed(index) => { AgentToolUi.mode-requested(index); }
+                changed(index) => { AgentUi.tool-mode-requested(index); }
             }
         }
-        if AgentToolUi.pending: Rectangle {
+        if AgentUi.tool-pending: Rectangle {
             min-height: 106px;
             border-radius: Theme.r;
             background: Theme.well;
@@ -280,7 +276,7 @@ export component AgentChat inherits Rectangle {
                     font-size: Theme.fs-sm;
                 }
                 Text {
-                    text: AgentToolUi.summary;
+                    text: AgentUi.tool-summary;
                     color: Theme.fg-muted;
                     font-size: Theme.fs-sm;
                     wrap: word-wrap;
@@ -288,8 +284,8 @@ export component AgentChat inherits Rectangle {
                 }
                 HorizontalLayout {
                     spacing: 6px;
-                    Button { label: "拒绝"; ghost: true; clicked => { AgentToolUi.decision-requested(false); } }
-                    Button { label: "批准本次"; clicked => { AgentToolUi.decision-requested(true); } }
+                    Button { label: "拒绝"; ghost: true; clicked => { AgentUi.tool-decision-requested(false); } }
+                    Button { label: "批准本次"; clicked => { AgentUi.tool-decision-requested(true); } }
                 }
             }
         }

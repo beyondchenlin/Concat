@@ -465,8 +465,10 @@ impl NativeSession {
                     self.tasks
                         .authorize_tool(&mut message, invocation.as_ref())?;
                 }
-                let tool_name = message.pointer("/params/name")
-                    .and_then(Value::as_str).map(str::to_owned);
+                let tool_name = message
+                    .pointer("/params/name")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
                 let response = self
                     .bridge
                     .handle_with_invocation(message, invocation.clone())?;
