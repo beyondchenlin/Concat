@@ -860,8 +860,9 @@ export component App inherits Window {
                 }
                 sidebar := AgentSidebar {
                     min-width: AgentUi.sidebar-open ? 280px : 36px;
-                    max-width: AgentUi.sidebar-open
-                        ? Math.max(280px, Math.min(700px, root.width - 568px)) : 36px;
+                    // A fixed layout bound avoids a root-width / layout-info cycle.
+                    // The drag callback independently caps actual user changes.
+                    max-width: AgentUi.sidebar-open ? 700px : 36px;
                     preferred-width: AgentUi.sidebar-open ? AgentUi.sidebar-width : 36px;
                 }
             }
