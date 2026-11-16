@@ -212,3 +212,69 @@ fn native_proof_cannot_be_reused_after_the_imported_item_changes() {
     ambiguous.media.push(ambiguous.media[0].clone());
     assert!(proof.recheck(&ambiguous).is_err());
 }
+
+#[test]
+fn typed_template_cannot_hide_a_forged_video_source_from_real_probe() {
+    use concat_project::commands::{SingleMainPlan, TemplateMedia};
+    let (_scratch, session, _) = fixture();
+    let mut project = session.project().clone();
+    // Metadata alone says video, but the real file is PCM audio.
+    project.media[0].kind = concat_project::model::MediaKind::Video;
+    let plan = Command::ApplySingleMainTemplate {
+        plan: SingleMainPlan {
+            start: 0.0,
+            videos: vec![TemplateMedia {
+                media_id: project.media[0].id.clone(),
+                start: 0.0,
+                source_start: 0.0,
+                source_end: 1.0,
+                volume: 1.0,
+            }],
+            subtitles: vec![],
+            overlays: vec![],
+            music: vec![],
+            voice: vec![],
+        },
+    };
+    let called = Cell::new(0);
+    let result = ExactMediaChecks::probe(&project, &plan, || {
+        called.set(called.get() + 1);
+        Ok(())
+    });
+    assert!(result.is_err());
+    assert!(
+        called.get() >= 2,
+        "must reach the actual media probe, not trust metadata"
+    );
+}
+
+#[test]
+fn typed_template_preflight_rejects_invalid_plan_before_probing() {
+    use concat_project::commands::{SingleMainPlan, TemplateMedia};
+    let (_scratch, session, _) = fixture();
+    let plan = Command::ApplySingleMainTemplate {
+        plan: SingleMainPlan {
+            start: 0.0,
+            videos: vec![TemplateMedia {
+                media_id: "missing".into(),
+                start: 0.0,
+                source_start: 0.0,
+                source_end: 1.0,
+                volume: f64::INFINITY,
+            }],
+            subtitles: vec![],
+            overlays: vec![],
+            music: vec![],
+            voice: vec![],
+        },
+    };
+    let called = Cell::new(false);
+    assert!(
+        ExactMediaChecks::probe(session.project(), &plan, || {
+            called.set(true);
+            Ok(())
+        })
+        .is_err()
+    );
+    assert!(!called.get());
+}

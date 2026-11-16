@@ -127,6 +127,12 @@ fn collect(
     }
     *remaining -= 1;
     match command {
+        Command::ApplySingleMainTemplate { plan } => {
+            plan.validate().map_err(|error| error.to_string())?;
+            for media in plan.media_commands() {
+                collect(project, &media, depth + 1, remaining, requests)?;
+            }
+        }
         Command::Batch { commands } => {
             for command in commands {
                 collect(project, command, depth + 1, remaining, requests)?;

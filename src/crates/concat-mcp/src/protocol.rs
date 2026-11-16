@@ -1036,6 +1036,33 @@ mod tests {
     }
 
     #[test]
+    fn embedded_tools_expose_the_typed_template_through_the_existing_guarded_tool() {
+        let (mut session, _) = embedded();
+        ready(&mut session);
+        let listed = session
+            .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+            .unwrap();
+        let tools = listed["result"]["tools"].as_array().unwrap();
+        let tool = tools
+            .iter()
+            .find(|tool| tool["name"] == "edit_apply_guarded")
+            .unwrap();
+        assert!(
+            tool["inputSchema"]
+                .to_string()
+                .contains("applySingleMainTemplate")
+        );
+        let toolbox = Toolbox::embedded();
+        let (_, schema) = toolbox.find("edit_apply_guarded").unwrap();
+        let mut args = guarded(2)["params"]["arguments"].clone();
+        args["command"] = json!({"op":"applySingleMainTemplate","plan":{
+            "start":0.0,"videos":[{"mediaId":"m1","start":0.0,"sourceStart":0.0,"sourceEnd":1.0,"volume":0.0}],
+            "subtitles":[],"overlays":[],"music":[],"voice":[]
+        }});
+        crate::schema::check(schema, &args, schema, "guarded").unwrap();
+    }
+
+    #[test]
     fn guarded_schema_and_typed_dispatch_refuse_missing_or_wrong_versions() {
         let (mut session, recorded) = embedded();
         ready(&mut session);

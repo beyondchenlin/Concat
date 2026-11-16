@@ -159,7 +159,7 @@ impl NativeTasks {
                     .resolve_binding(selected)
                     .map_err(|error| error.to_string())?;
                 input = format!(
-                    "原生捕获的本次剪辑依据（不可改写版本声明）：{}\n文案正文：\n{}\n\n用户要求：\n{}\n\n先读取当前工程；只能使用已实际导入且可用的素材和现有轨道。短片模板使用一条主视频轨，字幕、贴片文字、音乐和配音分别保持可编辑。必须按真实时长生成一个精确批次；素材或轨道不具备时明确说明缺口，禁止虚构。媒体新增只能使用addMediaClipExact，禁止自动寻找空隙。调用一次edit_apply_guarded提交完整批次。",
+                    "原生捕获的本次剪辑依据（不可改写版本声明）：{}\n文案正文：\n{}\n\n用户要求：\n{}\n\n先读取当前工程；只能使用已实际导入且可用的素材。空时间线使用顶层applySingleMainTemplate类型化计划，由原生一次创建主视频、字幕、贴片文字、音乐和配音角色轨；已存在片段时不能使用该模板替换它们，应使用现有轨道的精确编辑。必须按真实时长生成一个精确批次；素材或轨道不具备时明确说明缺口，禁止虚构。媒体新增仅使用addMediaClipExact或受限applySingleMainTemplate，禁止自动寻找空隙、嵌套模板及通用建轨。调用一次edit_apply_guarded提交完整批次。",
                     serde_json::to_string(selected).map_err(|_| "文案绑定无法编码。")?,
                     version.content,
                     input

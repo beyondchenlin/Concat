@@ -219,12 +219,17 @@ impl Editor {
     ) -> Result<Outcome, GuardError> {
         let before = self.project.clone();
         let mut staged = self.snapshot();
-        let outcome = guard::apply_staged(
-            &mut staged.project,
-            &mut staged.mint,
-            command,
-            locked_tracks,
-        )?;
+        let is_template = matches!(&command, Command::ApplySingleMainTemplate { .. });
+        let outcome = if let Command::ApplySingleMainTemplate { plan } = command {
+            guard::apply_template(&mut staged.project, &mut staged.mint, plan, locked_tracks)?
+        } else {
+            guard::apply_staged(
+                &mut staged.project,
+                &mut staged.mint,
+                command,
+                locked_tracks,
+            )?
+        };
         if !outcome.applied {
             if staged.project != before {
                 return Err(GuardError::UnsupportedEffect);
@@ -233,7 +238,11 @@ impl Editor {
         }
         staged.tidy_touched(&before);
         staged.follow_first_hdr(&before);
-        guard::check_effects(&before, &staged.project, locked_tracks)?;
+        if is_template {
+            guard::check_template_effects(&before, &staged.project, locked_tracks)?;
+        } else {
+            guard::check_effects(&before, &staged.project, locked_tracks)?;
+        }
         if staged.project == before {
             return Ok(Outcome::default());
         }
