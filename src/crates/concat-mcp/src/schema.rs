@@ -458,15 +458,13 @@ mod tests {
 
     #[test]
     fn the_tool_list_fits_an_agents_context() {
-        // Every tool's schema sits in the agent's context for the whole
-        // session. Measured at about 162 KB in all once shapes became
-        // editable figures (#288), 61 KB of it the whole edit vocabulary
-        // under edit_apply. The guarded entry carries the same complete
-        // vocabulary plus its concurrency fields, so the CLI catalogue
-        // includes one further copy. The embedded profile below keeps
-        // only the guarded vocabulary. Cutting nested descriptions
-        // saved only 7% and lost what agents need. A type that grows past
-        // these is worth a look before it ships.
+        // The public catalogue preserves both the legacy and guarded edit
+        // tools for existing MCP clients. Each has a self-contained schema,
+        // so the typed five-role template appears in both; sharing definitions
+        // across tool boundaries would break JSON Schema consumers. The
+        // measured list is 252,816 bytes (guarded tool: 72,757 bytes).
+        // Bound growth tightly without dropping type information. The embedded
+        // profile below still exposes only one edit vocabulary (< 80 KB).
         let toolbox = crate::tools::Toolbox::new();
         let sizes: Vec<(String, usize)> = toolbox
             .list()
@@ -474,9 +472,9 @@ mod tests {
             .map(|tool| (tool["name"].to_string(), tool.to_string().len()))
             .collect();
         let total: usize = sizes.iter().map(|(_, size)| size).sum();
-        assert!(total < 252_000, "{total}: {sizes:?}");
+        assert!(total < 258_000, "{total}: {sizes:?}");
         for (name, size) in &sizes {
-            assert!(*size < 72_000, "{name}: {size}");
+            assert!(*size < 74_000, "{name}: {size}");
         }
     }
 
