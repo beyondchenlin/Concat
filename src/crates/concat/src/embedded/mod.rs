@@ -826,14 +826,12 @@ impl EmbeddedRuntime {
                         .borrow()
                         .as_ref()
                         .is_some_and(|runtime| runtime.component() == component)
-                        && app.global::<crate::ui::AgentUi>().get_draft().as_str()
-                            == intent.ui_draft
                     {
-                        app.global::<crate::ui::AgentUi>().set_draft("".into());
-                        shell
-                            .agent_pane
-                            .borrow_mut()
-                            .clear_references_if_unchanged(&intent.reference_keys, &app);
+                        shell.agent_pane.borrow_mut().clear_submission_if_unchanged(
+                            &intent.ui_draft,
+                            &intent.reference_keys,
+                            &app,
+                        );
                     }
                 });
             });

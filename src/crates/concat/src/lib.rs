@@ -2751,24 +2751,17 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         }
     });
 
+    // A Windows window loads user packages only after its surface is ready.
+    // Opening sooner would skip custom-effect migrations and request a preview
+    // against the built-ins alone. Smoke runs load packages synchronously above.
+    let project = if defer_launch_project(cfg!(windows), smoke) {
+        WINDOWS_LAUNCH_PROJECT.with(|pending| *pending.borrow_mut() = project);
+        None
+    } else {
+        project
+    };
     if let Some(path) = project {
-        // Use the same loader as Open project, after all callbacks and models
-        // are installed. Make the path absolute so recents never depend on the
-        // launcher's working directory on a later run. Unlike canonicalize,
-        // this does not introduce Windows verbatim paths into media tooling.
-        let opened = std::path::absolute(&path)
-            .map_err(|error| format!("{}: {error}", path.display()))
-            .and_then(|path| {
-                let path = path
-                    .to_str()
-                    .ok_or_else(|| "project directory is not valid Unicode".to_string())?;
-                concat_host::projects::open(path)
-            })
-            .and_then(|info| shell.studio.borrow_mut().open_project(info));
-        if let Err(error) = opened {
-            log::error!("could not open launch project: {error}");
-            shell.studio.borrow_mut().notify(&error, true);
-        }
+        open_launch_project(&mut shell.studio.borrow_mut(), path);
     }
 
     {
@@ -2895,6 +2888,34 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     leave(0);
 }
 
+// Kept on the event-loop thread, like Shell. It is consumed once after the
+// first redraw, never by a timer before the window surface is configured.
+thread_local! {
+    static WINDOWS_LAUNCH_PROJECT: RefCell<Option<std::path::PathBuf>> = const { RefCell::new(None) };
+}
+
+fn defer_launch_project(windows: bool, smoke: bool) -> bool {
+    windows && !smoke
+}
+
+fn open_launch_project(studio: &mut Studio, path: std::path::PathBuf) {
+    // Use the same loader as Open project. Unlike canonicalize, absolute does
+    // not introduce Windows verbatim paths into media tooling.
+    let opened = std::path::absolute(&path)
+        .map_err(|error| format!("{}: {error}", path.display()))
+        .and_then(|path| {
+            let path = path
+                .to_str()
+                .ok_or_else(|| "project directory is not valid Unicode".to_string())?;
+            concat_host::projects::open(path)
+        })
+        .and_then(|info| studio.open_project(info));
+    if let Err(error) = opened {
+        log::error!("could not open launch project: {error}");
+        studio.notify(&error, true);
+    }
+}
+
 #[cfg(windows)]
 fn start_windows_preview() {
     Shell::with(|shell, app| {
@@ -2902,6 +2923,9 @@ fn start_windows_preview() {
             let mut studio = shell.studio.borrow_mut();
             studio.reload_packages(false);
             studio.watch_packages();
+            if let Some(path) = WINDOWS_LAUNCH_PROJECT.with(|pending| pending.borrow_mut().take()) {
+                open_launch_project(&mut studio, path);
+            }
             studio.host.monitor.warm_shaders();
             studio.refresh_art();
         }
@@ -3113,6 +3137,23 @@ mod tests {
     use std::path::Path;
 
     use concat_host::{Session, projects};
+
+    #[test]
+    fn launch_project_defers_only_for_a_windows_window() {
+        assert!(super::defer_launch_project(true, false));
+        assert!(!super::defer_launch_project(true, true));
+        assert!(!super::defer_launch_project(false, false));
+        assert!(!super::defer_launch_project(false, true));
+    }
+
+    #[test]
+    fn pending_launch_project_is_consumed_once() {
+        super::WINDOWS_LAUNCH_PROJECT.with(|pending| {
+            *pending.borrow_mut() = Some("launch-project".into());
+            assert_eq!(pending.borrow_mut().take(), Some("launch-project".into()));
+            assert!(pending.borrow_mut().take().is_none());
+        });
+    }
 
     /// A scratch folder that removes itself when the test ends, pass, fail or
     /// panic. Its name carries the process id and the thread's so two tests

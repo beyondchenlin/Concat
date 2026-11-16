@@ -74,6 +74,13 @@ struct CompletionContext {
     start: usize,
     end: usize,
     marker: char,
+    cursor: usize,
+}
+
+impl CompletionContext {
+    fn matches(&self, draft: &str, cursor: usize) -> bool {
+        self.draft == draft && self.cursor == cursor
+    }
 }
 
 struct PendingAttachment {
@@ -442,6 +449,7 @@ fn refresh_suggestions(text: &str, cursor: usize) {
             start,
             end,
             marker,
+            cursor,
         });
         let query = query.to_lowercase();
         let mut rows = Vec::new();
@@ -648,14 +656,30 @@ impl AgentPane {
         ))
     }
 
-    pub(crate) fn clear_references_if_unchanged(&mut self, keys: &[String], app: &App) {
-        let current: Vec<String> = self
-            .references
-            .iter()
-            .map(|r| format!("{}:{}", r.session, r.id))
-            .collect();
-        if current == keys {
+    fn submission_unchanged(&self, current_draft: &str, draft: &str, keys: &[String]) -> bool {
+        current_draft == draft
+            && self.pending_attachments.is_empty()
+            && self
+                .references
+                .iter()
+                .map(|r| format!("{}:{}", r.session, r.id))
+                .eq(keys.iter().cloned())
+    }
+
+    pub(crate) fn clear_submission_if_unchanged(
+        &mut self,
+        draft: &str,
+        keys: &[String],
+        app: &App,
+    ) {
+        let ui = app.global::<AgentUi>();
+        if self.submission_unchanged(ui.get_draft().as_str(), draft, keys) {
+            // Clear the accepted draft and references as one snapshot. A new
+            // attachment or edited reference must retain the next draft too.
             self.references.clear();
+            self.completion = None;
+            ui.set_suggestions_open(false);
+            ui.set_draft("".into());
             self.publish_references(app);
         }
     }
@@ -663,6 +687,17 @@ impl AgentPane {
 
 pub(crate) fn install_composer(app: &App) {
     let ui = app.global::<AgentUi>();
+    ui.on_cursor_moved(|cursor| {
+        Shell::with(|_, app| {
+            let ui = app.global::<AgentUi>();
+            if ui.get_draft_cursor() != cursor {
+                ui.set_suggestions_open(false);
+            }
+            // Do not borrow AgentPane here: programmatic draft changes can
+            // synchronously emit this callback while that pane is borrowed.
+            ui.set_draft_cursor(cursor);
+        });
+    });
     ui.on_draft_edited(|text, cursor| {
         let cursor = usize::try_from(cursor).unwrap_or(usize::MAX);
         Shell::with(|_, app| {
@@ -762,13 +797,9 @@ pub(crate) fn install_composer(app: &App) {
                 return;
             }
             let draft = ui.get_draft().to_string();
-            let Some(context) = shell
-                .agent_pane
-                .borrow()
-                .completion
-                .clone()
-                .filter(|c| c.draft == draft)
-            else {
+            let Some(context) = shell.agent_pane.borrow().completion.clone().filter(|c| {
+                usize::try_from(ui.get_draft_cursor()).is_ok_and(|cursor| c.matches(&draft, cursor))
+            }) else {
                 ui.set_suggestions_open(false);
                 return;
             };
@@ -825,6 +856,75 @@ pub(crate) fn install_composer(app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moving_caret_invalidates_an_unchanged_completion_draft() {
+        let draft = "use @video after";
+        let cursor = "use @video".len();
+        let (start, end, marker, _) = completion_token(draft, cursor).unwrap();
+        let context = CompletionContext {
+            draft: draft.into(),
+            start,
+            end,
+            marker,
+            cursor,
+        };
+        assert!(context.matches(draft, cursor));
+        assert!(!context.matches(draft, draft.len()));
+        assert!(!context.matches(draft, start));
+        assert!(!context.matches("new draft", cursor));
+    }
+
+    #[test]
+    fn media_command_completion_uses_the_replacement_caret() {
+        let draft = "use /media after";
+        let (start, end, _, _) = completion_token(draft, "use /media".len()).unwrap();
+        let replacement = format!("{}@{}", &draft[..start], &draft[end..]);
+        let cursor = start + 1;
+        let (start, end, marker, query) = completion_token(&replacement, cursor).unwrap();
+        assert_eq!(replacement, "use @ after");
+        assert_eq!(query, "");
+        let context = CompletionContext {
+            draft: replacement.clone(),
+            start,
+            end,
+            marker,
+            cursor,
+        };
+        assert!(context.matches(&replacement, cursor));
+        assert!(!context.matches(&replacement, "use /media".len()));
+    }
+
+    #[test]
+    fn submission_receipt_preserves_draft_when_references_or_imports_change() {
+        let reference = MediaReference {
+            id: "m1".into(),
+            name: "a.mp4".into(),
+            session: 1,
+            project_id: "p".into(),
+            project_path: "folder".into(),
+        };
+        let mut pane = AgentPane::default();
+        pane.references.push(reference.clone());
+        let keys = vec!["1:m1".to_owned()];
+        assert!(pane.submission_unchanged("edit", "edit", &keys));
+        assert!(!pane.submission_unchanged("new edit", "edit", &keys));
+        pane.references.clear();
+        assert!(!pane.submission_unchanged("edit", "edit", &keys));
+        pane.references.push(reference.clone());
+        pane.references.push(MediaReference {
+            id: "m2".into(),
+            ..reference
+        });
+        assert!(!pane.submission_unchanged("edit", "edit", &keys));
+        pane.references.pop();
+        pane.pending_attachments.push(PendingAttachment {
+            path: "new.mp4".into(),
+            session: 1,
+            started: std::time::Instant::now(),
+        });
+        assert!(!pane.submission_unchanged("edit", "edit", &keys));
+    }
 
     #[test]
     fn reselecting_media_in_a_reopened_project_renews_just_its_chip() {

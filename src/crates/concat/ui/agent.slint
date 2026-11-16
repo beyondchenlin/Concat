@@ -70,6 +70,7 @@ export global AgentUi {
     in-out property <int> model-index: -1;
     in-out property <int> composer-mode;
     callback draft-edited(text: string, cursor: int);
+    callback cursor-moved(cursor: int);
     callback trigger-requested(marker: string);
     callback suggestion-chosen(identity: string);
     callback reference-removed(identity: string);
@@ -196,9 +197,11 @@ export component AgentChat inherits Rectangle {
     }
 
     function resume-composing() {
+        // Synchronize the actual caret after programmatic @ / command edits
+        // on phones too, without opening the phone's software keyboard.
+        side-prompt.set-selection-offsets(AgentUi.draft-cursor, AgentUi.draft-cursor);
         if !root.phone {
             side-prompt.focus();
-            side-prompt.set-selection-offsets(AgentUi.draft-cursor, AgentUi.draft-cursor);
         }
     }
 
@@ -274,7 +277,7 @@ export component AgentChat inherits Rectangle {
                 for suggestion[index] in AgentUi.suggestions: Rectangle {
                     height: 38px; border-radius: Theme.r-sm;
                     accessible-role: button; accessible-label: suggestion.label + " " + suggestion.detail;
-                    accessible-action-default => { AgentUi.suggestion-chosen(suggestion.identity); }
+                    accessible-action-default => { AgentUi.suggestion-chosen(suggestion.identity); root.resume-composing(); }
                     background: index == AgentUi.suggestion-index || suggestion-touch.has-hover ? Theme.field-hover : transparent;
                     HorizontalLayout {
                         padding-left: 5px; padding-right: 5px; spacing: 6px;
@@ -402,7 +405,7 @@ export component AgentChat inherits Rectangle {
                             }
                             return reject;
                         }
-                        cursor-position-changed(at) => { AgentUi.draft-cursor = self.cursor-position-byte-offset; side-prompt-box.reveal(at.y, self.font-size * 1.4); }
+                        cursor-position-changed(at) => { AgentUi.cursor-moved(self.cursor-position-byte-offset); side-prompt-box.reveal(at.y, self.font-size * 1.4); }
                     }
                     if AgentUi.draft == "" && !side-prompt.has-focus: Text {
                         x: 0px; y: side-prompt-box.pad-y;
