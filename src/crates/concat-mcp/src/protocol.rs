@@ -63,7 +63,7 @@ mod code {
 /// What the agent is told about this server, once, when it connects.
 const INSTRUCTIONS: &str = "Concat is a video editor; these tools edit its projects. A project is a folder: open one (project_open) or make one (project_create), then pass its folder as `path` to every other tool. Read timeline_read for the ids of lanes (tracks), clips and media. Times and durations are seconds on the timeline; positions within a clip (keyframes) are fractions from 0 to 1; sizes and offsets of titles and pictures are fractions of the frame. Every edit is one undoable step (edit_undo); edit_apply with a batch command makes several into one. Edits live in memory until project_save. To render, export_start then export_wait. preview_frame shows the frame at a time. A refused edit says why in the window's words and changes nothing.";
 
-const EMBEDDED_INSTRUCTIONS: &str = "These tools access only the project already open in the native editor. Read project_get or timeline_read to obtain its current sessionId and revision. Retain those values and the exact path when submitting a batch through edit_apply_guarded. Native ownership, recovery consent, session, revision, cancellation and track locks are checked independently of this protocol handshake. A refusal or lost response requires reading and reconciliation before a new user-approved plan; never retry an edit automatically. Legacy edits, private project copies, saving, exporting and external calls are not exposed by this connection. One accepted batch shares the native editor's undo history. Protocol initialization never grants permission to resume an interrupted task.";
+const EMBEDDED_INSTRUCTIONS: &str = "These tools access only the project already open in the native editor. Read project_get or timeline_read to obtain its current sessionId and revision. Retain those values and the exact path when submitting a batch through edit_apply_guarded. Native ownership, recovery consent, session, revision, cancellation and track locks are checked independently of this protocol handshake. A refusal or lost response requires reading and reconciliation before a new user-approved plan; never retry an edit automatically. Read-only effects_list and template_list discover installed effect and template metadata without changing projects. Legacy edits, private project copies, saving, exporting and external calls are not exposed by this connection. One accepted batch shares the native editor's undo history. Protocol initialization never grants permission to resume an interrupted task.";
 
 /// The server's name and version, as `serverInfo`.
 fn server_info() -> Value {
@@ -543,7 +543,7 @@ impl Session {
         Self {
             server: Server {
                 toolbox: Toolbox::embedded(),
-                // The four embedded tools emit no progress notifications.
+                // The six embedded tools emit no progress notifications.
                 // Additional asynchronous tools need an explicit outgoing
                 // transport before they can join this reviewed profile.
                 output: Output(Arc::new(Mutex::new(Box::new(std::io::sink())))),
@@ -950,7 +950,9 @@ mod tests {
             vec![
                 "concat_version",
                 "edit_apply_guarded",
+                "effects_list",
                 "project_get",
+                "template_list",
                 "timeline_read"
             ]
         );
@@ -1002,6 +1004,26 @@ mod tests {
             request["command"]["commands"].as_array().map(Vec::len),
             Some(2)
         );
+    }
+
+    #[test]
+    fn embedded_catalogue_reads_use_the_existing_native_api_without_editing() {
+        let (mut session, recorded) = embedded();
+        ready(&mut session);
+        for (id, tool) in [(1, "effects_list"), (2, "template_list")] {
+            let reply = session
+                .handle(json!({
+                    "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                    "params": { "name": tool, "arguments": {} }
+                }))
+                .expect("catalogue reply");
+            assert_eq!(reply["result"]["isError"], false, "{reply:?}");
+        }
+        let recorded = recorded.lock().expect("record");
+        let requests = &recorded.requests;
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0]["method"], "catalogue.list");
+        assert_eq!(requests[1]["method"], "template.list");
     }
 
     #[test]

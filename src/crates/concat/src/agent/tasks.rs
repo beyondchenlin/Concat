@@ -334,7 +334,12 @@ impl NativeTasks {
             .and_then(Value::as_str)
             .ok_or("工具名称缺失。")?
             .to_owned();
-        if name == "concat_version" {
+        if matches!(
+            name.as_str(),
+            "concat_version" | "effects_list" | "template_list"
+        ) {
+            // These catalogues are read-only and do not accept a project path.
+            // Conversation, ownership and network grants were checked above.
             return Ok(());
         }
         let args = message
@@ -1014,7 +1019,13 @@ mod tests {
         for mode in [TaskMode::Chat, TaskMode::Script] {
             let fixture = Fixture::new(mode, None);
             fixture.tasks.bind(TASK, CONVERSATION).unwrap();
-            for tool in ["concat_version", "project_get", "timeline_read"] {
+            for tool in [
+                "concat_version",
+                "project_get",
+                "timeline_read",
+                "effects_list",
+                "template_list",
+            ] {
                 let mut message = fixture.message(tool);
                 fixture.authorize(&mut message, CONVERSATION).unwrap();
                 assert!(fixture.authorize(&mut message, CONVERSATION + 1).is_err());

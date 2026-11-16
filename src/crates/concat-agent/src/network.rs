@@ -525,7 +525,14 @@ fn allowed_keys(value: &Value, allowed: &[&str]) -> Result<(), String> {
 fn local_tool_name(value: &Value) -> bool {
     matches!(
         value.as_str(),
-        Some("concat_version" | "project_get" | "timeline_read" | "edit_apply_guarded")
+        Some(
+            "concat_version"
+                | "project_get"
+                | "timeline_read"
+                | "effects_list"
+                | "template_list"
+                | "edit_apply_guarded"
+        )
     )
 }
 

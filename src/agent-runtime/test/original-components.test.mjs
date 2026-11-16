@@ -263,7 +263,7 @@ function fixture(file, generation, configured, transport, options = {}) {
         // boundary even in this direct-port fixture; host-realm arrays are
         // rejected by the original durable strict-JSON checks.
         if (message.method === "tools/list") return nativeJsonReply({ jsonrpc: "2.0", id: message.id, result: { tools: [
-          "concat_version", "project_get", "timeline_read", "edit_apply_guarded",
+          "concat_version", "project_get", "timeline_read", "effects_list", "template_list", "edit_apply_guarded",
         ].map((name) => ({ name, description: "Protocol fixture only", inputSchema: { type: "object", properties: {} } })) } });
         if (transport && message.method === "tools/call") {
           assert.equal(message.params.name, "project_get", "only the fixture's real read path is implemented");
@@ -707,7 +707,7 @@ test("all three original adapters use the explicit service base and output ceili
         if (protocol === "openai-responses") { assert.equal(tool.type, "function"); return tool.name; }
         assert.equal(tool.type, undefined); assert.equal(tool.defer_loading, undefined); return tool.name;
       });
-      assert.deepEqual(toolNames.sort(), ["concat_version", "project_get", "timeline_read"]);
+      assert.deepEqual(toolNames.sort(), ["concat_version", "effects_list", "project_get", "template_list", "timeline_read"]);
     } finally { await f.runtime.stop().catch(() => {}); rmSync(directory, { recursive: true, force: true }); }
   }
 });
@@ -758,7 +758,7 @@ test("built production bootstrap submits through native task binding, streams th
           const message = payload.message;
           if (message.method === "notifications/initialized") return null;
           if (message.method === "initialize") return { jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "fixture-native", version: "1" } } };
-          if (message.method === "tools/list") return { jsonrpc: "2.0", id: message.id, result: { tools: ["concat_version", "project_get", "timeline_read", "edit_apply_guarded"].map((name) => ({ name, inputSchema: { type: "object", properties: {} } })) } };
+          if (message.method === "tools/list") return { jsonrpc: "2.0", id: message.id, result: { tools: ["concat_version", "project_get", "timeline_read", "effects_list", "template_list", "edit_apply_guarded"].map((name) => ({ name, inputSchema: { type: "object", properties: {} } })) } };
           throw new Error("unexpected tool call");
         }
         if (payload.method === "task.bind") { assert.equal(payload.taskId, "production-task"); bound = true; return null; }
