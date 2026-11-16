@@ -126,11 +126,10 @@ fn reapply_ui_scale(delay: std::time::Duration) {
 /// was pressed then takes the focus itself if it wants it - another input
 /// does, so a click from one field into the next still lands a caret.
 ///
-/// And on Linux, the window's edges. X11 and Wayland take the resize
-/// borders away with the decorations, where Windows keeps them, so a
-/// press within a few pixels of the frame is handed to the window manager
-/// as a resize (winit's `drag_resize_window`) before Slint sees it, and
-/// the pointer wears the matching arrow while it is there.
+/// Also handle edges of an undecorated desktop window. Linux window
+/// managers remove resize borders; Windows can lose WS_SIZEBOX when Slint
+/// recalculates layout constraints. Forward edge drags to the platform
+/// via winit, while leaving all interior editor gestures untouched.
 #[cfg(not(target_os = "android"))]
 struct DropHandler {
     pending: Vec<PathBuf>,
@@ -157,7 +156,7 @@ struct DropHandler {
     on_focused: Box<dyn Fn()>,
     /// The event loop is ending, by any road: see `start` in lib.rs.
     on_exiting: Box<dyn Fn()>,
-    /// Whether this window draws its own resize edges: Linux, undecorated.
+    /// Whether this undecorated desktop window handles edge resize gestures.
     edges: bool,
     /// The edge the pointer is on, while it is on one.
     edge: Option<ResizeDirection>,
@@ -227,11 +226,7 @@ impl DropHandler {
             on_pressed_away: Box::new(on_pressed_away),
             on_focused: Box::new(on_focused),
             on_exiting: Box::new(on_exiting),
-            edges: cfg!(not(any(
-                target_os = "macos",
-                target_os = "windows",
-                target_os = "ios"
-            ))) && !phone(),
+            edges: cfg!(not(any(target_os = "macos", target_os = "ios"))) && !phone(),
             edge: None,
         }
     }
@@ -339,7 +334,13 @@ impl CustomApplicationHandler for DropHandler {
                     }
                 }
             }
-            WindowEvent::CursorLeft { .. } => self.edge = None,
+            WindowEvent::CursorLeft { .. } => {
+                if self.edge.take().is_some()
+                    && let Some(window) = winit_window
+                {
+                    window.set_cursor(CursorIcon::Default);
+                }
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -1161,6 +1162,8 @@ mod tests {
         assert_eq!(at(500.0, 0.0), Some(ResizeDirection::North));
         assert_eq!(at(500.0, 799.0), Some(ResizeDirection::South));
         assert_eq!(at(1.0, 1.0), Some(ResizeDirection::NorthWest));
+        assert_eq!(at(999.0, 1.0), Some(ResizeDirection::NorthEast));
+        assert_eq!(at(1.0, 799.0), Some(ResizeDirection::SouthWest));
         assert_eq!(at(999.0, 799.0), Some(ResizeDirection::SouthEast));
         assert_eq!(at(6.0, 400.0), None);
     }
