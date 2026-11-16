@@ -46,6 +46,9 @@ pub(crate) struct SubmissionIntent {
     pub project: CurrentProject,
     pub mode: TaskMode,
     pub input: String,
+    /// Original editor draft and reference snapshot, for clearing only after acceptance.
+    pub ui_draft: String,
+    pub reference_keys: Vec<String>,
     pub selected: Option<VersionBinding>,
     pub generation: Option<GenerationRequest>,
 }

@@ -826,9 +826,14 @@ impl EmbeddedRuntime {
                         .borrow()
                         .as_ref()
                         .is_some_and(|runtime| runtime.component() == component)
-                        && app.global::<crate::ui::AgentUi>().get_draft().as_str() == intent.input
+                        && app.global::<crate::ui::AgentUi>().get_draft().as_str()
+                            == intent.ui_draft
                     {
                         app.global::<crate::ui::AgentUi>().set_draft("".into());
+                        shell
+                            .agent_pane
+                            .borrow_mut()
+                            .clear_references_if_unchanged(&intent.reference_keys, &app);
                     }
                 });
             });
@@ -1198,6 +1203,12 @@ fn submit_from_ui(input: String, mode: TaskMode, rewrite: bool) -> Result<(), St
                 .borrow()
                 .validate_submission(bridge.status(), &input)?;
             let mut studio = shell.studio.borrow_mut();
+            let (reference_keys, reference_context) = if mode == TaskMode::Script {
+                (Vec::new(), String::new())
+            } else {
+                shell.agent_pane.borrow().resolve_references(&studio)?
+            };
+            let ui_draft = input.clone();
             let session = studio.session.as_ref().ok_or("请先打开原生工程。")?;
             let project = crate::live::CurrentProject {
                 path: session.path().to_owned(),
@@ -1232,14 +1243,17 @@ fn submit_from_ui(input: String, mode: TaskMode, rewrite: bool) -> Result<(), St
                 Some(generation) => generation.request_id().to_owned(),
                 None => random_capability()?,
             };
-            let prompt = generation
-                .as_ref()
-                .map_or(text, |generation| generation.prompt().to_owned());
+            let prompt = generation.as_ref().map_or_else(
+                || format!("{text}{reference_context}"),
+                |generation| generation.prompt().to_owned(),
+            );
             let intent = SubmissionIntent {
                 id,
                 project,
                 mode,
                 input: prompt,
+                ui_draft,
+                reference_keys,
                 selected,
                 generation,
             };

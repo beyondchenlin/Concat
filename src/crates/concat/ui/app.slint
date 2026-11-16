@@ -84,7 +84,7 @@ import { CaptionStyles } from "dialogs/captions.slint";
 import { Meters } from "timeline/vu-meter.slint";
 import { MotionPose, MotionTile, MotionTiles } from "inspector/motion-picker.slint";
 import { Workspace } from "workspace/workspace.slint";
-import { AgentUi, AgentView, AgentMessageData, AgentStatusData, AgentNavigation } from "agent.slint";
+import { AgentUi, AgentView, AgentMessageData, AgentStatusData, AgentSuggestion, AgentNavigation, AgentSidebar } from "agent.slint";
 import { AgentCallUi } from "agent-call.slint";
 import { AgentWorkspace } from "workspace/agent-workspace.slint";
 import { ScriptUi, ScriptVersionData } from "script.slint";
@@ -128,6 +128,7 @@ export {
     AgentView,
     AgentMessageData,
     AgentStatusData,
+    AgentSuggestion,
     Curves,
     Fmt,
     Focus,
@@ -250,6 +251,7 @@ export component App inherits Window {
     changed on-start => {
         if (!root.on-start) {
             AgentUi.view = AgentView.chat;
+            if !root.phone && root.width < 1200px { AgentUi.sidebar-open = false; }
             keys.focus();
         }
     }
@@ -749,7 +751,11 @@ export component App inherits Window {
             // title strip and everything under it start below it, and the
             // ground shows through behind the bars. Zero on a desktop.
             padding-top: root.safe-area-insets.top;
-            padding-bottom: root.safe-area-insets.bottom;
+            // Keep the phone chat input and send controls above a docked keyboard.
+            padding-bottom: root.phone && !root.on-start && AgentUi.view == AgentView.chat
+                    && root.virtual-keyboard-position.y > 0px
+                ? Math.max(root.safe-area-insets.bottom, root.virtual-keyboard-size.height)
+                : root.safe-area-insets.bottom;
             padding-left: root.safe-area-insets.left;
             padding-right: root.safe-area-insets.right;
 
@@ -811,14 +817,14 @@ export component App inherits Window {
                 link(name) => { root.start-link(name); }
             }
 
-            if !root.on-start: AgentNavigation {
+            if !root.on-start && root.phone: AgentNavigation {
                 phone: root.phone;
                 project-name: root.project-name;
                 projects => { root.app-menu-selected("close-project"); }
                 save => { root.app-menu-selected("save"); }
             }
 
-            if !root.on-start && AgentUi.view != AgentView.editor: AgentWorkspace {
+            if !root.on-start && root.phone && AgentUi.view != AgentView.editor: AgentWorkspace {
                 vertical-stretch: 1;
                 phone: root.phone;
                 project-name: root.project-name;
@@ -834,8 +840,14 @@ export component App inherits Window {
             // nothing is passed to it: it is a box with four seats in it, and
             // the views inside those seats reach the state directly. See
             // editor.slint.
-            if !root.on-start && !root.phone && AgentUi.view == AgentView.editor: Workspace {
+            if !root.on-start && !root.phone: HorizontalLayout {
                 vertical-stretch: 1;
+                Workspace { horizontal-stretch: 1; }
+                AgentSidebar {
+                    min-width: AgentUi.sidebar-open ? 320px : 36px;
+                    max-width: AgentUi.sidebar-open ? 360px : 36px;
+                    preferred-width: AgentUi.sidebar-open ? 340px : 36px;
+                }
             }
 
             // The phone's editor reads the same global; only the shell round

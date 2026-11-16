@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { Theme } from "theme/theme.slint";
-import { AgentCallAuthorization } from "agent-call.slint";
+import { AgentCallUi } from "agent-call.slint";
+import { Glyph, Icon } from "icons.slint";
+import { IconButton } from "primitives/panel.slint";
+import { Select } from "primitives/select.slint";
 import { ScriptUi, ScriptWorkspace } from "script.slint";
 import { AgentSettingsUi } from "dialogs/model-settings.slint";
 import { Focus } from "util.slint";
 import { Button } from "primitives/modal.slint";
 import { ResizeBox } from "primitives/resize-box.slint";
-import { ThinScrollbar } from "primitives/scrollbar.slint";
+import { SectionTabs } from "primitives/section-tabs.slint";
+import { Pane, PaneHeader } from "workspace/pane.slint";
 import { SourcePreview } from "workspace/media-pane.slint";
 
 export enum AgentView { chat, editor, script }
@@ -19,6 +23,14 @@ export struct AgentMessageData {
     pending: bool,
 }
 
+export struct AgentSuggestion {
+    identity: string,
+    label: string,
+    detail: string,
+    thumbnail: image,
+    kind: string,
+}
+
 /// Native admission and task state. None of these fields grants authority.
 export struct AgentStatusData {
     title: string,
@@ -27,6 +39,7 @@ export struct AgentStatusData {
     error: string,
     model: string,
     can-send: bool,
+    needs-model-setup: bool,
     can-stop: bool,
     can-review: bool,
     can-continue: bool,
@@ -40,7 +53,29 @@ export struct AgentStatusData {
 
 export global AgentUi {
     in-out property <AgentView> view: AgentView.chat;
+    /// Desktop only: hiding the sidebar does not stop or reset a task.
+    in-out property <bool> sidebar-open: true;
     in-out property <string> draft;
+    in-out property <int> draft-cursor;
+    in-out property <bool> script-picker;
+    in-out property <int> script-index;
+    in-out property <[AgentSuggestion]> suggestions;
+    in-out property <[AgentSuggestion]> references;
+    in-out property <string> attachment-status;
+    in-out property <bool> attachment-pending;
+    in-out property <string> suggestion-status;
+    in-out property <bool> suggestions-open;
+    in-out property <int> suggestion-index;
+    in-out property <[string]> models;
+    in-out property <int> model-index: -1;
+    in-out property <int> composer-mode;
+    callback draft-edited(text: string, cursor: int);
+    callback trigger-requested(marker: string);
+    callback suggestion-chosen(identity: string);
+    callback reference-removed(identity: string);
+    callback model-chosen(index: int);
+    callback attach-requested();
+    callback cancel-attachments();
     in-out property <[AgentMessageData]> messages;
     in-out property <AgentStatusData> status: {
         title: "聊天未就绪",
@@ -49,6 +84,7 @@ export global AgentUi {
         error: "",
         model: "未配置模型",
         can-send: false,
+        needs-model-setup: true,
         can-stop: false,
         can-review: false,
         can-continue: false,
@@ -137,213 +173,329 @@ export component AgentNavigation inherits Rectangle {
     }
 }
 
-export component AgentTaskStatus inherits VerticalLayout {
-    spacing: 5px;
-    Button {
-        label: "模型设置";
-        enabled: !AgentSettingsUi.busy;
-        clicked => { AgentSettingsUi.open-requested(); }
-    }
-    Text {
-        text: AgentUi.status.title;
-        color: AgentUi.status.error == "" ? Theme.fg : Theme.danger;
-        font-size: Theme.fs-xl;
-        font-weight: Theme.weight-title;
-        wrap: word-wrap;
-    }
-    if AgentUi.status.detail != "": Text {
-        text: AgentUi.status.detail;
-        color: Theme.fg-muted;
-        font-size: Theme.fs;
-        wrap: word-wrap;
-    }
-    if AgentUi.status.missing != "": Text {
-        text: AgentUi.status.missing;
-        color: Theme.fg-muted;
-        font-size: Theme.fs;
-        wrap: word-wrap;
-    }
-    if AgentUi.status.error != "": Text {
-        text: AgentUi.status.error;
-        color: Theme.danger;
-        font-size: Theme.fs;
-        wrap: word-wrap;
-    }
-    if AgentUi.status.recovery-summary != "": Text {
-        text: AgentUi.status.recovery-summary;
-        color: Theme.fg-muted;
-        font-size: Theme.fs;
-        wrap: word-wrap;
-    }
-    if AgentUi.status.can-review || AgentUi.status.can-continue || AgentUi.status.can-connect: HorizontalLayout {
-        spacing: 6px;
-        if AgentUi.status.can-review: Button {
-            label: "核对当前工程";
-            clicked => { AgentUi.review-requested(); }
-        }
-        if AgentUi.status.can-continue: Button {
-            label: "确认继续";
-            primary: true;
-            clicked => { AgentUi.continue-requested(); }
-        }
-        if AgentUi.status.can-connect: Button {
-            label: "连接会话";
-            clicked => { AgentUi.connect-requested(); }
-        }
-    }
-    if AgentUi.status.can-discard: Button {
-        label: "放弃未完成任务并打开会话";
-        clicked => { AgentUi.discard-requested(); }
-    }
-    if AgentUi.status.has-progress: Rectangle {
-        height: 4px;
-        border-radius: 2px;
-        background: Theme.field;
-        Rectangle {
-            width: parent.width * Math.clamp(AgentUi.status.progress, 0, 1);
-            height: parent.height;
-            border-radius: 2px;
-            background: Theme.accent;
-        }
-    }
-}
-
 export component AgentChat inherits Rectangle {
     in property <bool> phone;
     background: Theme.panel;
     border-radius: Theme.r-lg;
+    private property <bool> send-help;
+    private property <bool> helping: root.send-help && AgentUi.draft != "" && !AgentUi.status.busy;
+
+    function send-draft() {
+        if AgentUi.attachment-pending || !AgentUi.status.can-send {
+            root.send-help = true;
+        } else if AgentUi.composer-mode == 1 && ScriptUi.selected-label == "尚未选择剪辑版本" {
+            root.send-help = false;
+            AgentUi.script-picker = true;
+            ScriptUi.open-requested();
+        } else {
+            root.send-help = false;
+            side-transcript.content-y = Math.min(0px, side-transcript.height - side-transcript.content-height);
+            if AgentUi.composer-mode == 1 { AgentUi.edit-requested(AgentUi.draft); }
+            else { AgentUi.send-requested(AgentUi.draft); }
+        }
+    }
+
+    function resume-composing() {
+        if !root.phone {
+            side-prompt.focus();
+            side-prompt.set-selection-offsets(AgentUi.draft-cursor, AgentUi.draft-cursor);
+        }
+    }
 
     VerticalLayout {
-        padding: root.phone ? 8px : 14px;
-        spacing: 8px;
-        AgentTaskStatus { }
-        AgentCallAuthorization { }
-
-        // The view contains only native-published conversation records. A
-        // blocked send never manufactures a user or assistant message.
-        transcript := Rectangle {
-            vertical-stretch: 1;
-            min-height: 32px;
-            clip: true;
-            flick := Flickable {
-                width: parent.width;
-                height: parent.height;
-                content-width: self.width;
-                content-height: Math.max(self.height, entries.preferred-height);
-                entries := VerticalLayout {
-                    width: flick.width - 8px;
-                    height: self.preferred-height;
-                    spacing: 10px;
-                    alignment: start;
-                    if AgentUi.messages.length == 0: Text {
-                        text: "还没有对话。预览与手动编辑共享当前工程。";
-                        color: Theme.fg-dim;
-                        font-size: Theme.fs-lg;
-                        wrap: word-wrap;
+        padding: 10px;
+        spacing: 6px;
+        if root.phone: HorizontalLayout {
+            height: 28px; alignment: end;
+            IconButton { glyph: Glyph.settings; label: "模型设置"; enabled: !AgentSettingsUi.busy; clicked => { AgentSettingsUi.open-requested(); } }
+        }
+        // Keep recovery, failures and explicit call authorization visible.
+        if AgentUi.status.busy: Text {
+            text: AgentUi.status.title + (AgentUi.status.detail == "" ? "" : " · " + AgentUi.status.detail);
+            color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap;
+        }
+        if AgentUi.status.has-progress: Rectangle {
+            height: 4px; border-radius: 2px; background: Theme.field;
+            Rectangle { width: parent.width * Math.clamp(AgentUi.status.progress, 0, 1); height: parent.height; border-radius: 2px; background: Theme.accent; }
+        }
+        if AgentUi.status.error != "": Text {
+            text: AgentUi.status.error; color: Theme.danger; font-size: Theme.fs; wrap: word-wrap;
+        }
+        if AgentUi.status.missing != "": Text {
+            text: AgentUi.status.missing; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap;
+        }
+        if AgentUi.status.recovery-summary != "": Text {
+            text: AgentUi.status.recovery-summary; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap;
+        }
+        if !root.helping && (AgentUi.status.can-review || AgentUi.status.can-continue || AgentUi.status.can-connect || AgentUi.status.can-discard): HorizontalLayout {
+            spacing: 4px; alignment: start;
+            if AgentUi.status.can-review: Button { label: "核对工程"; clicked => { AgentUi.review-requested(); } }
+            if AgentUi.status.can-continue: Button { label: "确认继续"; clicked => { AgentUi.continue-requested(); } }
+            if AgentUi.status.can-connect: Button { label: "连接会话"; clicked => { AgentUi.connect-requested(); } }
+            if AgentUi.status.can-discard: Button { label: "放弃任务"; clicked => { AgentUi.discard-requested(); } }
+        }
+        if !root.helping && (AgentCallUi.can-authorize || AgentCallUi.allowed): HorizontalLayout {
+            spacing: 4px;
+            Text { text: AgentCallUi.limits; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap; horizontal-stretch: 1; }
+            Button { label: AgentCallUi.allowed ? "撤回授权" : "允许调用"; enabled: AgentCallUi.can-authorize || AgentCallUi.allowed; clicked => { AgentCallUi.authorize-requested(); } }
+        }
+        side-transcript := Flickable {
+            vertical-stretch: 1; min-height: 40px;
+            content-width: self.width;
+            content-height: Math.max(self.height, side-entries.preferred-height);
+            private property <length> last-height;
+            changed content-height => {
+                if self.last-height - self.height + self.content-y <= 12px {
+                    self.content-y = Math.min(0px, self.height - self.content-height);
+                }
+                self.last-height = self.content-height;
+            }
+            side-entries := VerticalLayout {
+                width: side-transcript.width; height: self.preferred-height; spacing: 8px; alignment: start;
+                if AgentUi.messages.length == 0: Text {
+                    text: "描述你的剪辑要求，或引用工程素材。"; color: Theme.fg-dim; font-size: Theme.fs; wrap: word-wrap;
+                }
+                for message in AgentUi.messages: Rectangle {
+                    height: message-row.preferred-height; background: Theme.well; border-radius: Theme.r;
+                    message-row := VerticalLayout {
+                        padding: 8px; spacing: 4px;
+                        Text { text: message.author + (message.pending ? " · 接收中" : ""); color: Theme.fg-dim; font-size: Theme.fs-sm; }
+                        Text { text: message.body; color: Theme.fg; font-size: Theme.fs; wrap: word-wrap; }
                     }
-                    for message in AgentUi.messages: Rectangle {
-                        height: entry.preferred-height;
-                        border-radius: Theme.r;
-                        background: Theme.well;
-                        entry := VerticalLayout {
-                            padding: 10px;
-                            spacing: 6px;
-                            Text {
-                                text: message.author + (message.pending ? " · 接收中" : "");
-                                color: Theme.fg-dim;
-                                font-size: Theme.fs-sm;
-                            }
-                            Text {
-                                text: message.body;
-                                color: Theme.fg;
-                                font-size: Theme.fs-lg;
-                                wrap: word-wrap;
-                            }
+                }
+            }
+        }
+        if AgentUi.suggestions-open: Rectangle {
+            min-height: suggestion-list.preferred-height; max-height: suggestion-list.preferred-height;
+            background: Theme.well; border-radius: Theme.r; border-width: 1px; border-color: Theme.line;
+            suggestion-list := VerticalLayout {
+                padding: 4px; spacing: 2px;
+                Text { text: AgentUi.suggestion-status; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap; }
+                for suggestion[index] in AgentUi.suggestions: Rectangle {
+                    height: 38px; border-radius: Theme.r-sm;
+                    accessible-role: button; accessible-label: suggestion.label + " " + suggestion.detail;
+                    accessible-action-default => { AgentUi.suggestion-chosen(suggestion.identity); }
+                    background: index == AgentUi.suggestion-index || suggestion-touch.has-hover ? Theme.field-hover : transparent;
+                    HorizontalLayout {
+                        padding-left: 5px; padding-right: 5px; spacing: 6px;
+                        Rectangle {
+                            width: 38px; height: 30px; border-radius: Theme.r-sm; background: Theme.field; clip: true;
+                            Icon { x: 12px; y: 8px; glyph: suggestion.kind == "视频" ? Glyph.film : suggestion.kind == "音频" ? Glyph.music : suggestion.kind == "图片" ? Glyph.image : Glyph.text-mark; size: 14px; tint: Theme.fg-muted; }
+                            Image { width: parent.width; height: parent.height; source: suggestion.thumbnail; image-fit: cover; }
+                        }
+                        Text { text: suggestion.label; color: Theme.fg; font-size: Theme.fs; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                        Text { text: suggestion.detail; color: Theme.fg-muted; font-size: Theme.fs-sm; vertical-alignment: center; }
+                    }
+                    suggestion-touch := TouchArea { mouse-cursor: pointer; clicked => { AgentUi.suggestion-chosen(suggestion.identity); root.resume-composing(); } }
+                }
+            }
+        }
+        if AgentUi.script-picker: Rectangle {
+            min-height: script-picker-layout.preferred-height; max-height: script-picker-layout.preferred-height;
+            background: Theme.well; border-radius: Theme.r; border-width: 1px; border-color: Theme.line;
+            script-picker-layout := VerticalLayout {
+                padding: 6px; spacing: 4px;
+                HorizontalLayout {
+                    Text { text: "选择文案版本"; color: Theme.fg; font-size: Theme.fs; horizontal-stretch: 1; vertical-alignment: center; }
+                    IconButton { glyph: Glyph.close; label: "关闭文案选择"; clicked => { AgentUi.script-picker = false; root.resume-composing(); } }
+                }
+                if ScriptUi.busy: Text { text: "正在读取文案…"; color: Theme.fg-muted; font-size: Theme.fs-sm; }
+                if ScriptUi.error != "": Text { text: ScriptUi.error; color: Theme.danger; font-size: Theme.fs-sm; wrap: word-wrap; }
+                if ScriptUi.ready && ScriptUi.dirty: Text { text: "请先保存或放弃未保存的文案修改。"; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap; }
+                if ScriptUi.ready && ScriptUi.versions.length == 0: Text { text: "还没有保存的版本，请在文案页创建。"; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap; }
+                if ScriptUi.versions.length > 0: Flickable {
+                    height: Math.min(180px, script-version-rows.preferred-height);
+                    content-width: self.width; content-height: script-version-rows.preferred-height;
+                    property <int> active-version: AgentUi.script-index;
+                    changed active-version => {
+                        if (self.active-version * 30px < -self.content-y) { self.content-y = -self.active-version * 30px; }
+                        else if ((self.active-version + 1) * 30px > -self.content-y + self.height) { self.content-y = self.height - (self.active-version + 1) * 30px; }
+                    }
+                    script-version-rows := VerticalLayout {
+                        width: parent.width; height: self.preferred-height; spacing: 2px;
+                        for version[index] in ScriptUi.versions: Button {
+                            label: (index == AgentUi.script-index ? "› " : "  ") + version.label + (version.selected ? " · 已选择" : ""); ghost: true; block: true; align-left: true;
+                            enabled: ScriptUi.ready && !ScriptUi.busy && !ScriptUi.dirty;
+                            clicked => { ScriptUi.select-version-requested(version.identity); AgentUi.composer-mode = 1; AgentUi.script-picker = false; root.resume-composing(); }
                         }
                     }
                 }
+                Button { label: "打开文案页"; ghost: true; clicked => { AgentUi.script-picker = false; AgentUi.view = AgentView.script; } }
             }
-            ThinScrollbar {
-                x: parent.width - self.width;
-                height: parent.height;
-                viewport: flick.height;
-                content: flick.content-height;
-                offset: -flick.content-y;
-                scrolled(to) => { flick.content-y = -to; }
+        }
+        if AgentUi.attachment-status != "": HorizontalLayout {
+            spacing: 4px;
+            Text { text: AgentUi.attachment-status; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap; horizontal-stretch: 1; }
+            if AgentUi.attachment-pending: Button { label: "取消引用"; ghost: true; clicked => { AgentUi.cancel-attachments(); } }
+        }
+        if ScriptUi.error != "" && AgentUi.composer-mode == 1 && !AgentUi.script-picker: Text {
+            text: ScriptUi.error; color: Theme.danger; font-size: Theme.fs-sm; wrap: word-wrap;
+        }
+        if root.helping: VerticalLayout {
+            vertical-stretch: 0; spacing: 4px;
+            HorizontalLayout {
+                Text {
+                    horizontal-stretch: 1; vertical-alignment: center; wrap: word-wrap;
+                    font-size: Theme.fs-sm; color: Theme.fg;
+                    text: AgentUi.attachment-pending ? "素材正在导入，完成后即可发送。"
+                        : AgentUi.status.needs-model-setup ? "发送前请设置模型渠道，并保存该渠道的凭据。"
+                        : AgentUi.status.can-connect ? "先连接当前工程的 Pi 会话。"
+                        : AgentUi.status.can-continue ? "当前工程已核对，请确认打开会话。"
+                        : AgentUi.status.can-review ? AgentUi.status.recovery-summary != "" ? AgentUi.status.recovery-summary : "请先核对当前工程。"
+                        : AgentCallUi.can-authorize && !AgentCallUi.allowed ? AgentCallUi.limits
+                        : AgentUi.status.error != "" ? AgentUi.status.error
+                        : AgentUi.status.can-send ? "可以发送这条消息了。" : AgentUi.status.detail;
+                }
+                IconButton { glyph: Glyph.close; label: "关闭发送提示"; clicked => { root.send-help = false; } }
+            }
+            HorizontalLayout {
+                alignment: start; spacing: 4px;
+                if AgentUi.status.needs-model-setup: Button { label: "配置模型"; clicked => { AgentSettingsUi.open-requested(); } }
+                if !AgentUi.status.needs-model-setup && AgentUi.status.can-connect: Button { label: "连接会话"; clicked => { AgentUi.connect-requested(); } }
+                if AgentUi.status.can-review && !AgentUi.status.can-continue: Button { label: "核对工程"; clicked => { AgentUi.review-requested(); } }
+                if AgentUi.status.can-continue: Button { label: "确认继续"; clicked => { AgentUi.continue-requested(); } }
+                if AgentUi.status.can-discard: Button { label: "放弃任务"; clicked => { AgentUi.discard-requested(); } }
+                if AgentCallUi.can-authorize && !AgentCallUi.allowed && !AgentUi.attachment-pending: Button {
+                    label: "允许并发送"; primary: true;
+                    clicked => {
+                        AgentCallUi.authorize-requested();
+                        if AgentCallUi.allowed { root.send-draft(); }
+                    }
+                }
+                if AgentCallUi.allowed && !AgentUi.status.can-send: Button { label: "撤回授权"; clicked => { AgentCallUi.authorize-requested(); } }
+            }
+        }
+        composer := Rectangle {
+            min-height: composer-layout.preferred-height; max-height: composer-layout.preferred-height;
+            background: Theme.well; border-radius: Theme.r; border-width: 1px;
+            border-color: side-prompt.has-focus ? Theme.accent : Theme.line;
+            composer-layout := VerticalLayout {
+                padding: 5px; spacing: 2px;
+                side-prompt-box := ResizeBox {
+                    box-height: 66px; min-box: 56px; max-box: 150px; flat: true;
+                    content-height: side-prompt.preferred-height; focused: side-prompt.has-focus;
+                    side-prompt := TextInput {
+                        x: 0px; y: side-prompt-box.pad-y;
+                        width: side-prompt-box.width - 2 * side-prompt-box.pad-x;
+                        height: Math.max(self.preferred-height, side-prompt-box.view-height);
+                        text <=> AgentUi.draft; single-line: false; wrap: word-wrap;
+                        color: Theme.fg; font-size: Theme.fs-input;
+                        selection-background-color: Theme.accent; selection-foreground-color: Theme.on-accent;
+                        accessible-role: text-input;
+                        accessible-label: "剪辑要求";
+                        accessible-value <=> self.text;
+                        accessible-action-set-value(value) => { self.text = value; AgentUi.draft-edited(self.text, self.cursor-position-byte-offset); }
+                        accessible-action-set-selection-offsets(anchor, focus) => { self.set-selection-offsets(anchor, focus); }
+                        edited => { AgentUi.draft-edited(self.text, self.cursor-position-byte-offset); }
+                        key-pressed(event) => {
+                            if AgentUi.script-picker && event.text == Key.Escape { AgentUi.script-picker = false; return accept; }
+                            if AgentUi.script-picker && ScriptUi.ready && !ScriptUi.busy && !ScriptUi.dirty && ScriptUi.versions.length > 0 {
+                                if event.text == Key.DownArrow { AgentUi.script-index = Math.mod(AgentUi.script-index + 1, ScriptUi.versions.length); return accept; }
+                                if event.text == Key.UpArrow { AgentUi.script-index = Math.mod(AgentUi.script-index - 1 + ScriptUi.versions.length, ScriptUi.versions.length); return accept; }
+                                if event.text == Key.Return { ScriptUi.select-version-requested(ScriptUi.versions[AgentUi.script-index].identity); AgentUi.composer-mode = 1; AgentUi.script-picker = false; return accept; }
+                            }
+                            if AgentUi.suggestions-open && event.text == Key.Escape { AgentUi.suggestions-open = false; return accept; }
+                            if AgentUi.suggestions-open && AgentUi.suggestions.length > 0 {
+                                if event.text == Key.DownArrow { AgentUi.suggestion-index = Math.mod(AgentUi.suggestion-index + 1, AgentUi.suggestions.length); return accept; }
+                                if event.text == Key.UpArrow { AgentUi.suggestion-index = Math.mod(AgentUi.suggestion-index - 1 + AgentUi.suggestions.length, AgentUi.suggestions.length); return accept; }
+                                if event.text == Key.Return { AgentUi.suggestion-chosen(AgentUi.suggestions[AgentUi.suggestion-index].identity); self.set-selection-offsets(AgentUi.draft-cursor, AgentUi.draft-cursor); return accept; }
+                            }
+                            return reject;
+                        }
+                        cursor-position-changed(at) => { AgentUi.draft-cursor = self.cursor-position-byte-offset; side-prompt-box.reveal(at.y, self.font-size * 1.4); }
+                    }
+                    if AgentUi.draft == "" && !side-prompt.has-focus: Text {
+                        x: 0px; y: side-prompt-box.pad-y;
+                        width: side-prompt-box.width - 2 * side-prompt-box.pad-x;
+                        horizontal-alignment: left; text: "描述你的剪辑要求…";
+                        color: Theme.fg-dim; font-size: Theme.fs; wrap: word-wrap;
+                    }
+                }
+                if AgentUi.references.length > 0 || (AgentUi.composer-mode == 1 && ScriptUi.selected-label != "尚未选择剪辑版本"): Flickable {
+                    height: 30px; content-width: Math.max(self.width, reference-row.preferred-width); content-height: self.height;
+                    reference-row := HorizontalLayout {
+                        x: 0px; width: self.preferred-width; height: parent.height; spacing: 4px; alignment: start;
+                        for reference in AgentUi.references: Button { label: reference.label + " ×"; clicked => { AgentUi.reference-removed(reference.identity); } }
+                        if AgentUi.composer-mode == 1 && ScriptUi.selected-label != "尚未选择剪辑版本": Button {
+                            label: ScriptUi.selected-label;
+                            clicked => { AgentUi.script-picker = true; ScriptUi.open-requested(); }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    height: 30px; spacing: 2px;
+                    IconButton { glyph: Glyph.plus; label: "导入素材"; clicked => { AgentUi.attach-requested(); } }
+                    IconButton { text: "@"; label: "引用工程素材"; clicked => { AgentUi.trigger-requested("@"); root.resume-composing(); } }
+                    IconButton { text: "/"; label: "命令"; clicked => { AgentUi.trigger-requested("/"); root.resume-composing(); } }
+                    if AgentUi.models.length > 0: Select {
+                        options: AgentUi.models; current: AgentUi.model-index; placeholder: "选择模型";
+                        enabled: !AgentSettingsUi.busy && !AgentUi.status.busy; flat: true; snug: true;
+                        min-width: 70px; max-width: 90px;
+                        changed(index) => { AgentUi.model-chosen(index); }
+                    }
+                    if AgentUi.models.length == 0: Button { label: "配置模型"; ghost: true; enabled: !AgentSettingsUi.busy; clicked => { AgentSettingsUi.open-requested(); } }
+                    Select { options: ["对话", "剪辑"]; current <=> AgentUi.composer-mode; flat: true; snug: true; min-width: 60px; max-width: 70px; }
+                    Rectangle { horizontal-stretch: 1; }
+                    if AgentUi.status.busy && AgentUi.status.can-stop: IconButton { glyph: Glyph.stop; label: "停止"; clicked => { AgentUi.stop-requested(); } }
+                    if !AgentUi.status.busy: IconButton {
+                        glyph: Glyph.send; label: "发送"; accent: true;
+                        enabled: AgentUi.draft != "";
+                        clicked => { root.send-draft(); }
+                    }
+                }
             }
         }
 
-        prompt-box := ResizeBox {
-            box-height: root.phone ? 64px : 96px;
-            min-box: 56px;
-            max-box: root.phone ? 104px : 180px;
-            content-height: prompt.preferred-height;
-            focused: prompt.has-focus;
-            prompt := TextInput {
-                y: prompt-box.pad-y;
-                width: parent.width;
-                height: Math.max(self.preferred-height, prompt-box.view-height);
-                text <=> AgentUi.draft;
-                single-line: false;
-                wrap: word-wrap;
-                color: Theme.fg;
-                font-size: Theme.fs-input;
-                selection-background-color: Theme.accent;
-                selection-foreground-color: Theme.on-accent;
-                accessible-label: "剪辑要求，发送前保留在本机草稿中";
-                cursor-position-changed(at) => { prompt-box.reveal(at.y, self.font-size * 1.4); }
-                key-pressed(event) => {
-                    if (event.text == Key.Home) { self.set-selection-offsets(0, 0); return accept; }
-                    if (event.text == Key.End) {
-                        self.set-selection-offsets(1000000000, 1000000000); return accept;
-                    }
-                    return reject;
-                }
-            }
-            if AgentUi.draft == "" && !prompt.has-focus: Text {
-                y: prompt-box.pad-y;
-                text: "描述需要添加的字幕或剪辑修改";
-                color: Theme.fg-dim;
-                font-size: Theme.fs-lg;
-                wrap: word-wrap;
-            }
-        }
-        HorizontalLayout {
-            spacing: 8px;
-            Text {
-                text: AgentUi.status.model;
-                color: Theme.fg-dim;
-                font-size: Theme.fs-sm;
-                overflow: elide;
-                vertical-alignment: center;
-                horizontal-stretch: 1;
-            }
-            Button {
-                label: "停止";
-                danger: true;
-                enabled: AgentUi.status.can-stop;
-                min-height: root.phone ? 40px : 32px;
-                max-height: root.phone ? 40px : 32px;
-                clicked => { AgentUi.stop-requested(); }
-            }
-            Button {
-                label: "只读对话";
-                primary: true;
-                enabled: AgentUi.status.can-send && AgentUi.draft != "";
-                min-height: root.phone ? 40px : 32px;
-                max-height: root.phone ? 40px : 32px;
-                clicked => { AgentUi.send-requested(AgentUi.draft); }
-            }
-            Button {
-                label: "按所选稿剪辑";
-                primary: true;
-                enabled: AgentUi.status.can-send && AgentUi.draft != "";
-                min-height: root.phone ? 40px : 32px;
-                max-height: root.phone ? 40px : 32px;
-                clicked => { AgentUi.edit-requested(AgentUi.draft); }
-            }
-        }
     }
+
 }
 
 export component AgentScript inherits ScriptWorkspace {}
+
+/// The desktop editor stays mounted while its assistant is opened or hidden.
+export component AgentSidebar inherits Rectangle {
+    background: Theme.page;
+    clip: true;
+
+    VerticalLayout {
+        padding: AgentUi.sidebar-open ? 6px : 0px;
+
+        if AgentUi.sidebar-open: Pane {
+            PaneHeader {
+                title: "Pi 助手";
+                IconButton { glyph: Glyph.settings; label: "模型设置"; enabled: !AgentSettingsUi.busy; clicked => { AgentSettingsUi.open-requested(); } }
+                IconButton { glyph: Glyph.chevrons-right; label: "收起 Pi 助手"; clicked => { AgentUi.sidebar-open = false; Focus.release(); } }
+            }
+            SectionTabs {
+                height: 40px;
+                options: ["对话", "文案"];
+                current: AgentUi.view == AgentView.script ? 1 : 0;
+                changed(index) => {
+                    if index == 1 {
+                        AgentUi.view = AgentView.script;
+                        ScriptUi.open-requested();
+                    } else {
+                        AgentUi.view = AgentView.chat;
+                    }
+                    Focus.release();
+                }
+            }
+            if AgentUi.view != AgentView.script: AgentChat {
+                vertical-stretch: 1;
+            }
+            if AgentUi.view == AgentView.script: AgentScript {
+                compact-sidebar: true;
+                vertical-stretch: 1;
+            }
+        }
+        if !AgentUi.sidebar-open: Pane {
+            IconButton {
+                text: "Pi";
+                min-height: 32px; max-height: 32px;
+                label: "展开 Pi 助手";
+                clicked => { AgentUi.sidebar-open = true; Focus.release(); }
+            }
+            Rectangle { vertical-stretch: 1; }
+        }
+    }
+}

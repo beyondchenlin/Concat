@@ -47,6 +47,7 @@ export global ScriptUi {
     callback new-requested();
     callback view-requested(version: string);
     callback select-requested();
+    callback select-version-requested(version: string);
     callback legacy-view-requested(identity: string);
     callback copy-legacy-requested();
     callback generate-requested(instruction: string, rewrite: bool);
@@ -57,6 +58,7 @@ export global ScriptUi {
 }
 
 export component ScriptWorkspace inherits Rectangle {
+    in property <bool> compact-sidebar;
     background: Theme.panel;
     border-radius: Theme.r-lg;
     PaneScroll {
@@ -109,7 +111,7 @@ export component ScriptWorkspace inherits Rectangle {
             max-length: 2048;
             edited(text) => { ScriptUi.generation-instruction = text; }
         }
-        AgentCallAuthorization {}
+        AgentCallAuthorization { compact: root.compact-sidebar; }
         HorizontalLayout {
             spacing: 6px;
             if ScriptUi.generating: Button {
@@ -187,8 +189,9 @@ export component ScriptWorkspace inherits Rectangle {
             content-height: words.preferred-height;
             focused: words.has-focus;
             words := TextInput {
+                x: 0px;
                 y: words-box.pad-y;
-                width: parent.width;
+                width: words-box.width - 2 * words-box.pad-x;
                 height: Math.max(self.preferred-height, words-box.view-height);
                 text <=> ScriptUi.text;
                 enabled: ScriptUi.ready;
@@ -207,11 +210,13 @@ export component ScriptWorkspace inherits Rectangle {
             spacing: 6px;
             Button {
                 label: "放弃本次修改";
+                max-width: root.compact-sidebar ? 120px : 100000px;
                 enabled: ScriptUi.dirty && !ScriptUi.busy;
                 clicked => { ScriptUi.discard-requested(); }
             }
             Button {
                 label: ScriptUi.busy ? "处理中" : "保存新版本";
+                max-width: root.compact-sidebar ? 120px : 100000px;
                 primary: true;
                 enabled: ScriptUi.can-save;
                 horizontal-stretch: 1;

@@ -389,12 +389,19 @@ export component Button inherits Rectangle {
     in property <bool> enabled: true;
     /// fill the width it is given, for a footer's single action
     in property <bool> block;
+    /// Align a full-width choice with other list rows.
+    in property <bool> align-left;
     /// 34px instead of 28px, for the action a sheet is built around
     in property <bool> large;
     /// A glyph alone on a square the height of the row, for a toggle that
     /// sits beside a field and says what it does with its mark: the eye
     /// that shows a token. The label is not drawn; it is the tooltip.
     in property <bool> square;
+
+    accessible-role: button;
+    accessible-enabled: root.enabled;
+    accessible-label: root.label;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
 
     callback clicked();
 
@@ -435,7 +442,8 @@ export component Button inherits Rectangle {
         : Theme.fg;
 
     HorizontalLayout {
-        alignment: center;
+        alignment: root.align-left ? start : center;
+        padding-left: root.align-left ? 10px : 0px;
         spacing: root.gap;
 
         if root.glyph != Glyph.none: VerticalLayout {

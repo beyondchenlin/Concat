@@ -90,6 +90,12 @@ incremental = true
 opt-level = 0
 codegen-units = 256
 
+# The generated interface is compiled separately from the window. Keep the
+# quick profile's low-cost code generation for it as well.
+[profile.quick.package.concat-ui]
+opt-level = 0
+codegen-units = 256
+
 # The shipping build of the editor window: `cargo build --profile app -p concat`.
 #
 # Every knob here is set for the fastest possible binary, and each one costs
@@ -139,8 +145,16 @@ opt-level = 2
 [profile.dev]
 incremental = false
 
+# Full debug information for the large generated UI adds substantial build
+# memory without helping debug the handwritten window logic.
+[profile.dev.package.concat-ui]
+debug = 0
+
 [profile.test]
 incremental = false
+
+[profile.test.package.concat-ui]
+debug = 0
 
 # Slint's Skia renderer, as published, with one change: text is pixel-snapped
 # on a low-density screen (see patches/README.md). The copy is 1.18.1 exactly;

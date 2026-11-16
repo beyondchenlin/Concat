@@ -11,6 +11,7 @@ export global AgentCallUi {
 }
 
 export component AgentCallAuthorization inherits VerticalLayout {
+    in property <bool> compact;
     spacing: 4px;
     Text {
         text: AgentCallUi.limits;
@@ -19,7 +20,8 @@ export component AgentCallAuthorization inherits VerticalLayout {
         wrap: word-wrap;
     }
     Button {
-        label: AgentCallUi.allowed ? "已允许本次调用 · 点击撤回" : "允许本次调用";
+        label: root.compact ? (AgentCallUi.allowed ? "撤回授权" : "允许调用") : (AgentCallUi.allowed ? "已允许本次调用 · 点击撤回" : "允许本次调用");
+        max-width: root.compact ? 120px : 100000px;
         enabled: AgentCallUi.can-authorize;
         primary: AgentCallUi.allowed;
         clicked => { AgentCallUi.authorize-requested(); }

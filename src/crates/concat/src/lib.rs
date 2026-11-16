@@ -28,7 +28,7 @@ use slint::private_unstable_api::re_exports::DataTransfer;
 // nothing in this file.
 #[allow(missing_docs)]
 mod ui {
-    slint::include_modules!();
+    pub use concat_ui::*;
 }
 
 pub mod agent;
@@ -355,8 +355,19 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         };
         studio.notify(&notice, false);
     }
-    studio.reload_packages(false);
-    studio.watch_packages();
+    // The package trials and card generator use the shared DX12 device.
+    // Let the first window surface configure before starting them on Windows.
+    #[cfg(target_os = "windows")]
+    if smoke {
+        studio.reload_packages(false);
+        studio.watch_packages();
+        studio.host.monitor.warm_shaders();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        studio.reload_packages(false);
+        studio.watch_packages();
+    }
     let dark = studio.prefs.dark.unwrap_or(true);
     app.global::<Theme>().set_dark(dark);
     motion_tiles::install(&app);
@@ -450,70 +461,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         models: Models::new(),
     });
     Shell::install(shell.clone());
-    panes::agent_settings::install(&app);
-
-    // State comes from the same native owner as protocol admission. A rendered
-    // enabled button is never authority: the send callback reads it again.
-    panes::script::install(&app);
-    let agent_ui = app.global::<AgentUi>();
-    agent_ui.on_send_requested(|draft| {
-        embedded::show_ui_error(embedded::submit_chat_from_ui(draft.to_string(), false));
-    });
-    agent_ui.on_edit_requested(|draft| {
-        embedded::show_ui_error(embedded::submit_chat_from_ui(draft.to_string(), true));
-    });
-    agent_ui.on_stop_requested(embedded::stop_from_ui);
-    app.global::<ui::AgentCallUi>()
-        .on_authorize_requested(embedded::authorize_call_from_ui);
-    agent_ui.on_review_requested(|| {
-        let mut result = Err("聊天运行组件尚未连接。".to_owned());
-        Shell::with(|shell, _| {
-            if let Some(runtime) = shell.embedded.borrow().as_ref() {
-                result = runtime.inspect();
-            }
-        });
-        embedded::show_ui_error(result);
-    });
-    agent_ui.on_continue_requested(|| {
-        let mut result = Err("聊天运行组件尚未连接。".to_owned());
-        Shell::with(|shell, _| {
-            if let Some(runtime) = shell.embedded.borrow().as_ref() {
-                result = runtime.confirm();
-            }
-        });
-        embedded::show_ui_error(result);
-    });
-    agent_ui.on_discard_requested(|| {
-        let mut result = Err("聊天运行组件尚未连接。".to_owned());
-        Shell::with(|shell, _| {
-            if let Some(runtime) = shell.embedded.borrow().as_ref() {
-                result = runtime.discard_interrupted();
-            }
-        });
-        embedded::show_ui_error(result);
-    });
-    agent_ui.on_connect_requested(|| embedded::show_ui_error(embedded::connect_from_ui()));
-    let agent_status_timer = slint::Timer::default();
-    agent_status_timer.start(
-        slint::TimerMode::Repeated,
-        std::time::Duration::from_millis(250),
-        || {
-            Shell::with(|shell, app| {
-                if let Some(runtime) = shell.embedded.borrow().as_ref() {
-                    runtime.poll_saved();
-                }
-                shell.agent_pane.borrow().publish(
-                    &app,
-                    shell
-                        .agent
-                        .borrow()
-                        .as_ref()
-                        .ok_or_else(|| "会话暂不可用，仍可使用手动编辑。".to_owned())
-                        .and_then(|bridge| bridge.status()),
-                );
-            });
-        },
-    );
+    let agent_status_timer = agent::window::install(&app);
 
     // The machine's fonts, for the Text inspector's picker. Read on a
     // worker: on a machine with a few thousand faces it is a moment, and
@@ -778,8 +726,27 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     // route has in common.
     app.on_window_resized({
         let weak = app.as_weak();
+        // Treat startup as potentially narrow until its first settled size.
+        let was_narrow = std::cell::Cell::new(true);
         move || {
             if let Some(app) = weak.upgrade() {
+                // A wide sidebar would push the original dock below its compact
+                // breakpoint. Collapse once when crossing into narrow widths;
+                // the user can still deliberately reopen it there.
+                let width = app
+                    .window()
+                    .size()
+                    .to_logical(app.window().scale_factor())
+                    .width;
+                if !app.get_on_start() {
+                    let narrow = !app.get_phone() && width < 1200.0;
+                    if narrow && !was_narrow.get() {
+                        app.global::<AgentUi>().set_sidebar_open(false);
+                    } else if !narrow && was_narrow.get() {
+                        app.global::<AgentUi>().set_sidebar_open(true);
+                    }
+                    was_narrow.set(narrow);
+                }
                 let maximized = platform::is_maximized(app.window());
                 if app.get_window_maximized() != maximized {
                     app.set_window_maximized(maximized);
@@ -2895,7 +2862,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     });
 
     let result = app.run();
-    stop_native_agent();
+    agent::window::stop();
     drop(agent_status_timer);
     drop(reader_sweep);
     log::info!("close: event loop exited (ok={})", result.is_ok());
@@ -2926,6 +2893,20 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     stop_exports();
     drop(startup_mark);
     leave(0);
+}
+
+#[cfg(windows)]
+fn start_windows_preview() {
+    Shell::with(|shell, app| {
+        {
+            let mut studio = shell.studio.borrow_mut();
+            studio.reload_packages(false);
+            studio.watch_packages();
+            studio.host.monitor.warm_shaders();
+            studio.refresh_art();
+        }
+        shell.studio.borrow().publish(&app, &shell.models);
+    });
 }
 
 /// Whether a text field has the focus, read or write. Slint says it only
@@ -2975,7 +2956,7 @@ const EXPORT_PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
 /// frame and removes its files on the way out; one that does not stop
 /// within [`EXPORT_PATIENCE`] does not keep the quit from quitting.
 fn stop_exports() {
-    stop_native_agent();
+    agent::window::stop();
     let mut held = None;
     Shell::with(|shell, _| {
         let mut studio = shell.studio.borrow_mut();
@@ -3110,7 +3091,7 @@ pub fn draw_in_software() {
 /// that way itself when it opts into sudden termination.
 fn leave(code: i32) -> ! {
     // Process exit bypasses destructors. Revoke even on the error/smoke path.
-    stop_native_agent();
+    agent::window::stop();
     log::logger().flush();
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
@@ -3123,18 +3104,6 @@ fn leave(code: i32) -> ! {
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     std::process::exit(code);
-}
-
-/// Revocation only: never wait on the UI thread for callbacks it must drain.
-fn stop_native_agent() {
-    Shell::with(|shell, _| {
-        if let Some(agent) = shell.agent.borrow().as_ref() {
-            agent.stop();
-        }
-        if let Some(runtime) = shell.embedded.borrow().as_ref() {
-            runtime.stop();
-        }
-    });
 }
 
 #[cfg(test)]

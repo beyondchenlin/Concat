@@ -154,6 +154,7 @@ slint = { version = "1.18", default-features = false, features = [
 ] }
 
 [dependencies]
+concat-ui = { path = "../concat-ui" }
 concat-agent = { path = "../concat-agent" }
 # Component capabilities and locked browser resource integrity.
 getrandom = "0.3"
@@ -202,7 +203,6 @@ toml = "1.1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 
 [build-dependencies]
-slint-build = "1.18"
 # The .exe's icon, for Explorer and the Start menu, as a Windows resource.
 # Used only when the target is Windows; see build.rs.
 winresource = "0.1"

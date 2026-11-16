@@ -177,6 +177,9 @@ export enum Glyph {
     circle-play,
     bug,
     arrow-up-right,
+    /// Compact composer actions, drawn on the same icon grid as the editor.
+    send,
+    chevrons-right,
     /// two marks of other people's, filled, from Simple Icons (CC0): the
     /// repository's host and the community's chat
     github,
@@ -312,6 +315,14 @@ export component Icon inherits Rectangle {
     if root.glyph == Glyph.arrow-up-right: Stroked {
         size: root.size; tint: root.tint; weight: root.weight;
         commands: "M7 7h10v10 M7 17L17 7";
+    }
+    if root.glyph == Glyph.send: Stroked {
+        size: root.size; tint: root.tint; weight: root.weight;
+        commands: "M22 2L11 13 M22 2L15 22L11 13L2 9Z";
+    }
+    if root.glyph == Glyph.chevrons-right: Stroked {
+        size: root.size; tint: root.tint; weight: root.weight;
+        commands: "M7 6l6 6-6 6 M13 6l6 6-6 6";
     }
 
     // simple-icons/github (CC0), arc flags spelled out

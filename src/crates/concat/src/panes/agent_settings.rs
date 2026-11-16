@@ -20,7 +20,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use crate::agent::AgentBridge;
 use crate::embedded::EmbeddedRuntime;
 use crate::host::{self, Shell};
-use crate::ui::{AgentSettingsUi, App, ModelChannelDraftData};
+use crate::ui::{AgentSettingsUi, AgentUi, App, ModelChannelDraftData};
 
 /// Non-secret native form state; credentials only cross a bounded action.
 #[derive(Default)]
@@ -214,7 +214,7 @@ fn publish(
     readiness.readiness.credentials_ready = false;
     readiness.readiness.provider.clear();
     readiness.readiness.model.clear();
-    readiness.configuration_error.clear();
+    readiness.configuration_error = outcome.as_ref().err().cloned().unwrap_or_default();
     match inspection.snapshot {
         Ok(snapshot) => {
             pane.selected = inspection.selected;
@@ -226,6 +226,26 @@ fn publish(
                     .iter()
                     .map(|channel| channel.label.as_str().into()),
             );
+            let models: Vec<SharedString> = snapshot
+                .channels()
+                .iter()
+                .map(|channel| format!("{} · {}", channel.label, channel.model).into())
+                .collect();
+            let active_index = snapshot
+                .active()
+                .and_then(|active| {
+                    snapshot
+                        .channels()
+                        .iter()
+                        .position(|channel| channel.id == active.id)
+                })
+                .map_or(-1, |index| index as i32);
+            let composer = app.global::<AgentUi>();
+            composer.set_models(ModelRc::from(Rc::new(VecModel::from(models))));
+            // Select owns an internal current index after a click. Force a
+            // fresh projection even when a failed switch leaves active unchanged.
+            composer.set_model_index(-1);
+            composer.set_model_index(active_index);
             ui.set_channel_labels(ModelRc::from(Rc::new(VecModel::from(labels))));
             ui.set_channel_index(
                 pane.selected
@@ -269,6 +289,8 @@ fn publish(
         Err(error) => {
             pane.snapshot = None;
             pane.selected = None;
+            app.global::<AgentUi>().set_models(ModelRc::default());
+            app.global::<AgentUi>().set_model_index(-1);
             ui.set_can_modify(false);
             ui.set_has_saved_channel(false);
             ui.set_error(error.as_str().into());
@@ -546,6 +568,36 @@ fn mutate(mutation: Mutation, supplied: Option<ModelChannelDraftData>) {
 
 pub(crate) fn install(app: &App) {
     let ui = app.global::<AgentSettingsUi>();
+    app.global::<AgentUi>().on_model_chosen(|index| {
+        let mut changed = false;
+        Shell::with(|shell, app| {
+            let mut pane = shell.agent_settings.borrow_mut();
+            if pane.busy || shell.agent_pane.borrow().task.running {
+                return;
+            }
+            let Some(snapshot) = pane.snapshot.as_ref() else {
+                return;
+            };
+            let Some(channel) = usize::try_from(index)
+                .ok()
+                .and_then(|i| snapshot.channels().get(i))
+            else {
+                return;
+            };
+            if snapshot
+                .active()
+                .is_some_and(|active| active.id == channel.id)
+            {
+                return;
+            }
+            pane.selected = Some(channel.id.clone());
+            app.global::<AgentSettingsUi>().set_error("".into());
+            changed = true;
+        });
+        if changed {
+            mutate(Mutation::Select, None);
+        }
+    });
     ui.on_open_requested(|| refresh(None, true, true));
     ui.on_close_requested(|| {
         Shell::with(|shell, app| {

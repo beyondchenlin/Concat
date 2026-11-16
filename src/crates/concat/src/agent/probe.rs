@@ -12,6 +12,8 @@ use std::sync::{Arc, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use concat_agent::Phase;
+use concat_agent::configuration::{ChannelDraft, ModelProtocol};
+use concat_agent::credentials::{CredentialScope, CredentialStatus, Secret, platform_store};
 use concat_agent::operations::inspect_operations;
 use concat_agent::sqlite::{DATABASE_FILE_NAME, inspect_storage};
 use concat_api::AppDirs;
@@ -45,9 +47,12 @@ pub fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.len() != 2
         || args[0] != "--mode"
-        || !matches!(args[1].as_str(), "native" | "platform" | "settings")
+        || !matches!(
+            args[1].as_str(),
+            "native" | "platform" | "settings" | "media"
+        )
     {
-        return Err("usage: bk-cat-native-probe --mode native|platform|settings".into());
+        return Err("usage: bk-cat-native-probe --mode native|platform|settings|media".into());
     }
     let render_environment = render_environment();
     if args[1] != "native" {
@@ -129,9 +134,16 @@ pub(crate) fn start_if_requested() -> bool {
                 native_mode(&configuration, &mut steps)
             } else if configuration.mode == "settings" {
                 settings::run(&configuration, &mut steps)
+            } else if configuration.mode == "media" {
+                media_mode(&configuration, &mut steps)
             } else {
                 platform_mode(&configuration, &mut steps)
             };
+            // Optional short review window for the isolated probe only; no
+            // product build or user project is affected.
+            if result.is_ok() && let Some(seconds) = std::env::var("BK_CAT_PROBE_HOLD_SECONDS").ok().and_then(|value| value.parse::<u64>().ok()) {
+                std::thread::sleep(Duration::from_secs(seconds.min(60)));
+            }
             let cleanup = on_ui(|shell, _| shell.studio.borrow_mut().close_project());
             let result = result.and(cleanup);
             let report = json!({
@@ -151,6 +163,8 @@ pub(crate) fn start_if_requested() -> bool {
                     "realInternalProtocol":configuration.mode=="native",
                     "actualBundledWebpage":configuration.mode!="native",
                     "nativeSettingsCallbacks":configuration.mode=="settings",
+                    "manualMediaCallbacks":configuration.mode=="media",
+                    "finalTaskGuardViaEmbeddedRuntime":false,
                     "mouseKeyboardAcceptance":false,
                     "modelRequests":false,"androidDevice":false},
             });
@@ -174,6 +188,338 @@ pub(crate) fn start_if_requested() -> bool {
         std::process::exit(1);
     }
     true
+}
+
+/// Exercises the window's existing import, placement, save and export routes.
+fn media_mode(configuration: &Configuration, steps: &mut Vec<Value>) -> Result<(), String> {
+    use crate::panes::{Msg, export::ExportMsg, media_bin::MediaMsg};
+    let sample = configuration.output.join("sample.mp4");
+    ensure(sample.is_file(), "the isolated sample video is missing")?;
+    on_ui(move |shell, app| {
+        let mut studio = shell.studio.borrow_mut();
+        let session = studio
+            .session
+            .as_ref()
+            .ok_or("project closed")?
+            .session_id();
+        shell.agent_pane.borrow_mut().queue_attachments(
+            session,
+            std::slice::from_ref(&sample),
+            app,
+        );
+        ensure(
+            app.global::<crate::ui::AgentUi>().get_attachment_pending(),
+            "attachment pending state missing",
+        )?;
+        ensure(
+            shell
+                .agent_pane
+                .borrow()
+                .resolve_references(&studio)
+                .is_err(),
+            "pending attachment did not block submission",
+        )?;
+        studio.handle(Msg::Media(MediaMsg::Import(vec![sample])));
+        Ok(())
+    })?;
+    let media_id = wait_for("actual media import", || {
+        on_ui(|shell, app| {
+            let studio = shell.studio.borrow();
+            let media = &studio.project().media;
+            if media.is_empty() {
+                return Ok(None);
+            }
+            ensure(media.len() == 1, "unexpected imported media count")?;
+            studio.publish(app, &shell.models);
+            shell
+                .agent_pane
+                .borrow_mut()
+                .collect_attachments(&studio, app);
+            if app.global::<crate::ui::AgentUi>().get_attachment_pending() {
+                return Ok(None);
+            }
+            ensure(
+                app.global::<crate::ui::AgentUi>()
+                    .get_references()
+                    .row_count()
+                    == 1,
+                "imported attachment was not referenced",
+            )?;
+            Ok(Some(media[0].id.clone()))
+        })
+    })?;
+    step(
+        steps,
+        "real_media_import_and_attachment_reference",
+        json!({"mediaId":media_id,"pendingBlocksSubmission":true,"operatingSystemPicker":false}),
+    );
+    on_ui(|_, app| {
+        let ui = app.global::<crate::ui::AgentUi>();
+        ui.set_draft("请处理@sample 后半句".into());
+        ui.invoke_draft_edited(ui.get_draft(), "请处理@sample".len() as i32);
+        ensure(ui.get_suggestions_open(), "media suggestions did not open")
+    })?;
+    window_snapshot(configuration, "composer-media-suggestions.png")?;
+    on_ui(|_, app| {
+        let ui = app.global::<crate::ui::AgentUi>();
+        let row = ui
+            .get_suggestions()
+            .row_data(0)
+            .ok_or("imported media not offered")?;
+        ensure(row.label == "sample.mp4", "unexpected media suggestion")?;
+        ui.invoke_suggestion_chosen(row.identity);
+        ensure(
+            ui.get_references().row_count() == 1,
+            "media reference chip not created",
+        )?;
+        ensure(
+            ui.get_draft() == "请处理 后半句",
+            "completion did not preserve text after the caret",
+        )
+    })?;
+    on_ui(|shell, _| {
+        let studio = shell.studio.borrow();
+        let (keys, context) = shell.agent_pane.borrow().resolve_references(&studio)?;
+        ensure(
+            keys.len() == 1 && context.contains("sample.mp4"),
+            "media reference not bound to submission",
+        )
+    })?;
+    window_snapshot(configuration, "composer-media-reference.png")?;
+
+    on_ui(|_, app| {
+        let ui = app.global::<crate::ui::AgentUi>();
+        ui.set_draft("/文案".into());
+        ui.invoke_draft_edited(ui.get_draft(), ui.get_draft().len() as i32);
+        let command = ui
+            .get_suggestions()
+            .row_data(0)
+            .ok_or("script command absent")?;
+        ui.invoke_suggestion_chosen(command.identity);
+        ensure(
+            ui.get_script_picker(),
+            "script picker did not open in composer",
+        )?;
+        ensure(
+            !matches!(ui.get_view(), crate::ui::AgentView::Script),
+            "script command unexpectedly changed page",
+        )
+    })?;
+    wait_for("script picker loading", || {
+        on_ui(|_, app| {
+            let ui = app.global::<crate::ui::ScriptUi>();
+            Ok((ui.get_ready() && !ui.get_busy()).then_some(()))
+        })
+    })?;
+    on_ui(|_, app| {
+        let ui = app.global::<crate::ui::ScriptUi>();
+        let text: slint::SharedString = "隔离版文案".into();
+        ui.set_text(text.clone());
+        ui.invoke_edited(text);
+        ui.invoke_save_requested();
+        Ok(())
+    })?;
+    wait_for("saved script version", || {
+        on_ui(|_, app| {
+            let ui = app.global::<crate::ui::ScriptUi>();
+            Ok(
+                (ui.get_ready() && !ui.get_busy() && ui.get_versions().row_count() == 1)
+                    .then_some(()),
+            )
+        })
+    })?;
+    on_ui(|_, app| {
+        let ui = app.global::<crate::ui::ScriptUi>();
+        let text: slint::SharedString = "第二版隔离文案".into();
+        ui.set_text(text.clone());
+        ui.invoke_edited(text);
+        ui.invoke_save_requested();
+        Ok(())
+    })?;
+    wait_for("second saved script version", || {
+        on_ui(|_, app| {
+            let ui = app.global::<crate::ui::ScriptUi>();
+            Ok((!ui.get_busy() && ui.get_versions().row_count() == 2).then_some(()))
+        })
+    })?;
+    window_snapshot(configuration, "composer-script-picker.png")?;
+    // Select the first saved version through the visible composer row.
+    click_visible_label("  第1版 · 5字")?;
+    on_ui(|_, app| {
+        let ui = app.global::<crate::ui::AgentUi>();
+        ensure(
+            !ui.get_script_picker() && ui.get_composer_mode() == 1,
+            "version row did not select editing mode",
+        )
+    })?;
+    wait_for("direct script selection", || {
+        on_ui(|_, app| {
+            let ui = app.global::<crate::ui::ScriptUi>();
+            if !ui.get_error().is_empty() {
+                return Err(ui.get_error().to_string());
+            }
+            Ok((!ui.get_busy() && ui.get_selected_label().contains("第1版")).then_some(()))
+        })
+    })?;
+    on_ui(|_, app| {
+        let script = app.global::<crate::ui::ScriptUi>();
+        ensure(
+            script.get_text() == "第二版隔离文案",
+            "direct selection changed the viewed draft",
+        )?;
+        let dirty: slint::SharedString = "未保存修改".into();
+        script.set_text(dirty.clone());
+        script.invoke_edited(dirty);
+        script.invoke_select_version_requested("2".into());
+        ensure(
+            script.get_dirty() && !script.get_error().is_empty(),
+            "dirty draft was not protected",
+        )?;
+        script.invoke_discard_requested();
+        app.global::<crate::ui::AgentUi>().set_script_picker(false);
+        Ok(())
+    })?;
+    step(
+        steps,
+        "composer_direct_script_version_selection",
+        json!({"nativeStore":true,"noPageSwitch":true}),
+    );
+    on_ui(|_, app| {
+        let ui = app.global::<crate::ui::AgentUi>();
+        ui.set_draft("/素材".into());
+        ui.invoke_draft_edited(ui.get_draft(), ui.get_draft().len() as i32);
+        let command = ui
+            .get_suggestions()
+            .row_data(0)
+            .ok_or("media command absent")?;
+        ui.invoke_suggestion_chosen(command.identity);
+        ensure(
+            ui.get_draft() == "@" && ui.get_suggestions().row_count() == 2,
+            "media command did not search imported media",
+        )?;
+        ui.set_draft("".into());
+        ui.set_suggestions_open(false);
+        Ok(())
+    })?;
+    step(
+        steps,
+        "composer_media_command",
+        json!({"searchesImportedMedia":true}),
+    );
+
+    let selected = media_id.clone();
+    on_ui(move |shell, app| {
+        let mut studio = shell.studio.borrow_mut();
+        studio.media.selected.insert(selected);
+        studio.handle(Msg::Media(MediaMsg::AddSelectedAtPlayhead));
+        studio.publish(app, &shell.models);
+        ensure(
+            studio.timeline().clips.len() == 1,
+            "media was not added to the native timeline",
+        )
+    })?;
+    on_ui(|shell, app| {
+        let mut studio = shell.studio.borrow_mut();
+        studio.undo();
+        ensure(
+            studio.timeline().clips.is_empty(),
+            "undo did not remove the media clip",
+        )?;
+        studio.redo();
+        ensure(
+            studio.timeline().clips.len() == 1,
+            "redo did not restore the media clip",
+        )?;
+        studio.publish(app, &shell.models);
+        Ok(())
+    })?;
+    step(steps, "media_placement_and_undo_redo", json!({"clips":1}));
+    window_snapshot(configuration, "media-timeline.png")?;
+
+    let document = on_ui(|shell, _| {
+        let mut studio = shell.studio.borrow_mut();
+        let document = studio.session.as_ref().ok_or("project closed")?.document();
+        studio.save(false);
+        Ok(document)
+    })?;
+    wait_for("actual project save", || {
+        let saved = projects::read_document(&configuration.project)?;
+        Ok((saved.as_ref() == Some(&document)).then_some(()))
+    })?;
+    let project_path = configuration.project.clone();
+    on_ui(move |shell, app| {
+        let mut studio = shell.studio.borrow_mut();
+        studio.close_project()?;
+        studio.open_project(projects::open(&project_path)?)?;
+        ensure(
+            studio.project().media.len() == 1 && studio.timeline().clips.len() == 1,
+            "reopened project did not preserve media and clip",
+        )?;
+        studio.publish(app, &shell.models);
+        Ok(())
+    })?;
+    step(
+        steps,
+        "saved_project_reopened",
+        json!({"media":1,"clips":1}),
+    );
+    on_ui(|shell, app| {
+        let studio = shell.studio.borrow();
+        ensure(
+            shell
+                .agent_pane
+                .borrow()
+                .resolve_references(&studio)
+                .is_err(),
+            "old session reference accepted",
+        )?;
+        drop(studio);
+        let ui = app.global::<crate::ui::AgentUi>();
+        let row = ui.get_references().row_data(0).ok_or("reference missing")?;
+        ui.invoke_reference_removed(row.identity);
+        ensure(
+            ui.get_references().row_count() == 0,
+            "reference removal failed",
+        )
+    })?;
+    step(
+        steps,
+        "composer_media_reference_and_stale_guard",
+        json!({"wrongSessionRejected":true,"removal":true,"operatingSystemMouse":false}),
+    );
+
+    let folder = configuration.output.to_string_lossy().into_owned();
+    on_ui(move |shell, app| {
+        let mut studio = shell.studio.borrow_mut();
+        studio.handle(Msg::Export(ExportMsg::Open));
+        studio.handle(Msg::Export(ExportMsg::FolderChosen(folder)));
+        studio.handle(Msg::Export(ExportMsg::NameEdited("exported-sample".into())));
+        studio.handle(Msg::Export(ExportMsg::Start));
+        studio.publish(app, &shell.models);
+        Ok(())
+    })?;
+    let output = wait_for("actual native export", || {
+        on_ui(|shell, _| {
+            let studio = shell.studio.borrow();
+            match studio.export.phase {
+                crate::ui::ExportPhase::Done => Ok(Some(studio.export.written.clone())),
+                crate::ui::ExportPhase::Failed => {
+                    Err(format!("native export failed: {}", studio.export.message))
+                }
+                _ => Ok(None),
+            }
+        })
+    })?;
+    let bytes = fs::metadata(&output)
+        .map_err(|error| error.to_string())?
+        .len();
+    ensure(bytes > 0, "exported file was empty")?;
+    step(
+        steps,
+        "native_export_written",
+        json!({"path":output,"bytes":bytes}),
+    );
+    Ok(())
 }
 
 fn ensure(condition: bool, message: &str) -> Result<(), String> {
@@ -257,10 +603,13 @@ fn protocol(
     message: Value,
     call: Option<&str>,
 ) -> Result<Value, String> {
+    let is_tool = message["method"] == "tools/call";
+    let fallback = format!("read-{}", message["id"]);
     let mut payload = bound(lease, "mcp.send", json!({"message":message}));
-    if let Some(call) = call {
+    if is_tool {
         // Trusted deterministic integration-client identity, never model input.
-        payload["invocation"] = json!({"conversationId":1,"taskId":1,"callId":call});
+        payload["invocation"] =
+            json!({"conversationId":1,"taskId":1,"callId":call.unwrap_or(&fallback)});
     }
     native.handle(payload)
 }
@@ -475,6 +824,9 @@ fn preview(
 }
 
 fn window_snapshot(configuration: &Configuration, name: &str) -> Result<(), String> {
+    // Allow the event loop to present the preceding UI changes before the
+    // diagnostic snapshot; this is not an operating-system capture test.
+    std::thread::sleep(Duration::from_millis(150));
     let (bytes, width, height) = on_ui(|_, app| {
         let pixels = app.window().take_snapshot().map_err(|e| e.to_string())?;
         Ok((pixels.as_bytes().to_vec(), pixels.width(), pixels.height()))
@@ -489,6 +841,79 @@ fn window_snapshot(configuration: &Configuration, name: &str) -> Result<(), Stri
     .map_err(|e| e.to_string())
 }
 
+/// Dispatch a pointer through the native window to one uniquely visible label.
+fn click_visible_label(label: &'static str) -> Result<(), String> {
+    use slint::private_unstable_api::re_exports::{
+        ComplexText, LogicalPoint, SimpleText, WindowInner,
+    };
+    use std::ops::ControlFlow;
+    on_ui(move |_, app| {
+        let root = WindowInner::from_pub(app.window())
+            .window_item_rc()
+            .ok_or("native item tree absent")?;
+        let mut points = Vec::new();
+        root.visit_descendants::<()>(|item| {
+            if item.is_visible() {
+                let matches = item.downcast::<SimpleText>().is_some_and(|text| {
+                    SimpleText::FIELD_OFFSETS
+                        .text()
+                        .apply_pin(text.as_pin_ref())
+                        .get()
+                        == label
+                }) || item.downcast::<ComplexText>().is_some_and(|text| {
+                    ComplexText::FIELD_OFFSETS
+                        .text()
+                        .apply_pin(text.as_pin_ref())
+                        .get()
+                        == label
+                });
+                if matches {
+                    let size = item.geometry().size;
+                    points.push(
+                        item.map_to_window(LogicalPoint::new(size.width / 2., size.height / 2.)),
+                    );
+                }
+            }
+            ControlFlow::Continue(())
+        });
+        ensure(
+            points.len() == 1,
+            &format!("visible {label} button label count: {}", points.len()),
+        )?;
+        let point = slint::LogicalPosition::new(points[0].x, points[0].y);
+        let window = app.window();
+        window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position: point });
+        window.dispatch_event(slint::platform::WindowEvent::PointerPressed {
+            position: point,
+            button: slint::platform::PointerEventButton::Left,
+        });
+        window.dispatch_event(slint::platform::WindowEvent::PointerReleased {
+            position: point,
+            button: slint::platform::PointerEventButton::Left,
+        });
+        Ok(())
+    })
+}
+
+/// Click the compact header control through the real Slint window event path.
+fn click_sidebar_collapse() -> Result<(), String> {
+    on_ui(|_, app| {
+        let window = app.window();
+        let size = window.size().to_logical(window.scale_factor());
+        let position = slint::LogicalPosition::new(size.width - 25.0, 64.0);
+        window.dispatch_event(slint::platform::WindowEvent::PointerMoved { position });
+        window.dispatch_event(slint::platform::WindowEvent::PointerPressed {
+            position,
+            button: slint::platform::PointerEventButton::Left,
+        });
+        window.dispatch_event(slint::platform::WindowEvent::PointerReleased {
+            position,
+            button: slint::platform::PointerEventButton::Left,
+        });
+        Ok(())
+    })
+}
+
 fn native_mode(configuration: &Configuration, steps: &mut Vec<Value>) -> Result<(), String> {
     let bridge = on_ui(|shell, _| {
         shell
@@ -501,9 +926,96 @@ fn native_mode(configuration: &Configuration, steps: &mut Vec<Value>) -> Result<
         Arc::clone(&bridge),
         "isolated-native-probe".into(),
     )?);
-    let result = native_steps(configuration, steps, &native, &bridge);
+    let mut credentials = settings::CreatedCredentials {
+        store: platform_store().map_err(|error| error.to_string())?,
+        scopes: Vec::new(),
+    };
+    let result = native_steps(configuration, steps, &native, &bridge, &mut credentials);
     let stopped = native.shutdown();
-    result.and(stopped)
+    let cleaned = credentials.cleanup();
+    result.and(stopped).and(cleaned)
+}
+
+fn prepare_probe_script() -> Result<(), String> {
+    on_ui(|_, app| {
+        let ui = app.global::<crate::ui::ScriptUi>();
+        ui.invoke_open_requested();
+        Ok(())
+    })?;
+    let ready = || {
+        on_ui(|_, app| {
+            let ui = app.global::<crate::ui::ScriptUi>();
+            ensure(
+                ui.get_error().is_empty(),
+                &format!("probe script: {}", ui.get_error()),
+            )?;
+            Ok((ui.get_ready() && !ui.get_busy()).then_some(()))
+        })
+    };
+    wait_for("probe script workspace", ready)?;
+    on_ui(|_, app| {
+        let ui = app.global::<crate::ui::ScriptUi>();
+        let text: slint::SharedString = "隔离验证：两段字幕。".into();
+        ui.set_text(text.clone());
+        ui.invoke_edited(text);
+        ensure(ui.get_can_save(), "probe script is not saveable")?;
+        ui.invoke_save_requested();
+        Ok(())
+    })?;
+    wait_for("probe script save", ready)?;
+    on_ui(|_, app| {
+        app.global::<crate::ui::ScriptUi>()
+            .invoke_select_requested();
+        Ok(())
+    })?;
+    wait_for("probe script selection", || {
+        on_ui(|shell, _| {
+            let studio = shell.studio.borrow();
+            Ok(
+                (studio.script.selection_settled() && studio.script.selected_binding().is_some())
+                    .then_some(()),
+            )
+        })
+    })?;
+    Ok(())
+}
+
+fn prepare_probe_task(
+    native: &NativeSession,
+    lease: &Value,
+    bridge: &AgentBridge,
+) -> Result<(), String> {
+    let project = bridge
+        .live
+        .current_project()
+        .map_err(|error| error.to_string())?
+        .ok_or("probe has no current project")?;
+    let selected = on_ui(|shell, _| {
+        shell
+            .studio
+            .borrow()
+            .script
+            .selected_binding()
+            .ok_or("probe script not selected".into())
+    })?;
+    let id = crate::embedded::random_capability()?;
+    let intent = super::tasks::SubmissionIntent {
+        id: id.clone(),
+        project,
+        mode: super::tasks::TaskMode::Edit,
+        input: "隔离窗口剪辑验证".into(),
+        ui_draft: String::new(),
+        reference_keys: Vec::new(),
+        selected: Some(selected),
+        generation: None,
+    };
+    native.prepare_submission(&intent)?;
+    native.handle(bound(
+        lease,
+        "task.bind",
+        json!({"taskId":id,"conversationId":1}),
+    ))?;
+    Ok(())
 }
 
 fn native_steps(
@@ -511,6 +1023,7 @@ fn native_steps(
     steps: &mut Vec<Value>,
     native: &Arc<NativeSession>,
     bridge: &Arc<AgentBridge>,
+    credentials: &mut settings::CreatedCredentials,
 ) -> Result<(), String> {
     let lease = native.handle(json!({"method":"ownership.acquire","storageId":STORAGE_ID}))?;
     let snapshot = native.snapshot()?;
@@ -529,6 +1042,57 @@ fn native_steps(
         "ownership.confirm",
         json!({"snapshot":snapshot,"approval":approval}),
     ))?;
+    prepare_probe_script()?;
+    let store = crate::panes::agent_settings::configuration_store(&configuration.dirs);
+    let initial_config = store.load().map_err(|error| error.to_string())?;
+    ensure(
+        initial_config.channels().is_empty(),
+        "probe configuration was not isolated",
+    )?;
+    let saved = store
+        .save_channel(
+            &initial_config,
+            None,
+            ChannelDraft {
+                label: "隔离剪辑探针".into(),
+                protocol: ModelProtocol::OpenAiCompletions,
+                endpoint: "https://native-edit-probe.invalid/v1".into(),
+                model: "no-network".into(),
+                request_timeout_ms: 1000,
+                max_output_tokens: 128,
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    let channel = &saved.channels()[0];
+    let scope = CredentialScope::new(
+        channel.id.as_str(),
+        &channel
+            .service_origin()
+            .map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    ensure(
+        credentials
+            .store
+            .status(&scope)
+            .map_err(|error| error.to_string())?
+            == CredentialStatus::Missing,
+        "probe credential scope already exists",
+    )?;
+    credentials.scopes.push(scope.clone());
+    credentials
+        .store
+        .write(
+            &scope,
+            &Secret::new(crate::embedded::random_capability()?)
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+    store
+        .select(&saved, Some(&channel.id))
+        .map_err(|error| error.to_string())?;
+    native.tasks.model_configuration()?;
+    prepare_probe_task(native, &lease, bridge)?;
     let init = protocol(
         native,
         &lease,
@@ -642,9 +1206,14 @@ fn native_steps(
         "edit_apply_guarded",
         arguments,
         Some("two-subtitles"),
-    )?;
+    );
     ensure(
-        duplicate.pointer("/result/isError") == Some(&json!(true)),
+        duplicate.is_err()
+            || duplicate
+                .as_ref()
+                .ok()
+                .and_then(|value| value.pointer("/result/isError"))
+                == Some(&json!(true)),
         "repeated original invocation was not refused",
     )?;
     ensure(
@@ -732,11 +1301,18 @@ fn native_steps(
         json!({"path":configuration.project,"expectedSession":redone["sessionId"],"expectedRevision":redone["revision"],
         "command":{"op":"updateClip","clipId":clip_id,"patch":{"name":"stale must not land"}}}),
         Some("stale-after-manual"),
-    )?;
+    );
     ensure(
-        stale.pointer("/result/isError") == Some(&json!(true)),
+        stale.is_err()
+            || stale
+                .as_ref()
+                .ok()
+                .and_then(|value| value.pointer("/result/isError"))
+                == Some(&json!(true)),
         "old plan survived a manual edit",
     )?;
+    native.tasks.abandon();
+    prepare_probe_task(native, &lease, bridge)?;
     let continued = successful(tool(
         native,
         &lease,
@@ -831,6 +1407,122 @@ fn platform_mode(configuration: &Configuration, steps: &mut Vec<Value>) -> Resul
         clips(&current)?.is_empty(),
         "platform startup changed the isolated project",
     )?;
+    on_ui(|_, app| {
+        app.global::<crate::ui::AgentUi>()
+            .set_view(crate::ui::AgentView::Editor);
+        Ok(())
+    })?;
+    match window_snapshot(configuration, "manual-editor-window.png") {
+        Ok(()) => step(
+            steps,
+            "manual_editor_window_snapshot",
+            json!({"file":"manual-editor-window.png", "completeVisualAcceptance":false}),
+        ),
+        Err(error) => steps.push(
+            json!({"name":"manual_editor_window_snapshot", "passed":false,
+            "evidenceOnly":true,"error":error,"completeVisualAcceptance":false}),
+        ),
+    }
+    on_ui(|_, app| {
+        app.global::<crate::ui::AgentUi>()
+            .set_draft("侧栏草稿保留验证".into());
+        Ok(())
+    })?;
+    click_sidebar_collapse()?;
+    on_ui(|_, app| {
+        let ui = app.global::<crate::ui::AgentUi>();
+        ensure(
+            !ui.get_sidebar_open(),
+            "sidebar did not collapse from its button",
+        )?;
+        ensure(
+            ui.get_draft() == "侧栏草稿保留验证",
+            "collapse lost the draft",
+        )
+    })?;
+    window_snapshot(configuration, "sidebar-collapsed.png")?;
+    click_visible_label("Pi")?;
+    on_ui(|_, app| {
+        let ui = app.global::<crate::ui::AgentUi>();
+        ensure(
+            ui.get_sidebar_open(),
+            "sidebar did not reopen from its button",
+        )?;
+        ensure(
+            ui.get_draft() == "侧栏草稿保留验证",
+            "reopening lost the draft",
+        )?;
+        Ok(())
+    })?;
+    click_visible_label("文案")?;
+    on_ui(|_, app| {
+        let ui = app.global::<crate::ui::AgentUi>();
+        ensure(
+            matches!(ui.get_view(), crate::ui::AgentView::Script),
+            "script tab did not open",
+        )?;
+        ensure(
+            ui.get_draft() == "侧栏草稿保留验证",
+            "switching tabs lost the draft",
+        )
+    })?;
+    window_snapshot(configuration, "sidebar-script-window.png")?;
+    click_visible_label("对话")?;
+    on_ui(|_, app| {
+        let ui = app.global::<crate::ui::AgentUi>();
+        ensure(
+            matches!(ui.get_view(), crate::ui::AgentView::Chat),
+            "chat tab did not open",
+        )?;
+        ensure(
+            ui.get_draft() == "侧栏草稿保留验证",
+            "returning to chat lost the draft",
+        )?;
+        ui.set_draft("".into());
+        Ok(())
+    })?;
+    ensure(
+        ui_view()?["sessionId"] == current["sessionId"],
+        "sidebar toggle or tab switch changed the project session",
+    )?;
+    step(
+        steps,
+        "sidebar_pointer_toggle_preserves_draft_and_project",
+        json!({
+            "input":"Slint window pointer events", "operatingSystemMouse":false,
+            "sameSession":true, "draftPreserved":true
+        }),
+    );
+    let original_size = on_ui(|_, app| {
+        let size = app.window().size();
+        app.window().set_size(slint::PhysicalSize::new(900, 650));
+        Ok((size.width, size.height))
+    })?;
+    window_snapshot(configuration, "composer-narrow-window.png")?;
+    on_ui(|shell, app| {
+        ensure(
+            !app.global::<crate::ui::AgentUi>().get_sidebar_open(),
+            "sidebar did not collapse at narrow width",
+        )?;
+        ensure(
+            !shell.studio.borrow().compact,
+            "original editor entered compact layout despite collapsed sidebar",
+        )
+    })?;
+    click_visible_label("Pi")?;
+    on_ui(|_, app| {
+        ensure(
+            app.global::<crate::ui::AgentUi>().get_sidebar_open(),
+            "sidebar could not be reopened at narrow width",
+        )
+    })?;
+    on_ui(move |_, app| {
+        app.window()
+            .set_size(slint::PhysicalSize::new(original_size.0, original_size.1));
+        app.global::<crate::ui::AgentUi>()
+            .set_view(crate::ui::AgentView::Chat);
+        Ok(())
+    })?;
     match window_snapshot(configuration, "platform-ready-window.png") {
         Ok(()) => step(
             steps,

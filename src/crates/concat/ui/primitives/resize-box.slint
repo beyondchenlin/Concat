@@ -33,6 +33,8 @@ export component ResizeBox inherits Rectangle {
     in property <length> content-height;
     /// The words have the keyboard: the edge goes the accent.
     in property <bool> focused;
+    /// Used when the editor lives inside a larger framed composer.
+    in property <bool> flat;
     in property <brush> ground: Theme.well;
     in property <length> pad-x: 10px;
     in property <length> pad-y: 8px;
@@ -53,8 +55,8 @@ export component ResizeBox inherits Rectangle {
 
     height: root.box-height;
     border-radius: Theme.r;
-    background: root.ground;
-    border-width: 1px;
+    background: root.flat ? transparent : root.ground;
+    border-width: root.flat ? 0px : 1px;
     border-color: root.focused ? Theme.accent : Theme.line;
     clip: true;
 

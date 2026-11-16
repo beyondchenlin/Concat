@@ -9,20 +9,21 @@ use concat_agent::credentials::{
     CredentialScope, CredentialStatus, CredentialStore, Secret, platform_store,
 };
 use slint::private_unstable_api::re_exports::{
-    InputType, LogicalPoint, LogicalRect, Text, TextInput, TouchArea, WindowInner,
+    ComplexText, InputType, LogicalPoint, LogicalRect, SimpleText, TextInput, TouchArea,
+    WindowInner,
 };
 
 use super::*;
 use crate::panes::agent_settings::configuration_store;
 use crate::ui::{AgentSettingsUi, ModelChannelDraftData};
 
-struct CreatedCredentials {
-    store: Arc<dyn CredentialStore>,
-    scopes: Vec<CredentialScope>,
+pub(super) struct CreatedCredentials {
+    pub(super) store: Arc<dyn CredentialStore>,
+    pub(super) scopes: Vec<CredentialScope>,
 }
 
 impl CreatedCredentials {
-    fn cleanup(&self) -> Result<(), String> {
+    pub(super) fn cleanup(&self) -> Result<(), String> {
         let mut failure = None;
         for scope in &self.scopes {
             let result = self
@@ -142,7 +143,12 @@ fn enter_and_submit_secret(secret: &Secret) -> Result<(), String> {
         root.visit_descendants::<()>(|item| {
             if item.is_visible() {
                 if let Some(input) = item.downcast::<TextInput>() {
-                    if input.as_pin_ref().input_type.get() == InputType::Password {
+                    if TextInput::FIELD_OFFSETS
+                        .input_type()
+                        .apply_pin(input.as_pin_ref())
+                        .get()
+                        == InputType::Password
+                    {
                         inputs.push(input);
                     }
                 }
@@ -155,7 +161,11 @@ fn enter_and_submit_secret(secret: &Secret) -> Result<(), String> {
         )?;
         let input = inputs.pop().unwrap();
         ensure(
-            input.as_pin_ref().text.get().is_empty(),
+            TextInput::FIELD_OFFSETS
+                .text()
+                .apply_pin(input.as_pin_ref())
+                .get()
+                .is_empty(),
             "password entry retained previous content",
         )?;
         input.as_pin_ref().text.set(entered.into());
@@ -163,23 +173,31 @@ fn enter_and_submit_secret(secret: &Secret) -> Result<(), String> {
         let mut labels = Vec::new();
         root.visit_descendants::<()>(|item| {
             if item.is_visible() {
-                if let Some(text) = item.downcast::<Text>() {
-                    if text.as_pin_ref().text.get() == "保存或替换系统凭据" {
-                        let size = item.geometry().size;
-                        labels.push(
-                            item.map_to_window(LogicalPoint::new(
-                                size.width / 2.,
-                                size.height / 2.,
-                            )),
-                        );
-                    }
+                let is_label = item.downcast::<SimpleText>().is_some_and(|text| {
+                    SimpleText::FIELD_OFFSETS
+                        .text()
+                        .apply_pin(text.as_pin_ref())
+                        .get()
+                        == "保存或替换系统凭据"
+                }) || item.downcast::<ComplexText>().is_some_and(|text| {
+                    ComplexText::FIELD_OFFSETS
+                        .text()
+                        .apply_pin(text.as_pin_ref())
+                        .get()
+                        == "保存或替换系统凭据"
+                });
+                if is_label {
+                    let size = item.geometry().size;
+                    labels.push(
+                        item.map_to_window(LogicalPoint::new(size.width / 2., size.height / 2.)),
+                    );
                 }
             }
             ControlFlow::Continue(())
         });
         ensure(
             labels.len() == 1,
-            "credential save button label was not unique",
+            &format!("credential save button label count was {}", labels.len()),
         )?;
         let point = labels[0];
         let mut candidates = Vec::new();
@@ -190,7 +208,12 @@ fn enter_and_submit_secret(secret: &Secret) -> Result<(), String> {
                         item.map_to_window(LogicalPoint::zero()),
                         item.geometry().size,
                     );
-                    if touch.as_pin_ref().enabled.get() && bounds.contains(point) {
+                    if TouchArea::FIELD_OFFSETS
+                        .enabled()
+                        .apply_pin(touch.as_pin_ref())
+                        .get()
+                        && bounds.contains(point)
+                    {
                         candidates.push((bounds.size.width * bounds.size.height, touch));
                     }
                 }
@@ -206,7 +229,11 @@ fn enter_and_submit_secret(secret: &Secret) -> Result<(), String> {
         // callback invocation, not a claim of mouse/keyboard interaction.
         button.as_pin_ref().clicked.call(&());
         ensure(
-            input.as_pin_ref().text.get().is_empty(),
+            TextInput::FIELD_OFFSETS
+                .text()
+                .apply_pin(input.as_pin_ref())
+                .get()
+                .is_empty(),
             "password was not cleared before the native callback returned",
         )?;
         ensure(
@@ -226,9 +253,18 @@ fn password_is_empty() -> Result<(), String> {
         root.visit_descendants::<()>(|item| {
             if item.is_visible() {
                 if let Some(input) = item.downcast::<TextInput>() {
-                    if input.as_pin_ref().input_type.get() == InputType::Password {
+                    if TextInput::FIELD_OFFSETS
+                        .input_type()
+                        .apply_pin(input.as_pin_ref())
+                        .get()
+                        == InputType::Password
+                    {
                         count += 1;
-                        empty &= input.as_pin_ref().text.get().is_empty();
+                        empty &= TextInput::FIELD_OFFSETS
+                            .text()
+                            .apply_pin(input.as_pin_ref())
+                            .get()
+                            .is_empty();
                     }
                 }
             }
@@ -344,7 +380,12 @@ fn run_steps(
             ui.get_draft() == initial,
             "native form reload did not match the saved values",
         )?;
-        ui.invoke_activate_requested(ui.get_draft());
+        let composer = app.global::<crate::ui::AgentUi>();
+        ensure(
+            composer.get_models().row_count() == 1,
+            "composer model list missing saved channel",
+        )?;
+        composer.invoke_model_chosen(0);
         Ok(())
     })?;
     idle()?;
@@ -361,6 +402,91 @@ fn run_steps(
         json!({"configurationVersion":saved(configuration)?.version()}),
     );
 
+    // Exercise switching between two actually saved channels through the
+    // same compact selector used by the assistant, without model calls.
+    on_ui(|_, app| {
+        app.global::<AgentSettingsUi>().invoke_channel_chosen(0);
+        Ok(())
+    })?;
+    idle()?;
+    on_ui(|_, app| {
+        let ui = app.global::<AgentSettingsUi>();
+        let mut second = draft();
+        second.label = "隔离备用渠道".into();
+        second.endpoint = "https://model-settings-probe.invalid/secondary/v1".into();
+        second.model = "isolated-secondary-model".into();
+        ui.set_draft(second.clone());
+        ui.invoke_save_requested(second);
+        Ok(())
+    })?;
+    idle()?;
+    ensure(
+        saved(configuration)?.channels().len() == 2,
+        "second probe channel was not saved",
+    )?;
+    let second_id = saved(configuration)?.channels()[1].id.clone();
+    on_ui(|_, app| {
+        app.global::<crate::ui::AgentUi>().invoke_model_chosen(1);
+        Ok(())
+    })?;
+    idle()?;
+    ensure(
+        saved(configuration)?
+            .active()
+            .is_some_and(|channel| channel.id == second_id),
+        "second channel switch failed",
+    )?;
+    on_ui(|_, app| {
+        app.global::<crate::ui::AgentUi>().invoke_model_chosen(0);
+        Ok(())
+    })?;
+    idle()?;
+    ensure(
+        saved(configuration)?
+            .active()
+            .is_some_and(|channel| channel.id == id),
+        "return to first channel failed",
+    )?;
+    no_calls()?;
+    on_ui(|_, app| {
+        app.global::<AgentSettingsUi>().invoke_channel_chosen(2);
+        Ok(())
+    })?;
+    idle()?;
+    on_ui(|_, app| {
+        let ui = app.global::<AgentSettingsUi>();
+        ui.invoke_delete_requested(ui.get_draft());
+        Ok(())
+    })?;
+    idle()?;
+    ensure(
+        saved(configuration)?.channels().len() == 1,
+        "probe second channel was not deleted",
+    )?;
+    on_ui(|_, app| {
+        app.global::<AgentSettingsUi>().invoke_channel_chosen(1);
+        Ok(())
+    })?;
+    idle()?;
+    step(
+        steps,
+        "composer_switch_between_saved_channels",
+        json!({"twoChannels":true,"modelCalls":false}),
+    );
+
+    // The credential controls are below the fold at ordinary window sizes.
+    // Send a scroll through the real window before locating its visible items.
+    on_ui(|_, app| {
+        let window = app.window();
+        let size = window.size().to_logical(window.scale_factor());
+        window.dispatch_event(slint::platform::WindowEvent::PointerScrolled {
+            position: slint::LogicalPosition::new(size.width * 0.5, size.height * 0.5),
+            delta_x: 0.0,
+            delta_y: -600.0,
+        });
+        Ok(())
+    })?;
+    snapshot_evidence(configuration, steps, "settings-before-credential.png");
     let secret =
         Secret::new(crate::embedded::random_capability()?).map_err(|error| error.to_string())?;
     enter_and_submit_secret(&secret)?;

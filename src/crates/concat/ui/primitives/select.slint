@@ -54,6 +54,11 @@ export component Select inherits Rectangle {
     in property <length> radius-left: Theme.r;
     in property <length> radius-right: Theme.r;
 
+    accessible-role: combobox;
+    accessible-enabled: root.enabled;
+    accessible-label: root.label;
+    accessible-action-default => { root.reveal(); }
+
     callback changed(index: int);
 
     property <bool> ring;

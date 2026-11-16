@@ -103,8 +103,11 @@ impl Host {
                 None
             }
         };
-        // Every effect's pipeline, compiled while the window opens rather
-        // than at the first frame each effect draws.
+        // On Windows the compositor shares the window's DX12 queue. Starting
+        // background GPU work before the first surface is configured can
+        // contend with the driver's wait-for-idle during window startup.
+        // The Windows window schedules this warm-up after the event loop starts.
+        #[cfg(not(target_os = "windows"))]
         host.monitor.warm_shaders();
         Ok(host)
     }

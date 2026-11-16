@@ -574,18 +574,29 @@ mod awake {
 
     pub fn install(app: &AndroidApp) {
         let app = app.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            while let Ok(on) = receiver.recv() {
+                if on {
+                    app.set_window_flags(
+                        WindowManagerFlags::KEEP_SCREEN_ON,
+                        WindowManagerFlags::empty(),
+                    );
+                } else {
+                    app.set_window_flags(
+                        WindowManagerFlags::empty(),
+                        WindowManagerFlags::KEEP_SCREEN_ON,
+                    );
+                }
+                log::info!("screen kept on while a job runs: {on}");
+            }
+        });
         concat::install_awake(Box::new(move |on| {
-            log::info!("screen kept on while a job runs: {on}");
-            if on {
-                app.set_window_flags(
-                    WindowManagerFlags::KEEP_SCREEN_ON,
-                    WindowManagerFlags::empty(),
-                );
-            } else {
-                app.set_window_flags(
-                    WindowManagerFlags::empty(),
-                    WindowManagerFlags::KEEP_SCREEN_ON,
-                );
+            // AndroidApp takes the activity lock; the event-loop thread may
+            // already hold it while handling input. Apply flags in order on
+            // a worker so an export cannot deadlock that event loop.
+            if sender.send(on).is_err() {
+                log::warn!("could not update the screen-awake flag");
             }
         }));
     }

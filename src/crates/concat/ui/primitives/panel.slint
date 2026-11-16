@@ -252,6 +252,11 @@ export component IconButton inherits Rectangle {
     /// their ground raises it.
     in property <brush> idle: Theme.fg-muted;
 
+    accessible-role: button;
+    accessible-enabled: root.enabled;
+    accessible-label: root.label != "" ? root.label : root.text;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+
     callback clicked();
 
     property <bool> lit: touch.has-hover && root.enabled;

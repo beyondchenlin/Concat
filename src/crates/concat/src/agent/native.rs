@@ -1701,6 +1701,8 @@ mod tests {
                 project: project.clone(),
                 mode: crate::agent::tasks::TaskMode::Chat,
                 input: "do not call a model".into(),
+                ui_draft: String::new(),
+                reference_keys: Vec::new(),
                 selected: None,
                 generation: None,
             };

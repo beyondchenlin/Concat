@@ -540,7 +540,7 @@ impl Studio {
             return;
         };
         self.autosave.stop();
-        let (path, document) = match session.prepare_save(None) {
+        let snapshot = match crate::agent::project_save::NativeSnapshot::capture(session) {
             Ok(snapshot) => snapshot,
             Err(error) => {
                 self.dirty = true;
@@ -548,28 +548,11 @@ impl Studio {
                 return;
             }
         };
-        // Capture the write order with the snapshot, not later when a
-        // worker happens to pick it up.
-        let ticket = projects::ticket();
-        let authority = session.save_authority();
-        let saved_session = session.session_id();
-        let saved_revision = session.revision();
+        let saved_session = snapshot.session;
+        let saved_revision = snapshot.revision;
         let agent = self.host.agent.clone();
         crate::host::spawn_in_project_publishing(
-            move || {
-                let result =
-                    projects::save_ordered_with_authority(&path, &document, ticket, &authority);
-                let journal_error = if matches!(result, Ok(projects::Saved::Written)) {
-                    agent.as_ref().and_then(|bridge| {
-                        bridge
-                            .record_saved(&path, saved_session, saved_revision, &document)
-                            .err()
-                    })
-                } else {
-                    None
-                };
-                (result, journal_error)
-            },
+            move || snapshot.save(|saved| saved.record_written(agent.as_deref())),
             move |studio, _, _, (result, journal_error)| {
                 studio.accept_project_save(
                     saved_session,

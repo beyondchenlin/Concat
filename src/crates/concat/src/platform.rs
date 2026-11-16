@@ -145,6 +145,8 @@ struct DropHandler {
     /// Whether the window has been held to its screen yet: once, at its
     /// first event.
     fitted: bool,
+    #[cfg(windows)]
+    first_redraw: bool,
     /// Where the pointer last was, in logical pixels of the window: winit
     /// says where it moved, and a press says only that it happened.
     cursor: Option<(f32, f32)>,
@@ -219,6 +221,8 @@ impl DropHandler {
             wayland: None,
             wayland_tried: false,
             fitted: false,
+            #[cfg(windows)]
+            first_redraw: true,
             cursor: None,
             on_pressed_away: Box::new(on_pressed_away),
             on_focused: Box::new(on_focused),
@@ -283,6 +287,20 @@ impl CustomApplicationHandler for DropHandler {
             self.wayland = listen_for_wayland_drops(window, &self.arrived);
         }
         match event {
+            #[cfg(windows)]
+            WindowEvent::RedrawRequested
+                if self.first_redraw
+                    && slint_window.is_some()
+                    && winit_window.is_some_and(|w| {
+                        let size = w.inner_size();
+                        size.width > 0 && size.height > 0
+                    }) =>
+            {
+                self.first_redraw = false;
+                // Slint processes this redraw after our handler returns. Let it
+                // configure the window surface before submitting preview work.
+                slint::Timer::single_shot(std::time::Duration::ZERO, crate::start_windows_preview);
+            }
             WindowEvent::ScaleFactorChanged { .. } => reapply_ui_scale(std::time::Duration::ZERO),
             WindowEvent::DroppedFile(path) => self.pending.push(path.clone()),
             // Back at the front, after Explorer or the file manager: what a

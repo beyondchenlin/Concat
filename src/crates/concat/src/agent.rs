@@ -27,10 +27,12 @@ pub(crate) mod native;
 /// Isolated real-window integration driver, excluded from ordinary builds.
 #[cfg(feature = "bk-cat-native-probe")]
 pub mod probe;
+pub(crate) mod project_save;
 /// Isolated native document integration driver, excluded from ordinary builds.
 #[cfg(feature = "bk-cat-native-probe")]
 pub mod script_probe;
 pub(crate) mod tasks;
+pub(crate) mod window;
 
 type JournalSlot = Arc<Mutex<Option<Arc<OperationJournal>>>>;
 type InvocationSlot = Arc<Mutex<Option<Invocation>>>;

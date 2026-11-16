@@ -5,10 +5,13 @@
 //! Visible messages are bounded projections of the original persisted session.
 
 use concat_agent::{OwnerStatus, Phase};
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::rc::Rc;
 
-use crate::ui::{AgentCallUi, AgentMessageData, AgentStatusData, AgentUi, App};
+use crate::host::Shell;
+use crate::ui::{
+    AgentCallUi, AgentMessageData, AgentStatusData, AgentSuggestion, AgentUi, App, ScriptUi,
+};
 
 /// Facts supplied by the native platform host. Never store credentials in
 /// this presenter or in a Slint property; only their availability belongs here.
@@ -60,6 +63,57 @@ pub struct AgentPane {
     pub runtime_loaded: bool,
     messages: Vec<AgentMessageData>,
     call_limits: String,
+    references: Vec<MediaReference>,
+    pending_attachments: Vec<PendingAttachment>,
+    completion: Option<CompletionContext>,
+}
+
+#[derive(Clone)]
+struct CompletionContext {
+    draft: String,
+    start: usize,
+    end: usize,
+    marker: char,
+}
+
+struct PendingAttachment {
+    path: String,
+    session: u64,
+    started: std::time::Instant,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MediaReference {
+    id: String,
+    name: String,
+    session: u64,
+    project_id: String,
+    project_path: String,
+}
+
+impl MediaReference {
+    fn selected(session: &concat_host::session::Session, id: &str, name: &str) -> Self {
+        Self {
+            id: id.into(),
+            name: name.replace(['\r', '\n'], " "),
+            session: session.session_id(),
+            project_id: session.project_identity().into(),
+            project_path: session.path().into(),
+        }
+    }
+
+    // Only an explicit selection renews a chip after reopening its project.
+    fn add_to(self, references: &mut Vec<Self>) {
+        if let Some(previous) = references.iter_mut().find(|previous| {
+            previous.id == self.id
+                && previous.project_id == self.project_id
+                && previous.project_path == self.project_path
+        }) {
+            *previous = self;
+        } else {
+            references.push(self);
+        }
+    }
 }
 
 impl AgentPane {
@@ -182,6 +236,9 @@ impl AgentPane {
             format!("{} / {}", self.readiness.provider, self.readiness.model)
         };
         let mut data = AgentStatusData {
+            needs_model_setup: self.readiness.provider.trim().is_empty()
+                || self.readiness.model.trim().is_empty()
+                || !self.readiness.credentials_ready,
             missing: missing.clone().into(),
             error: if self.error.is_empty() {
                 self.configuration_error.as_str()
@@ -326,16 +383,484 @@ impl AgentPane {
             self.call_limits.as_str().into()
         });
         let ui = app.global::<AgentUi>();
+        if ui.get_script_picker() {
+            let count = app.global::<ScriptUi>().get_versions().row_count();
+            if usize::try_from(ui.get_script_index()).map_or(true, |index| index >= count) {
+                ui.set_script_index(0);
+            }
+        }
         ui.set_status(self.data(owner));
-        ui.set_messages(ModelRc::from(Rc::new(VecModel::from(
-            self.messages.clone(),
-        ))));
+        if !ui.get_messages().iter().eq(self.messages.iter().cloned()) {
+            ui.set_messages(ModelRc::from(Rc::new(VecModel::from(
+                self.messages.clone(),
+            ))));
+        }
     }
+}
+
+/// Locate the token at a UTF-8 caret; preserve text after that token.
+fn completion_token(text: &str, cursor: usize) -> Option<(usize, usize, char, &str)> {
+    if cursor > text.len() || !text.is_char_boundary(cursor) {
+        return None;
+    }
+    let prefix = &text[..cursor];
+    let tail = prefix
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map_or(0, |(i, c)| i + c.len_utf8());
+    let (offset, marker) = prefix[tail..]
+        .char_indices()
+        .rev()
+        .find(|(_, c)| *c == '@' || *c == '/')?;
+    let start = tail + offset;
+    if marker == '@'
+        && text[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+    {
+        return None;
+    }
+    let end = text[cursor..]
+        .char_indices()
+        .find(|(_, c)| c.is_whitespace())
+        .map_or(text.len(), |(i, _)| cursor + i);
+    Some((start, end, marker, &text[start + marker.len_utf8()..cursor]))
+}
+
+fn refresh_suggestions(text: &str, cursor: usize) {
+    Shell::with(|shell, app| {
+        let ui = app.global::<AgentUi>();
+        let Some((start, end, marker, query)) = completion_token(text, cursor) else {
+            shell.agent_pane.borrow_mut().completion = None;
+            ui.set_suggestions_open(false);
+            return;
+        };
+        shell.agent_pane.borrow_mut().completion = Some(CompletionContext {
+            draft: text.to_owned(),
+            start,
+            end,
+            marker,
+        });
+        let query = query.to_lowercase();
+        let mut rows = Vec::new();
+        let status;
+        if marker == '@' {
+            let studio = shell.studio.borrow();
+            if studio.session.is_some() {
+                for item in studio
+                    .project()
+                    .media
+                    .iter()
+                    .filter(|item| !item.placeholder && item.name.to_lowercase().contains(&query))
+                    .take(8)
+                {
+                    rows.push(AgentSuggestion {
+                        identity: format!(
+                            "media:{}:{}",
+                            studio
+                                .session
+                                .as_ref()
+                                .expect("session checked")
+                                .session_id(),
+                            item.id
+                        )
+                        .into(),
+                        label: item.name.as_str().into(),
+                        detail: "工程素材".into(),
+                        thumbnail: studio
+                            .media
+                            .thumbs
+                            .get(&item.id)
+                            .cloned()
+                            .unwrap_or_default(),
+                        kind: match item.kind {
+                            concat_project::model::MediaKind::Video => "视频",
+                            concat_project::model::MediaKind::Audio => "音频",
+                            _ => "图片",
+                        }
+                        .into(),
+                    });
+                }
+                status = if rows.is_empty() {
+                    "没有匹配的工程素材；可用 + 导入。"
+                } else {
+                    "工程素材 · 选择要引用的素材"
+                };
+                // This is a connection-status row, not a fabricated result.
+                rows.push(AgentSuggestion {
+                    identity: "server:unavailable".into(),
+                    label: "素材服务".into(),
+                    detail: "未连接".into(),
+                    thumbnail: slint::Image::default(),
+                    kind: "服务".into(),
+                });
+            } else {
+                status = "请先打开工程。";
+            }
+        } else {
+            if "文案".contains(&query) || "script".contains(&query) {
+                rows.push(AgentSuggestion {
+                    identity: "command:script".into(),
+                    label: "/文案".into(),
+                    detail: "打开文案并选择版本".into(),
+                    thumbnail: slint::Image::default(),
+                    kind: "命令".into(),
+                });
+            }
+            if "素材".contains(&query) || "media".contains(&query) {
+                rows.push(AgentSuggestion {
+                    identity: "command:media".into(),
+                    label: "/素材".into(),
+                    detail: "搜索工程素材".into(),
+                    thumbnail: slint::Image::default(),
+                    kind: "命令".into(),
+                });
+            }
+            if "模型".contains(&query) || "model".contains(&query) {
+                rows.push(AgentSuggestion {
+                    identity: "command:model".into(),
+                    label: "/模型".into(),
+                    detail: "打开模型设置".into(),
+                    thumbnail: slint::Image::default(),
+                    kind: "命令".into(),
+                });
+            }
+            status = if rows.is_empty() {
+                "没有匹配的命令。"
+            } else {
+                "命令"
+            };
+        }
+        ui.set_suggestion_index(0);
+        ui.set_suggestions(ModelRc::from(Rc::new(VecModel::from(rows))));
+        ui.set_suggestion_status(status.into());
+        ui.set_suggestions_open(true);
+    });
+}
+
+impl AgentPane {
+    pub(crate) fn queue_attachments(
+        &mut self,
+        session: u64,
+        paths: &[std::path::PathBuf],
+        app: &App,
+    ) {
+        self.pending_attachments
+            .extend(paths.iter().map(|path| PendingAttachment {
+                path: path.to_string_lossy().into_owned(),
+                session,
+                started: std::time::Instant::now(),
+            }));
+        app.global::<AgentUi>().set_attachment_pending(true);
+        app.global::<AgentUi>()
+            .set_attachment_status("正在导入并引用素材…".into());
+    }
+
+    pub(crate) fn collect_attachments(&mut self, studio: &crate::studio::Studio, app: &App) {
+        if self.pending_attachments.is_empty() {
+            return;
+        }
+        let current = studio.session.as_ref();
+        let mut remaining = Vec::new();
+        let mut failed = false;
+        for pending in self.pending_attachments.drain(..) {
+            let Some(session) = current.filter(|s| s.session_id() == pending.session) else {
+                failed = true;
+                continue;
+            };
+            if let Some(item) = studio
+                .project()
+                .media
+                .iter()
+                .find(|item| item.path == pending.path && !item.placeholder)
+            {
+                MediaReference::selected(session, &item.id, &item.name)
+                    .add_to(&mut self.references);
+            } else if pending.started.elapsed() > std::time::Duration::from_secs(120) {
+                failed = true;
+            } else {
+                remaining.push(pending);
+            }
+        }
+        self.pending_attachments = remaining;
+        app.global::<AgentUi>()
+            .set_attachment_pending(!self.pending_attachments.is_empty());
+        self.publish_references(app);
+        app.global::<AgentUi>().set_attachment_status(if failed {
+            "部分素材未能引用或工程已切换，请检查素材库。".into()
+        } else if self.pending_attachments.is_empty() {
+            "".into()
+        } else {
+            "正在导入并引用素材…".into()
+        });
+    }
+
+    fn publish_references(&self, app: &App) {
+        let rows = self
+            .references
+            .iter()
+            .map(|reference| AgentSuggestion {
+                identity: format!("{}:{}", reference.session, reference.id).into(),
+                label: reference.name.chars().take(14).collect::<String>().into(),
+                detail: "工程素材".into(),
+                thumbnail: slint::Image::default(),
+                kind: "素材".into(),
+            })
+            .collect::<Vec<_>>();
+        app.global::<AgentUi>()
+            .set_references(ModelRc::from(Rc::new(VecModel::from(rows))));
+    }
+
+    pub(crate) fn resolve_references(
+        &self,
+        studio: &crate::studio::Studio,
+    ) -> Result<(Vec<String>, String), String> {
+        if !self.pending_attachments.is_empty() {
+            return Err("素材仍在导入，请等待完成后发送。".into());
+        }
+        if self.references.is_empty() {
+            return Ok((Vec::new(), String::new()));
+        }
+        let current = studio.session.as_ref().ok_or("请先打开工程。")?;
+        let mut keys = Vec::new();
+        let mut values = Vec::new();
+        for reference in &self.references {
+            if current.session_id() != reference.session
+                || !studio.project().media.iter().any(|item| {
+                    item.id == reference.id
+                        && !item.placeholder
+                        && item.name.replace(['\r', '\n'], " ") == reference.name
+                })
+            {
+                return Err("素材引用属于旧工程或已失效，请移除后重新选择。".into());
+            }
+            keys.push(format!("{}:{}", reference.session, reference.id));
+            values.push(serde_json::json!({"mediaId": reference.id, "name": reference.name}));
+        }
+        Ok((
+            keys,
+            format!(
+                "\n\n用户引用的当前工程素材：{}",
+                serde_json::Value::Array(values)
+            ),
+        ))
+    }
+
+    pub(crate) fn clear_references_if_unchanged(&mut self, keys: &[String], app: &App) {
+        let current: Vec<String> = self
+            .references
+            .iter()
+            .map(|r| format!("{}:{}", r.session, r.id))
+            .collect();
+        if current == keys {
+            self.references.clear();
+            self.publish_references(app);
+        }
+    }
+}
+
+pub(crate) fn install_composer(app: &App) {
+    let ui = app.global::<AgentUi>();
+    ui.on_draft_edited(|text, cursor| {
+        let cursor = usize::try_from(cursor).unwrap_or(usize::MAX);
+        Shell::with(|_, app| {
+            let ui = app.global::<AgentUi>();
+            ui.set_script_picker(false);
+            ui.set_draft_cursor(cursor.min(i32::MAX as usize) as i32);
+        });
+        refresh_suggestions(text.as_str(), cursor);
+    });
+    ui.on_trigger_requested(|marker| {
+        if marker != "@" && marker != "/" {
+            return;
+        }
+        Shell::with(|_, app| {
+            let ui = app.global::<AgentUi>();
+            ui.set_script_picker(false);
+            let mut draft = ui.get_draft().to_string();
+            let cursor = usize::try_from(ui.get_draft_cursor())
+                .ok()
+                .filter(|c| *c <= draft.len() && draft.is_char_boundary(*c))
+                .unwrap_or(draft.len());
+            if draft[cursor..].starts_with(|c: char| !c.is_whitespace()) {
+                draft.insert(cursor, ' ');
+            }
+            draft.insert_str(cursor, marker.as_str());
+            ui.set_draft(draft.as_str().into());
+            ui.set_draft_cursor((cursor + 1) as i32);
+            refresh_suggestions(&draft, cursor + 1);
+        });
+    });
+    ui.on_cancel_attachments(|| {
+        Shell::with(|shell, app| {
+            shell.agent_pane.borrow_mut().pending_attachments.clear();
+            let ui = app.global::<AgentUi>();
+            ui.set_attachment_pending(false);
+            ui.set_attachment_status("已取消引用；素材导入可能仍在继续。".into());
+        });
+    });
+    ui.on_attach_requested(|| {
+        let mut selected_session = None;
+        Shell::with(|shell, _| {
+            selected_session = shell
+                .studio
+                .borrow()
+                .session
+                .as_ref()
+                .map(|session| session.session_id())
+        });
+        let Some(selected_session) = selected_session else {
+            return;
+        };
+        crate::host::pick_files_then(
+            "添加素材".into(),
+            Some((
+                "视频、音频和图片".into(),
+                &[
+                    "mp4", "mov", "mkv", "webm", "avi", "m4v", "mp3", "wav", "aac", "m4a", "flac",
+                    "ogg", "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "svg",
+                ],
+            )),
+            move |studio, app, _, paths| {
+                if !studio
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.session_id() == selected_session)
+                {
+                    app.global::<AgentUi>()
+                        .set_attachment_status("工程已切换，请重新选择素材。".into());
+                    return;
+                }
+                Shell::with(|shell, _| {
+                    shell
+                        .agent_pane
+                        .borrow_mut()
+                        .queue_attachments(selected_session, &paths, app)
+                });
+                studio.handle(crate::panes::Msg::Media(
+                    crate::panes::media_bin::MediaMsg::Import(paths),
+                ));
+            },
+        );
+    });
+    ui.on_reference_removed(|identity| {
+        Shell::with(|shell, app| {
+            let mut pane = shell.agent_pane.borrow_mut();
+            pane.references.retain(|reference| {
+                format!("{}:{}", reference.session, reference.id) != identity.as_str()
+            });
+            pane.publish_references(&app);
+        });
+    });
+    ui.on_suggestion_chosen(|identity| {
+        Shell::with(|shell, app| {
+            let ui = app.global::<AgentUi>();
+            if identity == "server:unavailable" {
+                ui.set_suggestion_status("素材服务尚未接通，暂时不能搜索。".into());
+                return;
+            }
+            let draft = ui.get_draft().to_string();
+            let Some(context) = shell
+                .agent_pane
+                .borrow()
+                .completion
+                .clone()
+                .filter(|c| c.draft == draft)
+            else {
+                ui.set_suggestions_open(false);
+                return;
+            };
+            let CompletionContext {
+                start, end, marker, ..
+            } = context;
+            if marker == '/' && identity == "command:script" {
+                ui.set_draft(format!("{}{}", &draft[..start], &draft[end..]).into());
+                ui.set_draft_cursor(start as i32);
+                ui.set_suggestions_open(false);
+                ui.set_script_index(0);
+                ui.set_script_picker(true);
+                app.global::<ScriptUi>().invoke_open_requested();
+            } else if marker == '/' && identity == "command:media" {
+                let next = format!("{}@{}", &draft[..start], &draft[end..]);
+                ui.set_draft(next.as_str().into());
+                ui.set_draft_cursor((start + 1) as i32);
+                refresh_suggestions(&next, start + 1);
+            } else if marker == '/' && identity == "command:model" {
+                ui.set_draft(format!("{}{}", &draft[..start], &draft[end..]).into());
+                ui.set_draft_cursor(start as i32);
+                ui.set_suggestions_open(false);
+                app.global::<crate::ui::AgentSettingsUi>()
+                    .invoke_open_requested();
+            } else if marker == '@'
+                && let Some((session, id)) = identity
+                    .strip_prefix("media:")
+                    .and_then(|value| value.split_once(':'))
+            {
+                let studio = shell.studio.borrow();
+                if let Some(current) = studio.session.as_ref()
+                    && session.parse::<u64>() == Ok(current.session_id())
+                    && let Some(item) = studio
+                        .project()
+                        .media
+                        .iter()
+                        .find(|item| item.id == id && !item.placeholder)
+                {
+                    let mut pane = shell.agent_pane.borrow_mut();
+                    MediaReference::selected(current, &item.id, &item.name)
+                        .add_to(&mut pane.references);
+                    pane.publish_references(&app);
+                    ui.set_draft(format!("{}{}", &draft[..start], &draft[end..]).into());
+                    ui.set_draft_cursor(start as i32);
+                    ui.set_suggestions_open(false);
+                } else {
+                    ui.set_suggestion_status("素材已不存在，请重新选择。".into());
+                }
+            }
+        });
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reselecting_media_in_a_reopened_project_renews_just_its_chip() {
+        let first = MediaReference {
+            id: "m1".into(),
+            name: "bars.mp4".into(),
+            session: 1,
+            project_id: "original".into(),
+            project_path: "original-folder".into(),
+        };
+        let copied = MediaReference {
+            project_path: "copied-folder".into(),
+            session: 2,
+            ..first.clone()
+        };
+        let reopened = MediaReference {
+            session: 3,
+            ..first.clone()
+        };
+        let mut chips = vec![first, copied.clone()];
+        reopened.clone().add_to(&mut chips);
+        reopened.clone().add_to(&mut chips);
+        assert_eq!(chips, [reopened, copied]);
+    }
+
+    #[test]
+    fn completion_uses_utf8_caret_and_preserves_suffix() {
+        let text = "请参考 @海边 后续";
+        let caret = "请参考 @海".len();
+        let (start, end, marker, query) = completion_token(text, caret).unwrap();
+        assert_eq!(&text[..start], "请参考 ");
+        assert_eq!(&text[end..], " 后续");
+        assert_eq!((marker, query), ('@', "海"));
+        assert!(completion_token("hello@example.com", 17).is_none());
+        assert!(completion_token("字@片", 1).is_none());
+    }
 
     fn owner(phase: Phase) -> Result<OwnerStatus, String> {
         Ok(OwnerStatus {

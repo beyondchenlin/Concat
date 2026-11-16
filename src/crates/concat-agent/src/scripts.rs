@@ -764,9 +764,9 @@ impl PreparedDatabase {
     }
 
     fn publish(&self, destination: &Path) -> Result<(), ScriptError> {
-        // A hard link atomically installs one complete same-volume file and never
-        // replaces another attempt's winner or an unknown existing database.
-        match fs::hard_link(&self.path, destination) {
+        // Publish one complete same-volume file without replacing another
+        // attempt's winner or an unknown existing database.
+        match publish_new_file(&self.path, destination) {
             Ok(()) => {
                 OpenOptions::new()
                     .read(true)
@@ -780,6 +780,43 @@ impl PreparedDatabase {
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
             Err(error) => Err(error.into()),
         }
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn publish_new_file(source: &Path, destination: &Path) -> io::Result<()> {
+    fs::hard_link(source, destination)
+}
+
+#[cfg(target_os = "android")]
+fn publish_new_file(source: &Path, destination: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    // Android SELinux can deny hard links even in app-private storage.
+    // The syscall avoids a dependency on the API-30 bionic wrapper while
+    // retaining atomic no-replace semantics. Unsupported kernels fail closed.
+    let source = CString::new(source.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "source path contains NUL"))?;
+    let destination = CString::new(destination.as_os_str().as_bytes()).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "destination path contains NUL")
+    })?;
+    // SAFETY: both C strings are valid and live until the syscall returns;
+    // AT_FDCWD is ignored for absolute paths and the flags require no replace.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            source.as_ptr(),
+            libc::AT_FDCWD,
+            destination.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
     }
 }
 
@@ -1084,6 +1121,18 @@ fn read_candidate_row(
 mod initialization_tests {
     use super::*;
     use std::process::Command;
+
+    #[test]
+    fn publishing_a_prepared_database_never_replaces_an_existing_file() {
+        let root = tempfile::tempdir().unwrap();
+        let prepared = prepare_database(root.path()).unwrap();
+        let destination = root.path().join(SCRIPT_DATABASE_FILE_NAME);
+        fs::write(&destination, b"existing data").unwrap();
+
+        prepared.publish(&destination).unwrap();
+
+        assert_eq!(fs::read(&destination).unwrap(), b"existing data");
+    }
 
     #[test]
     fn first_creation_crashes_do_not_poison_the_fixed_database_path() {

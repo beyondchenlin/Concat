@@ -29,7 +29,10 @@ version=${FFMPEG_VERSION:-8.1}
 # path the engine plays through, appears; iOS 15 is where Slint draws.
 android_api=${ANDROID_API:-26}
 ios_min=${IPHONEOS_DEPLOYMENT_TARGET:-15.0}
-jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+jobs=${FFMPEG_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}
+case "$jobs" in
+  ''|*[!0-9]*|0*) echo "FFMPEG_JOBS must be a positive integer without leading zeroes" >&2; exit 1 ;;
+esac
 
 work=${FFMPEG_WORK_DIR:-$workspace/vendor/ffmpeg/src}
 src=$work/ffmpeg-$version

@@ -19,7 +19,10 @@
 //! Nothing here knows about a window. Long work reports through callbacks
 //! and cancels through flags, and the caller decides which thread it runs on.
 
+// Host services for editing the current project through the embedded agent.
 pub mod agent_media;
+pub mod project_identity;
+
 pub mod awake;
 pub mod brush;
 pub mod capcut;
@@ -40,7 +43,6 @@ pub mod models;
 pub mod net;
 pub mod playback;
 pub mod preview;
-pub mod project_identity;
 pub mod projects;
 pub mod proxy;
 pub mod record;

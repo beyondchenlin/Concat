@@ -16,6 +16,7 @@ use concat_host::{project_identity, projects};
 use sha2::{Digest, Sha256};
 use slint::{ComponentHandle, ModelRc, VecModel};
 
+use crate::agent::project_save::NativeSnapshot;
 use crate::host::{Shell, spawn_in_project};
 use crate::studio::Studio;
 use crate::ui::{App, ScriptUi, ScriptVersionData};
@@ -155,33 +156,6 @@ struct Opened {
     saved: Option<Result<projects::Saved, String>>,
     journal_error: Option<String>,
     loaded: Result<Loaded, String>,
-}
-
-/// Capture before dispatch so a legacy identity save keeps the native order
-/// and revision. Capturing alone neither writes nor acknowledges a save.
-struct NativeSnapshot {
-    path: String,
-    project_id: String,
-    document: serde_json::Value,
-    ticket: projects::Ticket,
-    authority: projects::SaveAuthority,
-    session: u64,
-    revision: u64,
-}
-
-impl NativeSnapshot {
-    fn capture(session: &mut concat_host::Session) -> Result<Self, String> {
-        let (path, document) = session.prepare_save(None)?;
-        Ok(Self {
-            path,
-            project_id: session.project_identity().to_owned(),
-            document,
-            ticket: projects::ticket(),
-            authority: session.save_authority(),
-            session: session.session_id(),
-            revision: session.revision(),
-        })
-    }
 }
 
 fn at_project<T>(
@@ -819,17 +793,7 @@ fn open_with_identity(
 
     // Only a legacy manifest without native identity needs its full snapshot
     // persisted before independent script data can be bound to that identity.
-    let saved = projects::save_ordered_with_authority(
-        &native.path,
-        &native.document,
-        native.ticket,
-        &native.authority,
-    );
-    let journal_error = if matches!(saved, Ok(projects::Saved::Written)) {
-        record_written(&native)
-    } else {
-        None
-    };
+    let (saved, journal_error) = native.save(record_written);
     let loaded = match &saved {
         Ok(_) => load(root, native.path, native.project_id),
         Err(error) => Err(format!("工程身份尚未安全保存，文案没有打开：{error}")),
@@ -879,16 +843,7 @@ impl Studio {
             move || {
                 with_local_io(&gate, || {
                     open_with_identity(root, native, |native| {
-                        agent.as_ref().and_then(|bridge| {
-                            bridge
-                                .record_saved(
-                                    &native.path,
-                                    native.session,
-                                    native.revision,
-                                    &native.document,
-                                )
-                                .err()
-                        })
+                        native.record_written(agent.as_deref())
                     })
                 })
             },
@@ -1020,14 +975,28 @@ impl Studio {
     }
 
     fn select_script_version(&mut self) {
+        if let Some(version) = self.script.viewed {
+            self.select_specific_script_version(version);
+        }
+    }
+
+    fn select_specific_script_version(&mut self, version: u64) {
         if !self.script.ready || self.script.is_busy() || self.script.dirty() {
             self.script.error = "请先保存或放弃文案修改，再选择剪辑版本。".into();
             return;
         }
-        let (Some(snapshot), Some(root), Some(version), Some(project_path)) = (
+        if !self
+            .script
+            .versions
+            .iter()
+            .any(|saved| saved.version == version)
+        {
+            self.script.error = "该文案版本不在当前工程中，请重新读取。".into();
+            return;
+        }
+        let (Some(snapshot), Some(root), Some(project_path)) = (
             self.script.snapshot.clone(),
             self.script.root.clone(),
-            self.script.viewed,
             self.script.project_path.clone(),
         ) else {
             return;
@@ -1270,6 +1239,12 @@ pub fn install(app: &App) {
     ui.on_candidate_dismiss_requested(|| with_studio(|studio| studio.script.dismiss_candidate()));
     ui.on_save_requested(|| with_studio(Studio::save_script));
     ui.on_select_requested(|| with_studio(Studio::select_script_version));
+    ui.on_select_version_requested(|identity| {
+        with_studio(|studio| match identity.parse::<u64>() {
+            Ok(version) => studio.select_specific_script_version(version),
+            Err(_) => studio.script.error = "文案版本无效。".into(),
+        });
+    });
     ui.on_discard_requested(|| with_studio(|studio| studio.script.discard()));
     ui.on_legacy_view_requested(|identity| {
         with_studio(|studio| studio.inspect_legacy_script(identity.to_string()))

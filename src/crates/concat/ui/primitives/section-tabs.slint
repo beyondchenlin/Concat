@@ -56,6 +56,9 @@ export component SectionTabs inherits Rectangle {
     }
 
     for option[index] in root.options: tab := Rectangle {
+        accessible-role: button;
+        accessible-label: option;
+        accessible-action-default => { root.select(index); }
         property <bool> on: index == root.current;
         property <brush> ink: self.on ? Theme.fg : segment.has-hover ? Theme.fg : Theme.fg-muted;
 
