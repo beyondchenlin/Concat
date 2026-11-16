@@ -236,10 +236,6 @@ export component App inherits Window {
     // is narrower than this on every side.
     min-width: root.phone ? 320px : 900px;
     min-height: root.phone ? 480px : 560px;
-    // Explicit, non-fixed bounds keep Slint's Windows backend in resizable
-    // mode even when a docked child has a finite preferred/max width.
-    max-width: 16384px;
-    max-height: 16384px;
     // So the shortcuts work before anything has been clicked. Without it the
     // window opens with nothing focused, and a key would have nowhere to be
     // delivered from until the first press landed somewhere.
@@ -859,7 +855,8 @@ export component App inherits Window {
                     moved(delta) => {
                         AgentUi.sidebar-width = Math.clamp(
                             root.sidebar-drag-start - delta, 280px,
-                            Math.max(280px, root.width - 568px));
+                            // Match the native dock's 64px recovery grip plus 8px gutter.
+                            Math.max(280px, root.width - 72px));
                     }
                 }
                 sidebar := AgentSidebar {

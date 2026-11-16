@@ -126,10 +126,11 @@ fn reapply_ui_scale(delay: std::time::Duration) {
 /// was pressed then takes the focus itself if it wants it - another input
 /// does, so a click from one field into the next still lands a caret.
 ///
-/// Also handle edges of an undecorated desktop window. Linux window
-/// managers remove resize borders; Windows can lose WS_SIZEBOX when Slint
-/// recalculates layout constraints. Forward edge drags to the platform
-/// via winit, while leaving all interior editor gestures untouched.
+/// Also handle edges of an undecorated desktop window. Windows retains
+/// a resizable window style, but an undecorated client area offers no
+/// reliable native resize hit target; Linux window managers similarly
+/// remove resize borders. Forward only edge drags via winit, leaving
+/// interior editor gestures untouched.
 #[cfg(not(target_os = "android"))]
 struct DropHandler {
     pending: Vec<PathBuf>,
