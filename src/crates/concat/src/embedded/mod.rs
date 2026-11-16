@@ -16,7 +16,6 @@ use crate::agent::AgentBridge;
 use crate::agent::native::{NativeSession, STORAGE_ID};
 use crate::agent::tasks::{SubmissionIntent, TaskMode};
 use crate::host::Shell;
-use slint::ComponentHandle;
 
 mod resources;
 pub use resources::RuntimeResources;
@@ -1140,6 +1139,28 @@ pub(crate) fn validate_current_edit(
     result
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModelGrantAction {
+    Grant,
+    Revoke,
+    RevokeAndStop,
+    Refuse,
+}
+
+fn model_grant_action(authorized: bool, ready: bool, running: bool) -> ModelGrantAction {
+    if authorized {
+        if running {
+            ModelGrantAction::RevokeAndStop
+        } else {
+            ModelGrantAction::Revoke
+        }
+    } else if ready {
+        ModelGrantAction::Grant
+    } else {
+        ModelGrantAction::Refuse
+    }
+}
+
 pub(crate) fn authorize_call_from_ui() {
     Shell::with(|shell, app| {
         let runtime = shell.embedded.borrow().clone();
@@ -1150,17 +1171,33 @@ pub(crate) fn authorize_call_from_ui() {
             && pane.readiness.credentials_ready
             && !pane.readiness.provider.is_empty()
             && !pane.readiness.model.is_empty();
-        if ready {
-            pane.readiness.calls_authorized = !pane.readiness.calls_authorized;
-            pane.error.clear();
-            if let Some(runtime) = runtime
-                && let Ok(mut view) = runtime.view.lock()
-            {
-                view.error.clear();
+        let running = runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.view().task_running);
+        match model_grant_action(pane.readiness.calls_authorized, ready, running) {
+            ModelGrantAction::RevokeAndStop => {
+                // Revoke synchronously: no further model request can cross this boundary.
+                drop(pane);
+                stop_current_task(shell, &app);
+                return;
             }
-        } else {
-            pane.readiness.calls_authorized = false;
-            pane.error = "请先配置本项目渠道和系统凭据，并连接、核对当前会话。".into();
+            ModelGrantAction::Revoke => {
+                pane.readiness.calls_authorized = false;
+                pane.error.clear();
+            }
+            ModelGrantAction::Grant => {
+                pane.readiness.calls_authorized = true;
+                pane.error.clear();
+                if let Some(runtime) = runtime
+                    && let Ok(mut view) = runtime.view.lock()
+                {
+                    view.error.clear();
+                }
+            }
+            ModelGrantAction::Refuse => {
+                pane.readiness.calls_authorized = false;
+                pane.error = "请先配置本项目渠道和系统凭据，并连接、核对当前会话。".into();
+            }
         }
         pane.publish(
             &app,
@@ -1261,9 +1298,8 @@ fn submit_from_ui(input: String, mode: TaskMode, rewrite: bool) -> Result<(), St
                 }
                 return Err(error);
             }
-            // Sending consumes the one native authorization. Saving settings,
-            // loading a conversation or completing a task never replenishes it.
-            shell.agent_pane.borrow_mut().readiness.calls_authorized = false;
+            // Keep this model authorization across sequential user messages.
+            // Model changes, explicit revoke/stop and owner retirement clear it.
             studio.script.publish(&app);
             Ok(())
         })();
@@ -1272,26 +1308,29 @@ fn submit_from_ui(input: String, mode: TaskMode, rewrite: bool) -> Result<(), St
 }
 
 pub(crate) fn stop_from_ui() {
-    Shell::with(|shell, app| {
-        shell.agent_pane.borrow_mut().readiness.calls_authorized = false;
-        shell.studio.borrow_mut().script.cancel_generation();
-        if let Some(bridge) = shell.agent.borrow().as_ref() {
-            bridge.stop();
-        }
-        if let Some(runtime) = shell.embedded.borrow().as_ref() {
-            runtime.stop();
-        }
-        shell.studio.borrow().script.publish(&app);
-        shell.agent_pane.borrow().publish(
-            &app,
-            shell
-                .agent
-                .borrow()
-                .as_ref()
-                .ok_or_else(|| "会话暂不可用。".into())
-                .and_then(|bridge| bridge.status()),
-        );
-    });
+    Shell::with(|shell, app| stop_current_task(shell, &app));
+}
+
+// The same fail-closed stop is used when a user revokes an active model grant.
+fn stop_current_task(shell: &Shell, app: &crate::ui::App) {
+    shell.agent_pane.borrow_mut().readiness.calls_authorized = false;
+    shell.studio.borrow_mut().script.cancel_generation();
+    if let Some(bridge) = shell.agent.borrow().as_ref() {
+        bridge.stop();
+    }
+    if let Some(runtime) = shell.embedded.borrow().as_ref() {
+        runtime.stop();
+    }
+    shell.studio.borrow().script.publish(app);
+    shell.agent_pane.borrow().publish(
+        app,
+        shell
+            .agent
+            .borrow()
+            .as_ref()
+            .ok_or_else(|| "会话暂不可用。".into())
+            .and_then(|bridge| bridge.status()),
+    );
 }
 
 fn authenticate(raw: &str, component: &str) -> Result<Value, String> {
@@ -1457,6 +1496,30 @@ pub(crate) fn show_ui_error(result: Result<(), String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_grant_can_span_messages_but_revocation_stops_active_work() {
+        assert_eq!(
+            model_grant_action(false, true, false),
+            ModelGrantAction::Grant
+        );
+        assert_eq!(
+            model_grant_action(true, true, false),
+            ModelGrantAction::Revoke
+        );
+        assert_eq!(
+            model_grant_action(true, false, true),
+            ModelGrantAction::RevokeAndStop
+        );
+        assert_eq!(
+            model_grant_action(false, false, true),
+            ModelGrantAction::Refuse
+        );
+        assert_eq!(
+            model_grant_action(false, false, false),
+            ModelGrantAction::Refuse
+        );
+    }
 
     mod project_retirement {
         use std::path::PathBuf;

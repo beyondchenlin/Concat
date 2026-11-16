@@ -22,7 +22,7 @@ export component AgentCallAuthorization inherits VerticalLayout {
     Button {
         label: root.compact ? (AgentCallUi.allowed ? "撤回授权" : "允许调用") : (AgentCallUi.allowed ? "已授权当前模型 · 点击撤回" : "允许当前模型");
         max-width: root.compact ? 120px : 100000px;
-        enabled: AgentCallUi.can-authorize;
+        enabled: AgentCallUi.can-authorize || AgentCallUi.allowed;
         primary: AgentCallUi.allowed;
         clicked => { AgentCallUi.authorize-requested(); }
     }

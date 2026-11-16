@@ -842,6 +842,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn model_authorization_survives_a_running_and_completed_task_but_not_owner_loss() {
+        let mut pane = AgentPane::default();
+        pane.readiness.calls_authorized = true;
+        let mut runtime = crate::embedded::RuntimeView {
+            phase: "ready".into(),
+            task_running: true,
+            ..Default::default()
+        };
+        pane.apply_runtime(&runtime);
+        assert!(pane.readiness.calls_authorized);
+        runtime.task_running = false;
+        pane.apply_runtime(&runtime);
+        assert!(pane.readiness.calls_authorized);
+        runtime.closed = true;
+        pane.apply_runtime(&runtime);
+        assert!(!pane.readiness.calls_authorized);
+    }
+
+    #[test]
     fn moving_caret_invalidates_an_unchanged_completion_draft() {
         let draft = "use @video after";
         let cursor = "use @video".len();
