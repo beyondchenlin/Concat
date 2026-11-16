@@ -55,6 +55,8 @@ export global AgentUi {
     in-out property <AgentView> view: AgentView.chat;
     /// Desktop only: hiding the sidebar does not stop or reset a task.
     in-out property <bool> sidebar-open: true;
+    // Only the assistant rail is resizable; the original editor dock is unchanged.
+    in-out property <length> sidebar-width: 340px;
     in-out property <string> draft;
     in-out property <int> draft-cursor;
     in-out property <bool> script-picker;

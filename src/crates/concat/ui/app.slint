@@ -84,6 +84,7 @@ import { CaptionStyles } from "dialogs/captions.slint";
 import { Meters } from "timeline/vu-meter.slint";
 import { MotionPose, MotionTile, MotionTiles } from "inspector/motion-picker.slint";
 import { Workspace } from "workspace/workspace.slint";
+import { ColSplitter } from "workspace/splitter.slint";
 import { AgentUi, AgentView, AgentMessageData, AgentStatusData, AgentSuggestion, AgentNavigation, AgentSidebar } from "agent.slint";
 import { AgentCallUi } from "agent-call.slint";
 import { AgentWorkspace } from "workspace/agent-workspace.slint";
@@ -364,6 +365,7 @@ export component App inherits Window {
     /// Draw minimise / maximise / close on the strip. False on macOS, where
     /// the traffic lights are the window's own.
     in property <bool> own-window-buttons;
+    private property <length> sidebar-drag-start: 340px;
     /// Read back from the platform on every resize, so the strip can show
     /// restore rather than maximise - whichever route maximised it.
     in-out property <bool> window-maximized;
@@ -843,10 +845,24 @@ export component App inherits Window {
             if !root.on-start && !root.phone: HorizontalLayout {
                 vertical-stretch: 1;
                 Workspace { horizontal-stretch: 1; }
-                AgentSidebar {
-                    min-width: AgentUi.sidebar-open ? 320px : 36px;
-                    max-width: AgentUi.sidebar-open ? 360px : 36px;
-                    preferred-width: AgentUi.sidebar-open ? 340px : 36px;
+                // Reuse the editor's proven draggable gutter. The editor's
+                // original dividers and timeline remain untouched.
+                if AgentUi.sidebar-open: ColSplitter {
+                    min-width: 8px;
+                    max-width: 8px;
+                    preferred-width: 8px;
+                    pressed => { root.sidebar-drag-start = sidebar.width; }
+                    moved(delta) => {
+                        AgentUi.sidebar-width = Math.clamp(
+                            root.sidebar-drag-start - delta, 280px,
+                            Math.max(280px, Math.min(700px, root.width - 568px)));
+                    }
+                }
+                sidebar := AgentSidebar {
+                    min-width: AgentUi.sidebar-open ? 280px : 36px;
+                    max-width: AgentUi.sidebar-open
+                        ? Math.max(280px, Math.min(700px, root.width - 568px)) : 36px;
+                    preferred-width: AgentUi.sidebar-open ? AgentUi.sidebar-width : 36px;
                 }
             }
 
