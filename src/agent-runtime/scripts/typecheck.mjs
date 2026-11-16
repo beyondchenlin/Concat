@@ -13,7 +13,10 @@ const config = resolve(output, "tsconfig.check.json");
 writeFileSync(config, JSON.stringify({
   extends: resolve(referenceRoot, "tsconfig.base.json"),
   compilerOptions: {
-    noEmit: true, module: "NodeNext", moduleResolution: "NodeNext", paths,
+    // A no-emit check must not inherit declaration output from the pinned Pi build.
+    // Disabling it also avoids cross-drive declaration portability errors.
+    noEmit: true, declaration: false, declarationMap: false,
+    module: "NodeNext", moduleResolution: "NodeNext", paths,
     lib: ["ES2024", "DOM", "DOM.Iterable"],
     typeRoots: [resolve(referenceRoot, "node_modules/@types")],
   },

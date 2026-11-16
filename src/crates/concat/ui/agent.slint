@@ -239,7 +239,7 @@ export component AgentChat inherits Rectangle {
         }
         if !root.helping && (AgentCallUi.can-authorize || AgentCallUi.allowed): HorizontalLayout {
             spacing: 4px;
-            Text { text: AgentCallUi.limits; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap; horizontal-stretch: 1; }
+            Text { text: AgentCallUi.usage-policy; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap; horizontal-stretch: 1; }
             Button { label: AgentCallUi.allowed ? "撤回授权" : "允许调用"; enabled: AgentCallUi.can-authorize || AgentCallUi.allowed; clicked => { AgentCallUi.authorize-requested(); } }
         }
         side-transcript := Flickable {
@@ -345,7 +345,7 @@ export component AgentChat inherits Rectangle {
                         : AgentUi.status.can-connect ? "先连接当前工程的 Pi 会话。"
                         : AgentUi.status.can-continue ? "当前工程已核对，请确认打开会话。"
                         : AgentUi.status.can-review ? AgentUi.status.recovery-summary != "" ? AgentUi.status.recovery-summary : "请先核对当前工程。"
-                        : AgentCallUi.can-authorize && !AgentCallUi.allowed ? AgentCallUi.limits
+                        : AgentCallUi.can-authorize && !AgentCallUi.allowed ? AgentCallUi.usage-policy
                         : AgentUi.status.error != "" ? AgentUi.status.error
                         : AgentUi.status.can-send ? "可以发送这条消息了。" : AgentUi.status.detail;
                 }

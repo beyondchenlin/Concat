@@ -367,6 +367,44 @@ function completionResponse(parts) {
   return new Response(chunks, { headers: { "content-type": "text/event-stream" } });
 }
 
+// The pinned Pi scheduler must run beyond the old cap, even when the saved
+// conversation still contains the previous four-turn setting.
+test("native model task clears legacy four-turn cap and completes eight sequential requests", { timeout: 30000 }, async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), "bkcat-unlimited-pi-"));
+  const file = resolve(directory, "session.sqlite3");
+  let requests = 0;
+  const instance = fixture(file, 1, api.nativeModelConfiguration(nativeConfiguration()), async () => {
+    requests++;
+    return requests <= 7
+      ? completionResponse([
+        { delta: { role: "assistant", tool_calls: [{ index: 0, id: `read-${requests}`, type: "function", function: { name: "project_get", arguments: "{}" } }] } },
+        { finish: "tool_calls" },
+      ])
+      : completionResponse([{ delta: { role: "assistant", content: "八轮调用完成" } }, { finish: "stop" }]);
+  });
+  try {
+    const snapshot = await instance.runtime.start();
+    await instance.runtime.confirmRecovery({ snapshotId: snapshot.snapshotId, decision: "continue", approvalId: "explicit-unlimited-test" });
+    const legacy = await instance.runtime.dispatch("createConversation", {
+      agent: { model: { provider: "native-channel", modelId: "explicit-model" }, maxTurns: 4 },
+    });
+    const taskId = "unlimited-native-task";
+    await instance.runtime.dispatch("nativeSubmit", {
+      taskId, networkPermit: "bounded-fixture-permit", conversationId: legacy.id,
+      input: "连续读取工程，直到完成任务", mode: "chat",
+    });
+    const result = await instance.runtime.dispatch("nativeWait", { taskId });
+    assert.equal(result.status, "done", result.status === "done" ? undefined : durableFailure(file));
+    assert.equal(result.text, "八轮调用完成");
+    assert.equal(instance.networkCalls(), 8, "seven tool rounds plus a final answer must exceed the old limit");
+    assert.equal(instance.mcpCalls.filter((message) => message.method === "tools/call").length, 7);
+    assert.equal(forbiddenFetch, 0);
+  } finally {
+    await instance.runtime.stop().catch(() => {});
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 // Only deterministic fixtures use this reader. Keep the original failure
 // detail in a failing assertion before its temporary database is cleaned up;
 // no service credentials or live model response enter this test environment.

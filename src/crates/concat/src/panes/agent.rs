@@ -25,7 +25,7 @@ pub struct AgentReadiness {
     pub model: String,
     /// Native credential storage has an available credential.
     pub credentials_ready: bool,
-    /// Explicit authorization for this configured channel and its cost limit.
+    /// Explicit authorization for the selected channel, without a task-wide budget.
     pub calls_authorized: bool,
 }
 
@@ -62,7 +62,6 @@ pub struct AgentPane {
     pub runtime_loading: bool,
     pub runtime_loaded: bool,
     messages: Vec<AgentMessageData>,
-    call_limits: String,
     references: Vec<MediaReference>,
     pending_attachments: Vec<PendingAttachment>,
     completion: Option<CompletionContext>,
@@ -136,16 +135,6 @@ impl AgentPane {
         } else {
             String::new()
         };
-        if let Some(configuration) = &runtime.configuration {
-            self.call_limits =
-                configuration["maxOutputTokens"]
-                    .as_u64()
-                    .map_or_else(String::new, |limit| {
-                        format!(
-                            "本次最多4次模型请求，每次输出最多{limit}个词元；费用按服务商计费。"
-                        )
-                    });
-        }
         self.messages.clear();
         if let Some(presentation) = &runtime.presentation {
             if let Some(messages) = presentation["messages"].as_array() {
@@ -218,7 +207,7 @@ impl AgentPane {
             missing.push("调用凭据");
         }
         if !self.readiness.calls_authorized {
-            missing.push("调用授权与费用限额");
+            missing.push("调用授权");
         }
         if !self.readiness.runtime_ready {
             missing.push("聊天功能就绪");
@@ -384,11 +373,6 @@ impl AgentPane {
         let call = app.global::<AgentCallUi>();
         call.set_allowed(self.readiness.calls_authorized);
         call.set_can_authorize(can_authorize);
-        call.set_limits(if self.call_limits.is_empty() {
-            "每次任务最多4次模型请求；请先配置模型输出上限。".into()
-        } else {
-            self.call_limits.as_str().into()
-        });
         let ui = app.global::<AgentUi>();
         if ui.get_script_picker() {
             let count = app.global::<ScriptUi>().get_versions().row_count();

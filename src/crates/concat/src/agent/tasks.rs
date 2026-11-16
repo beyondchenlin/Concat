@@ -10,9 +10,7 @@ use concat_agent::conversations::{
     ConversationBindings, inspect_latest, inspect_project_conversations,
 };
 use concat_agent::credentials::platform_store;
-use concat_agent::network::{
-    MAX_REQUESTS_PER_TASK, ModelNetwork, ModelRequest, runtime_configuration,
-};
+use concat_agent::network::{ModelNetwork, ModelRequest, runtime_configuration};
 use concat_agent::operations::Invocation;
 use concat_agent::scripts::{ScriptStore, VersionBinding};
 use serde_json::{Value, json};
@@ -212,7 +210,6 @@ impl NativeTasks {
             self.store.clone(),
             snapshot,
             platform_store().map_err(|error| error.to_string())?,
-            MAX_REQUESTS_PER_TASK,
         )?);
         let permit = random_capability()?;
         let payload = json!({"method":"runtime.submit","taskId":intent.id,"networkPermit":permit,
@@ -705,7 +702,6 @@ mod tests {
                     tasks.store.clone(),
                     snapshot.clone(),
                     credentials.clone(),
-                    MAX_REQUESTS_PER_TASK,
                 )
                 .unwrap(),
             );
