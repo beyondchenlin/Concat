@@ -25,8 +25,10 @@ pub use clips::{PlayheadSide, consolidation_clips, delete_to_playhead, why_not_m
 pub(crate) use clips::{exact_destination, exact_time_range};
 mod media;
 mod properties;
+pub mod single_main;
 mod timelines;
 mod tracks;
+pub use single_main::{SingleMainPlan, TemplateMedia, TemplateText};
 
 /// Fallback length for media whose container reports no duration.
 const UNKNOWN_DURATION: f64 = 5.0;
@@ -304,6 +306,11 @@ pub struct NewMedia {
 // the patch would cost every caller for a saving nobody would measure.
 #[allow(clippy::large_enum_variant)]
 pub enum Command {
+    /// Creates a complete role-based short film atomically on an empty timeline.
+    ApplySingleMainTemplate {
+        /// Native-minted role tracks; only imported media identities are accepted.
+        plan: SingleMainPlan,
+    },
     /// Imports a file into the bin, minting an "m" id. A path already
     /// present is a tolerated no-op that mints nothing.
     AddMedia {
@@ -1071,6 +1078,9 @@ pub struct Outcome {
 /// those sentences names a host can match on.
 #[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
 pub enum CommandError {
+    /// The typed short-film plan is incomplete, ambiguous, or not applicable.
+    #[error("Invalid single-main template: {0}")]
+    Template(String),
     /// [`Command::FillSlot`] named a media id no longer in the bin.
     #[error("That template slot no longer exists.")]
     SlotGone,
@@ -1236,6 +1246,7 @@ impl Command {
         }
         match self {
             Command::Batch { commands } => commands.iter().any(Command::has_non_finite),
+            Command::ApplySingleMainTemplate { plan } => plan.has_non_finite(),
             Command::AddMedia { item }
             | Command::FillSlot { item, .. }
             | Command::ConsolidateClips { item, .. } => bad(item.duration) || bad(item.frame_rate),
@@ -1413,6 +1424,7 @@ pub fn apply(
         return Err(CommandError::NotANumber);
     }
     match command {
+        Command::ApplySingleMainTemplate { plan } => single_main::apply(project, mint, plan),
         Command::Batch { commands } => {
             // All or nothing: apply to a staged copy and commit only a fully
             // successful run, so one bad command cannot leave a half-applied

@@ -24,6 +24,7 @@ use crate::model::{ClipKind, Project, Timeline};
 /// require an explicit existing track; removal must not ripple. All other
 /// native operations remain available to manual editing, but not this boundary.
 pub const GUARDED_OPERATIONS: &[&str] = &[
+    "applySingleMainTemplate",
     "addMediaClipExact",
     "addTextClip",
     "moveClips",
@@ -273,6 +274,51 @@ pub(crate) fn check_effects(
     reject_locked(affected, locked)
 }
 
+/// A template may append exactly five native role lanes, and nothing else.
+/// This path is called only for the top-level typed template command.
+pub(crate) fn check_template_effects(
+    before: &Project,
+    after: &Project,
+    locked: &HashSet<String>,
+) -> Result<(), GuardError> {
+    let old = active(before)?;
+    let new = active(after)?;
+    if !old.clips.is_empty()
+        || new.tracks.len() != old.tracks.len() + 5
+        || new.tracks[..old.tracks.len()] != old.tracks[..]
+    {
+        return Err(GuardError::UnsupportedEffect);
+    }
+    let created = &new.tracks[old.tracks.len()..];
+    let ids: HashSet<_> = created.iter().map(|t| t.id.as_str()).collect();
+    if ids.len() != 5
+        || created.iter().any(|t| {
+            !t.visible || t.muted || !t.extra.is_empty() || old.tracks.iter().any(|o| o.id == t.id)
+        })
+        || new.clips.iter().any(|c| !ids.contains(c.track_id.as_str()))
+    {
+        return Err(GuardError::UnsupportedEffect);
+    }
+    let mut clips_only = after.clone();
+    clips_only.active_mut().tracks = old.tracks.clone();
+    check_effects(before, &clips_only, locked)
+}
+
+/// Stage the only structure-changing guarded command. Nested templates remain
+/// rejected by apply_staged, so arbitrary batches cannot smuggle track edits.
+pub(crate) fn apply_template(
+    project: &mut Project,
+    mint: &mut IdMint,
+    plan: crate::commands::SingleMainPlan,
+    locked: &HashSet<String>,
+) -> Result<Outcome, GuardError> {
+    let before = project.clone();
+    active(&before)?;
+    let outcome = apply(project, mint, Command::ApplySingleMainTemplate { plan })?;
+    check_template_effects(&before, project, locked)?;
+    Ok(outcome)
+}
+
 /// Applies only to a transaction-local copy supplied by the editor. Checking
 /// each leaf catches a forbidden intermediate edit even if a later leaf would
 /// restore the original state. A failure never reaches the live editor.
@@ -322,3 +368,6 @@ mod tests;
 
 #[cfg(test)]
 mod exact_tests;
+
+#[cfg(test)]
+mod template_tests;
