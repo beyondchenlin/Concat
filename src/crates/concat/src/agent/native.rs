@@ -25,6 +25,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use super::tool_approval::NativeToolPermissions;
 use super::{AgentBridge, Ordering};
 use crate::embedded::random_capability;
 use crate::live::CurrentProject;
@@ -194,6 +195,7 @@ pub(crate) struct NativeSession {
     project_reader: ProjectReader,
     state: Mutex<State>,
     approval: Mutex<ApprovalState>,
+    pub(crate) tool_approval: NativeToolPermissions,
 }
 
 impl NativeSession {
@@ -239,6 +241,7 @@ impl NativeSession {
             project_reader,
             state: Mutex::new(State::default()),
             approval: Mutex::new(ApprovalState::default()),
+            tool_approval: NativeToolPermissions::default(),
         })
     }
 
@@ -312,6 +315,7 @@ impl NativeSession {
             // The outer component capability was already checked. Cancelling
             // even an acquire revokes this component only; it grants nothing.
             self.bridge.stop();
+            self.tool_approval.cancel();
             self.approval()?.pending = None;
             return Ok(Value::Null);
         }
@@ -322,6 +326,7 @@ impl NativeSession {
         if method == "ownership.revoke" {
             allow_bound_keys(&payload, &[])?;
             self.bridge.stop();
+            self.tool_approval.cancel();
             self.approval()?.pending = None;
             return Ok(Value::Null);
         }
@@ -452,6 +457,16 @@ impl NativeSession {
                         == Some("edit_apply_guarded");
                 self.tasks
                     .authorize_tool(&mut message, invocation.as_ref())?;
+                // Page-supplied JSON cannot approve itself. Only the native UI
+                // callback resolves this separate, time-limited operation gate.
+                if guarded_edit {
+                    self.tool_approval.admit(&message, invocation.as_ref())?;
+                    // A project/task can be revoked during a human approval wait.
+                    self.tasks
+                        .authorize_tool(&mut message, invocation.as_ref())?;
+                }
+                let tool_name = message.pointer("/params/name")
+                    .and_then(Value::as_str).map(str::to_owned);
                 let response = self
                     .bridge
                     .handle_with_invocation(message, invocation.clone())?;
@@ -463,6 +478,9 @@ impl NativeSession {
                         invocation.as_ref().ok_or("原生工具调用身份缺失。")?,
                         reply,
                     )?;
+                }
+                if let (Some(name), Some(reply)) = (tool_name.as_deref(), response.as_ref()) {
+                    self.tool_approval.record_result(name, reply);
                 }
                 Ok(response.unwrap_or(Value::Null))
             }
@@ -840,6 +858,7 @@ impl NativeSession {
     /// A failed close/drain retains the revoked lock; no newer component wins.
     pub(crate) fn shutdown(&self) -> Result<(), String> {
         self.bridge.stop();
+        self.tool_approval.cancel();
         self.tasks.abandon();
         {
             let mut state = self.state()?;
@@ -853,6 +872,7 @@ impl NativeSession {
 impl Drop for NativeSession {
     fn drop(&mut self) {
         self.bridge.stop();
+        self.tool_approval.cancel();
         self.tasks.abandon();
         // This is only a fail-closed fallback. Explicit shutdown owns the
         // platform-destruction acknowledgement and final handoff.

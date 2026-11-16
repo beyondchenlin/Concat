@@ -108,6 +108,17 @@ export global AgentUi {
     callback connect-requested();
 }
 
+/// Project-edit privileges live only in the native session. This global is a
+/// read-only presentation plus native window callbacks, not a web capability.
+export global AgentToolUi {
+    in property <int> mode: 0;
+    in property <bool> connected: false;
+    in property <bool> pending: false;
+    in property <string> summary;
+    callback mode-requested(index: int);
+    callback decision-requested(approve: bool);
+}
+
 /// The same three destinations on a desk and a phone. The full original
 /// editor remains reachable; switching never opens a second native session.
 export component AgentNavigation inherits Rectangle {
@@ -243,6 +254,44 @@ export component AgentChat inherits Rectangle {
             spacing: 4px;
             Text { text: AgentCallUi.usage-policy; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap; horizontal-stretch: 1; }
             Button { label: AgentCallUi.allowed ? "撤回授权" : "允许调用"; enabled: AgentCallUi.can-authorize || AgentCallUi.allowed; clicked => { AgentCallUi.authorize-requested(); } }
+        }
+        HorizontalLayout {
+            height: 30px; spacing: 6px; alignment: center;
+            Text { text: "操作权限"; color: Theme.fg-muted; font-size: Theme.fs-sm; }
+            Select {
+                options: ["请求批准", "帮我批准", "完全访问权限"];
+                current: AgentToolUi.mode;
+                enabled: AgentToolUi.connected && !AgentToolUi.pending;
+                flat: true; snug: true; horizontal-stretch: 1;
+                changed(index) => { AgentToolUi.mode-requested(index); }
+            }
+        }
+        if AgentToolUi.pending: Rectangle {
+            min-height: 106px;
+            border-radius: Theme.r;
+            background: Theme.well;
+            border-width: 1px;
+            border-color: Theme.accent;
+            VerticalLayout {
+                padding: 8px; spacing: 6px;
+                Text {
+                    text: "Pi 助手正在等待剪辑批准";
+                    color: Theme.fg;
+                    font-size: Theme.fs-sm;
+                }
+                Text {
+                    text: AgentToolUi.summary;
+                    color: Theme.fg-muted;
+                    font-size: Theme.fs-sm;
+                    wrap: word-wrap;
+                    vertical-stretch: 1;
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    Button { label: "拒绝"; ghost: true; clicked => { AgentToolUi.decision-requested(false); } }
+                    Button { label: "批准本次"; clicked => { AgentToolUi.decision-requested(true); } }
+                }
+            }
         }
         side-transcript := Flickable {
             vertical-stretch: 1; min-height: 40px;

@@ -27,6 +27,12 @@ pub(crate) fn install(app: &App) -> slint::Timer {
     agent_ui.on_stop_requested(embedded::stop_from_ui);
     app.global::<ui::AgentCallUi>()
         .on_authorize_requested(embedded::authorize_call_from_ui);
+    app.global::<ui::AgentToolUi>().on_mode_requested(|index| {
+        embedded::show_ui_error(embedded::set_tool_mode_from_ui(index));
+    });
+    app.global::<ui::AgentToolUi>().on_decision_requested(|approve| {
+        embedded::show_ui_error(embedded::decide_tool_from_ui(approve));
+    });
     agent_ui.on_review_requested(|| {
         let mut result = Err("聊天运行组件尚未连接。".to_owned());
         Shell::with(|shell, _| {
@@ -61,6 +67,27 @@ pub(crate) fn install(app: &App) -> slint::Timer {
         std::time::Duration::from_millis(250),
         || {
             Shell::with(|shell, app| {
+                let approval_ui = app.global::<ui::AgentToolUi>();
+                let permission = shell.embedded.borrow().as_ref().map(|runtime| {
+                    (runtime.view().phase == "ready", runtime.native.tool_approval.view())
+                });
+                if let Some((ready, Ok(permission))) = permission {
+                    let pending = permission.pending_summary.is_some();
+                    approval_ui.set_mode(permission.mode);
+                    approval_ui.set_connected(ready);
+                    approval_ui.set_pending(pending);
+                    approval_ui.set_summary(permission.pending_summary.unwrap_or_default().into());
+                    if pending {
+                        let chat = app.global::<AgentUi>();
+                        chat.set_view(ui::AgentView::Chat);
+                        chat.set_sidebar_open(true);
+                    }
+                } else {
+                    approval_ui.set_mode(0);
+                    approval_ui.set_connected(false);
+                    approval_ui.set_pending(false);
+                    approval_ui.set_summary("".into());
+                }
                 if let Some(runtime) = shell.embedded.borrow().as_ref() {
                     runtime.poll_saved();
                 }
