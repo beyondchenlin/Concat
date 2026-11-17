@@ -1149,6 +1149,7 @@ impl EmbeddedRuntime {
         let component = self.component.clone();
         let view = self.view();
         let _ = slint::invoke_from_event_loop(move || {
+            let mut refresh_permission = false;
             Shell::with(|shell, app| {
                 let current = shell
                     .embedded
@@ -1167,9 +1168,16 @@ impl EmbeddedRuntime {
                     .ok_or_else(|| "会话暂不可用，仍可使用手动编辑。".to_owned())
                     .and_then(|bridge| bridge.status());
                 let mut pane = shell.agent_pane.borrow_mut();
+                let was_ready = pane.readiness.runtime_ready;
                 pane.apply_runtime(&view);
+                refresh_permission = was_ready != pane.readiness.runtime_ready;
                 pane.publish(&app, owner);
             });
+            if refresh_permission {
+                // The original poll also updated the tool's connected badge.
+                // Preserve that update on actual connect/disconnect only.
+                crate::agent::window::refresh_tool_permission();
+            }
         });
     }
 }
