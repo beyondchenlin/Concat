@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use concat_api::AppDirs;
 use serde_json::{Value, json};
+#[cfg(any(target_os = "android", feature = "bk-cat-native-probe"))]
 use slint::ComponentHandle;
 
 use crate::agent::AgentBridge;
@@ -778,7 +779,7 @@ impl EmbeddedRuntime {
         let title = match intent.mode {
             TaskMode::Chat => "正在对话",
             TaskMode::Script => "正在生成文案候选",
-            TaskMode::Edit => "正在执行所选文案剪辑",
+            TaskMode::Edit => "正在剪辑当前工程",
         };
         {
             let mut submission = self.submission.lock().map_err(|_| "本次任务状态不可用。")?;
@@ -1389,16 +1390,17 @@ fn submit_from_ui(input: String, mode: TaskMode, rewrite: bool) -> Result<(), St
             } else {
                 None
             };
+            // Direct edits to the open timeline do not require a script.
+            // When a script has been selected, keep its immutable binding for
+            // template edits and reject a stale selection at native apply time.
             let selected = if mode == TaskMode::Edit {
-                if !studio.script.selection_settled() {
+                let selected = studio.script.selected_binding();
+                // A direct edit does not depend on an unfinished script save.
+                // Only a task bound to a script version must wait for it.
+                if selected.is_some() && !studio.script.selection_settled() {
                     return Err("请等待文案保存和选版操作完成。".into());
                 }
-                Some(
-                    studio
-                        .script
-                        .selected_binding()
-                        .ok_or("请先在文案工作区明确选择本次剪辑版本。")?,
-                )
+                selected
             } else {
                 None
             };
@@ -1631,12 +1633,29 @@ pub(crate) fn connect_from_ui() -> Result<(), String> {
     result
 }
 
+/// A desktop editor must not start Pi until the user actually starts using
+/// it. Manual cutting and playback allocate no agent runtime or model thread.
+/// Native probes and Android keep their existing initialization semantics.
+#[cfg(all(target_os = "windows", not(feature = "bk-cat-native-probe")))]
+pub(crate) fn start_for_window() {}
+
+/// An explicit draft edit or script-workspace visit is user intent to use AI.
+/// Do not silently retry after a stop, closed session, or failed connection.
+#[cfg(all(target_os = "windows", not(feature = "bk-cat-native-probe")))]
+pub(crate) fn activate_from_user_intent() {
+    let mut should_connect = false;
+    Shell::with(|shell, _| {
+        should_connect = shell.studio.borrow().session.is_some()
+            && shell.embedded.borrow().is_none()
+            && shell.agent_pane.borrow().error.is_empty();
+    });
+    if should_connect {
+        show_ui_error(connect_from_ui());
+    }
+}
+
 /// No API key, model provider or fee authorization is inferred by startup.
-#[cfg(any(
-    target_os = "windows",
-    target_os = "android",
-    feature = "bk-cat-native-probe"
-))]
+#[cfg(any(target_os = "android", feature = "bk-cat-native-probe"))]
 pub(crate) fn start_for_window() {
     // The welcome screen has no current project. Start the agent only after
     // the editor opens one; manual cutting never needs an idle AI component.

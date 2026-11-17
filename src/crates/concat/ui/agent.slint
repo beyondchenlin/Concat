@@ -70,7 +70,7 @@ export global AgentUi {
     in-out property <int> suggestion-index;
     in-out property <[string]> models;
     in-out property <int> model-index: -1;
-    in-out property <int> composer-mode;
+    in-out property <int> composer-mode: 1;
     callback draft-edited(text: string, cursor: int);
     callback cursor-moved(cursor: int);
     callback trigger-requested(marker: string);
@@ -199,10 +199,6 @@ export component AgentChat inherits Rectangle {
     function send-draft() {
         if AgentUi.attachment-pending || !AgentUi.status.can-send {
             root.send-help = true;
-        } else if AgentUi.composer-mode == 1 && ScriptUi.selected-label == "尚未选择剪辑版本" {
-            root.send-help = false;
-            AgentUi.script-picker = true;
-            ScriptUi.open-requested();
         } else {
             root.send-help = false;
             side-transcript.content-y = Math.min(0px, side-transcript.height - side-transcript.content-height);
