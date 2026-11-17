@@ -206,9 +206,6 @@ impl AgentPane {
         if !self.readiness.credentials_ready {
             missing.push("调用凭据");
         }
-        if !self.readiness.calls_authorized {
-            missing.push("调用授权");
-        }
         if !self.readiness.runtime_ready {
             missing.push("聊天功能就绪");
         }
@@ -362,17 +359,11 @@ impl AgentPane {
     /// Native UI-thread publication only. It does not touch conversation
     /// storage or the current project and is safe in read-only recovery.
     pub fn publish(&self, app: &App, owner: Result<OwnerStatus, String>) {
-        let can_authorize = owner
-            .as_ref()
-            .is_ok_and(|status| status.phase == Phase::Ready)
-            && self.readiness.runtime_ready
-            && self.readiness.credentials_ready
-            && !self.task.running
-            && !self.readiness.provider.is_empty()
-            && !self.readiness.model.is_empty();
         let call = app.global::<AgentCallUi>();
         call.set_allowed(self.readiness.calls_authorized);
-        call.set_can_authorize(can_authorize);
+        // Pressing Send now grants the current model request. The separate
+        // pre-send permission button is unnecessary; explicit revoke remains.
+        call.set_can_authorize(false);
         let ui = app.global::<AgentUi>();
         if ui.get_script_picker() {
             let count = app.global::<ScriptUi>().get_versions().row_count();
@@ -548,6 +539,7 @@ impl AgentPane {
         app.global::<AgentUi>().set_attachment_pending(true);
         app.global::<AgentUi>()
             .set_attachment_status("正在导入并引用素材…".into());
+        crate::agent::window::schedule_attachment_watch();
     }
 
     pub(crate) fn collect_attachments(&mut self, studio: &crate::studio::Studio, app: &App) {
@@ -1001,9 +993,8 @@ mod tests {
         let mut pane = configured();
         pane.readiness.credentials_ready = false;
         absent.push(pane);
-        let mut pane = configured();
-        pane.readiness.calls_authorized = false;
-        absent.push(pane);
+        // Sending a prompt is the explicit model-call authorization.
+        // The preceding UI should not require a separate permission click.
         absent.push(AgentPane::default());
         for pane in absent {
             let data = pane.data(owner(Phase::Ready));
@@ -1018,6 +1009,19 @@ mod tests {
             configured().validate_submission(owner(Phase::Ready), "  添加两段字幕  "),
             Ok("添加两段字幕".to_owned())
         );
+    }
+
+    #[test]
+    fn send_button_needs_no_separate_model_consent_click() {
+        let mut pane = configured();
+        pane.readiness.calls_authorized = false;
+        assert!(pane.data(owner(Phase::Ready)).can_send);
+        assert!(
+            pane.validate_submission(owner(Phase::Ready), "在当前工程添加字幕")
+                .is_ok()
+        );
+        // Native submit_from_ui must grant and recheck model authority before
+        // queueing a task. This rendering-only check is never its substitute.
     }
 
     #[test]

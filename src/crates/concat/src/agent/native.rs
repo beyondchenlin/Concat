@@ -120,6 +120,13 @@ impl Evidence {
             self.blocked_reason()
         }
     }
+
+    /// Opening a clean, already selected project admits its own conversation.
+    /// Interrupted tasks, unsettled edits, mismatched stores and absent projects
+    /// still require the existing explicit recovery path.
+    fn can_bind_without_recovery_prompt(&self) -> bool {
+        self.project.is_some() && !self.interrupted() && self.blocked_reason().is_none()
+    }
 }
 
 #[derive(Clone)]
@@ -560,6 +567,31 @@ impl NativeSession {
             .as_ref()
             .expect("snapshot was just installed")
             .value())
+    }
+
+    /// Worker-only convenience for a clean project the user already opened.
+    /// This grants no model fee permission, resumes no task and never relaxes
+    /// the full project/storage revalidation in `confirm`.
+    pub(crate) fn approve_clean_project(&self, snapshot_id: &str) -> Result<Option<Value>, String> {
+        let mut state = self.approval()?;
+        let snapshot = state
+            .snapshot
+            .as_ref()
+            .ok_or("native recovery evidence is missing")?;
+        if snapshot.id != snapshot_id {
+            return Err("native project evidence changed before clean open".into());
+        }
+        if !snapshot.evidence.can_bind_without_recovery_prompt() || state.pending.is_some() {
+            return Ok(None);
+        }
+        let approval = json!({
+            "snapshotId": snapshot_id,
+            "decision": "continue",
+            "approvalId": random_capability()?
+        });
+        state.pending = Some(approval.clone());
+        log::info!("bk-cat-agent-audit event=clean_project_bound_without_prompt");
+        Ok(Some(approval))
     }
 
     /// UI-only intent. It takes only the short approval lock; the worker will
@@ -1180,6 +1212,71 @@ mod tests {
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
         payload
+    }
+
+    #[test]
+    fn clean_open_project_binds_without_an_extra_click_or_model_authority() {
+        let fixture = Fixture::new();
+        let lease = fixture.acquire();
+        let snapshot = fixture.native.snapshot().unwrap();
+        let approval = fixture
+            .native
+            .approve_clean_project(snapshot["snapshotId"].as_str().unwrap())
+            .unwrap()
+            .expect("an already-open clean project is admissible");
+        let grant = fixture
+            .native
+            .handle(bound(
+                &lease,
+                "ownership.confirm",
+                json!({"snapshot":snapshot,"approval":approval}),
+            ))
+            .unwrap();
+        assert_eq!(fixture.bridge.status().unwrap().phase, Phase::Ready);
+        assert_eq!(grant["allowInitializeEmptyStore"], true);
+        assert!(grant.get("networkPermit").is_none());
+        assert!(
+            fixture
+                .native
+                .tasks
+                .network("unapproved-model-call")
+                .is_err()
+        );
+        fixture.native.shutdown().unwrap();
+    }
+
+    #[test]
+    fn missing_project_and_interrupted_work_still_require_explicit_recovery() {
+        let missing = Fixture::new();
+        *missing.project.lock().unwrap() = None;
+        missing.acquire();
+        let snapshot = missing.native.snapshot().unwrap();
+        assert!(
+            missing
+                .native
+                .approve_clean_project(snapshot["snapshotId"].as_str().unwrap())
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            missing.bridge.status().unwrap().phase,
+            Phase::RecoveryRequired
+        );
+        missing.native.shutdown().unwrap();
+
+        let interrupted = Fixture::with_bound_interrupted_task();
+        interrupted.native.shutdown().unwrap();
+        let (bridge, native, _lease) = interrupted.reopen();
+        let snapshot = native.snapshot().unwrap();
+        assert_eq!(snapshot["hasInterruptedWork"], true);
+        assert!(
+            native
+                .approve_clean_project(snapshot["snapshotId"].as_str().unwrap())
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(bridge.status().unwrap().phase, Phase::RecoveryRequired);
+        native.shutdown().unwrap();
     }
 
     #[test]

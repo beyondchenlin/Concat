@@ -260,6 +260,58 @@ impl Studio {
         }
     }
 
+    /// Audio-clock transport ticks never change clip, waveform or inspector
+    /// models. Paint the frame and playhead only, and rebuild clip models
+    /// when the visible window approaches the boundary of the cached span.
+    /// This avoids 8ms playback ticks repeatedly monopolising the UI thread.
+    pub fn publish_playback_tick(&self, app: &App, models: &Models) {
+        let editor = app.global::<Editor>();
+        editor.set_playhead(self.playhead);
+        editor.set_scroll_left(self.lanes.scroll_left);
+        editor.set_seconds_per_pixel(self.lanes.seconds_per_pixel);
+        editor.set_playing(self.playing);
+        self.publish_frame(app);
+
+        // The monitor label can change at a clip boundary without an edit.
+        // Locating the current picture is cheap; decoding new filmstrips is not.
+        let playhead = f64::from(self.playhead);
+        let showing = self
+            .timeline()
+            .clips
+            .iter()
+            .filter(|clip| {
+                (clip.kind.is_visual()
+                    || matches!(clip.kind, model::ClipKind::Text | model::ClipKind::Shape))
+                    && clip.start <= playhead
+                    && playhead < clip.start + clip.duration
+            })
+            .max_by_key(|clip| -self.row_of(&clip.track_id));
+        let source = self
+            .source
+            .as_ref()
+            .filter(|source| source.kind != model::MediaKind::Audio);
+        editor.set_has_picture(source.is_some() || showing.is_some());
+        editor.set_preview_clip_name(
+            source
+                .map(|source| source.name.as_str())
+                .or(showing.map(|clip| clip.name.as_str()))
+                .unwrap_or_default()
+                .into(),
+        );
+
+        if self.pinch_active {
+            return;
+        }
+        let screen = self.lanes.width * self.lanes.seconds_per_pixel;
+        if playback_view_requires_clip_refresh(
+            self.last_published_clip_span.get(),
+            self.lanes.scroll_left,
+            screen,
+        ) {
+            self.publish_lanes(app, models);
+        }
+    }
+
     /// The timeline and the readouts that follow it: what runs on every
     /// event of a scrub, a drag, a trim or a knob.
     pub fn publish_lanes(&self, app: &App, models: &Models) {
@@ -693,6 +745,7 @@ impl Studio {
         sync(&models.visual_wheels, wheel_groups);
         sync(&models.visual_curves, curve_groups);
         if let Some(started) = started {
+            self.last_published_clip_span.set(span);
             // Count the quiet interval from completion, not from the start:
             // a slow publish must not trigger another full rebuild instantly.
             self.last_view_published
@@ -706,5 +759,33 @@ impl Studio {
                 );
             }
         }
+    }
+}
+
+/// The published model covers an extra screen in each direction. Playback
+/// reuses it until the visible window enters the outer half-screen reserve.
+fn playback_view_requires_clip_refresh(cached: Option<(f32, f32)>, left: f32, screen: f32) -> bool {
+    if !(screen.is_finite() && screen > 0.0) {
+        return false;
+    }
+    if !left.is_finite() {
+        return true;
+    }
+    cached.is_none_or(|(from, to)| left - screen * 0.5 < from || left + screen * 1.5 > to)
+}
+
+#[cfg(test)]
+mod playback_view_tests {
+    use super::playback_view_requires_clip_refresh;
+
+    #[test]
+    fn transport_reuses_clip_models_until_the_view_reaches_the_buffer_edge() {
+        assert!(!playback_view_requires_clip_refresh(None, 0.0, 0.0));
+        assert!(playback_view_requires_clip_refresh(None, 0.0, 100.0));
+        let covered = Some((-100.0, 200.0));
+        assert!(!playback_view_requires_clip_refresh(covered, 0.0, 100.0));
+        assert!(!playback_view_requires_clip_refresh(covered, 49.0, 100.0));
+        assert!(playback_view_requires_clip_refresh(covered, 51.0, 100.0));
+        assert!(playback_view_requires_clip_refresh(covered, -51.0, 100.0));
     }
 }

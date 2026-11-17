@@ -13,6 +13,12 @@ use sha2::{Digest, Sha256};
 
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(180);
 
+// A tool worker pushes changes to the native editor instead of waking an
+// unconditional 250ms status timer during manual editing or playback.
+fn notify_native_ui() {
+    let _ = slint::invoke_from_event_loop(crate::agent::window::refresh_tool_permission);
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Mode {
     #[default]
@@ -103,6 +109,7 @@ impl NativeToolPermissions {
         }
         let previous = state.mode;
         state.mode = new_mode;
+        notify_native_ui();
         log::info!(
             "bk-cat-tool-audit event=permission_changed previous={} current={}",
             previous.index(),
@@ -123,6 +130,7 @@ impl NativeToolPermissions {
             return Err("本次剪辑操作已经作出决定。".into());
         }
         pending.decided = Some(approve);
+        notify_native_ui();
         log::info!(
             "bk-cat-tool-audit event=user_decision fingerprint={} conversation={} call_id={} granted={}",
             pending.fingerprint,
@@ -139,6 +147,7 @@ impl NativeToolPermissions {
             state.stopped = true;
             state.pending = None;
             self.wake.notify_all();
+            notify_native_ui();
         }
     }
 
@@ -194,6 +203,7 @@ impl NativeToolPermissions {
             affected_clip_ids,
             decided: None,
         });
+        notify_native_ui();
         log::info!(
             "bk-cat-tool-audit event=approval_requested mode={} conversation={} call_id={}",
             state.mode.index(),
@@ -204,10 +214,12 @@ impl NativeToolPermissions {
         loop {
             if state.stopped {
                 state.pending = None;
+                notify_native_ui();
                 return Err("用户已停止剪辑工具操作。".into());
             }
             if let Some(granted) = state.pending.as_ref().and_then(|pending| pending.decided) {
                 state.pending = None;
+                notify_native_ui();
                 return if granted {
                     Ok(())
                 } else {
@@ -217,6 +229,7 @@ impl NativeToolPermissions {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 state.pending = None;
+                notify_native_ui();
                 log::info!(
                     "bk-cat-tool-audit event=approval_timeout conversation={} call_id={}",
                     invocation.conversation_id,
