@@ -191,12 +191,29 @@ impl Studio {
             .set_preview_frame(self.monitor.image.clone());
     }
 
-    /// Pinch changes only the viewport; hold costly waveform/clip regeneration
-    /// until the fingers leave the screen. Existing editing publishes are untouched.
+    /// A pinch changes only the viewport while fingers are moving. Refresh
+    /// costly clip/waveform models after release, allowing the last live scale
+    /// to paint before doing potentially slow media work on the UI thread.
     pub fn set_pinch_active(&mut self, active: bool) {
         if cfg!(target_os = "android") {
             self.pinch_active = active;
             self.view_publish_timer.stop();
+            if !active {
+                // Reuse the owned cancellable timer: another pinch cancels a
+                // pending rebuild rather than racing a stale full publish.
+                self.view_publish_timer.start(
+                    slint::TimerMode::SingleShot,
+                    std::time::Duration::from_millis(48),
+                    || {
+                        crate::host::Shell::with(|shell, app| {
+                            let studio = shell.studio.borrow();
+                            if !studio.pinch_active {
+                                studio.publish_lanes(&app, &shell.models);
+                            }
+                        });
+                    },
+                );
+            }
         }
     }
 

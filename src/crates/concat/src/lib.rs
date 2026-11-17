@@ -1229,10 +1229,12 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     editor.on_scrubbed(on_lanes_scrub!(|state, seconds: f32| {
         state.scrub(seconds);
     }));
-    editor.on_finger_held(on_lanes!(|state| {
+    // Finger state only controls inertial scrolling; it does not edit clips.
+    // Avoid an expensive full timeline publish when a pinch first lands.
+    editor.on_finger_held(on_lanes_view!(|state| {
         state.finger_held();
     }));
-    editor.on_finger_lifted(on_lanes!(|state| {
+    editor.on_finger_lifted(on_lanes_view!(|state| {
         state.finger_lifted();
     }));
     editor.on_scrolled(on_lanes_view!(|state, seconds: f32| {
@@ -1242,12 +1244,8 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         state.handle(Msg::Timeline(TimelineMsg::Zoomed { factor, anchor }));
     }));
     editor.on_pinch_active(|active: bool| {
-        Shell::with(|shell, app| {
-            let mut studio = shell.studio.borrow_mut();
-            studio.set_pinch_active(active);
-            if !active {
-                studio.publish_lanes(&app, &shell.models);
-            }
+        Shell::with(|shell, _app| {
+            shell.studio.borrow_mut().set_pinch_active(active);
         });
     });
     editor.on_zoom_to_fit(on_lanes_view!(|state, width: f32| {

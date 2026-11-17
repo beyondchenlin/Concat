@@ -1570,22 +1570,9 @@ export component Lanes inherits Rectangle {
     // clip or the floor still has the first finger until the second lands.
     pinch := ScaleRotateGestureHandler {
         property <float> last-scale: 1;
-        property <float> pending-scale: 1;
-        property <length> pending-center-x;
-        property <bool> pending;
-
-        function apply-pending() {
-            if (self.pending && self.pending-scale > 0 && self.last-scale > 0) {
-                self.pending = false;
-                root.zoomed(self.last-scale / self.pending-scale,
-                    root.seconds-at(self.pending-center-x));
-                self.last-scale = self.pending-scale;
-            }
-        }
 
         started => {
             self.last-scale = 1;
-            self.pending = false;
             if (root.finger) {
                 root.pinch-active(true);
                 root.finger-held();
@@ -1593,36 +1580,23 @@ export component Lanes inherits Rectangle {
         }
         updated => {
             if (self.scale > 0 && self.last-scale > 0) {
-                if (root.finger) {
-                    // A phone can report several touch updates in one frame.
-                    // Retain the newest absolute scale; paint at 30 Hz at most.
-                    self.pending-scale = self.scale;
-                    self.pending-center-x = self.center.x;
-                    self.pending = true;
-                } else {
-                    root.zoomed(self.last-scale / self.scale, root.seconds-at(self.center.x));
-                    self.last-scale = self.scale;
-                }
+                // Match the upstream gesture: publish each incremental scale
+                // immediately. The Android native handler updates only the
+                // viewport here; expensive clip models wait until release.
+                root.zoomed(self.last-scale / self.scale, root.seconds-at(self.center.x));
+                self.last-scale = self.scale;
             }
         }
         ended => {
             if (root.finger) {
-                self.apply-pending();
                 root.pinch-active(false);
             }
         }
         cancelled => {
             if (root.finger) {
-                self.apply-pending();
                 root.pinch-active(false);
             }
         }
-    }
-
-    pinch-tick := Timer {
-        interval: 32ms;
-        running: root.finger && pinch.pending;
-        triggered => { pinch.apply-pending(); }
     }
 
     // Ancestor of everything below, so a wheel the clips do not handle bubbles
