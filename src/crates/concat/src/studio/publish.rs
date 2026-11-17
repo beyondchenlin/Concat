@@ -233,8 +233,6 @@ impl Studio {
     pub fn publish_lanes(&self, app: &App, models: &Models) {
         let started = cfg!(target_os = "android").then(std::time::Instant::now);
         if cfg!(target_os = "android") {
-            self.last_view_published
-                .set(Some(std::time::Instant::now()));
             self.view_publish_timer.stop();
         }
         let editor = app.global::<Editor>();
@@ -663,6 +661,10 @@ impl Studio {
         sync(&models.visual_wheels, wheel_groups);
         sync(&models.visual_curves, curve_groups);
         if let Some(started) = started {
+            // Count the quiet interval from completion, not from the start:
+            // a slow publish must not trigger another full rebuild instantly.
+            self.last_view_published
+                .set(Some(std::time::Instant::now()));
             let elapsed = started.elapsed();
             if elapsed >= std::time::Duration::from_millis(32) {
                 log::warn!(

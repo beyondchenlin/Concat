@@ -406,6 +406,9 @@ fn describe_one_edit(item: &Value) -> Result<Vec<String>, String> {
                     let start = base + approval_time(entry, "start")?;
                     if is_text {
                         let duration = approval_time(entry, "duration")?;
+                        if duration <= 0.0 || !(start + duration).is_finite() {
+                            return Err("模板文字片段时间范围无效，拒绝执行。".into());
+                        }
                         rows.push(format!(
                             "{role} → 新轨道，时间 {start:.3}～{end:.3} 秒；{}",
                             approval_text(entry)?,
@@ -415,6 +418,9 @@ fn describe_one_edit(item: &Value) -> Result<Vec<String>, String> {
                         let media = approval_id(entry, "mediaId")?;
                         let from = approval_time(entry, "sourceStart")?;
                         let to = approval_time(entry, "sourceEnd")?;
+                        if to <= from || !(start + to - from).is_finite() {
+                            return Err("模板素材时间范围无效，拒绝执行。".into());
+                        }
                         rows.push(format!(
                             "{role}素材 {media} → 新轨道，时间 {start:.3}～{end:.3} 秒；取素材 {from:.3}～{to:.3} 秒",
                             end = start + to - from
@@ -672,6 +678,15 @@ mod tests {
         }});
         assert!(gate.admit(&malformed, Some(&original())).is_err());
         assert!(gate.admit(&frame("addTextClip"), None).is_err());
+        let mut invalid_template = frame("applySingleMainTemplate");
+        invalid_template["params"]["arguments"]["command"] = serde_json::json!({
+            "op":"applySingleMainTemplate","plan":{
+                "start":0.0,"videos":[{"mediaId":"m1","start":0.0,
+                    "sourceStart":4.0,"sourceEnd":2.0}],
+                "subtitles":[],"overlays":[],"music":[],"voice":[]
+            }
+        });
+        assert!(describe_edit(&invalid_template).is_err());
         assert!(gate.view().unwrap().pending_summary.is_none());
     }
 }
