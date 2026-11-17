@@ -1241,6 +1241,15 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     editor.on_zoom(on_lanes_view!(|state, factor: f32, anchor: f32| {
         state.handle(Msg::Timeline(TimelineMsg::Zoomed { factor, anchor }));
     }));
+    editor.on_pinch_active(|active: bool| {
+        Shell::with(|shell, app| {
+            let mut studio = shell.studio.borrow_mut();
+            studio.set_pinch_active(active);
+            if !active {
+                studio.publish_lanes(&app, &shell.models);
+            }
+        });
+    });
     editor.on_zoom_to_fit(on_lanes_view!(|state, width: f32| {
         state.handle(Msg::Timeline(TimelineMsg::ZoomToFit(width)));
     }));

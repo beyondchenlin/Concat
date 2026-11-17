@@ -191,11 +191,21 @@ impl Studio {
             .set_preview_frame(self.monitor.image.clone());
     }
 
+    /// Pinch changes only the viewport; hold costly waveform/clip regeneration
+    /// until the fingers leave the screen. Existing editing publishes are untouched.
+    pub fn set_pinch_active(&mut self, active: bool) {
+        if cfg!(target_os = "android") {
+            self.pinch_active = active;
+            self.view_publish_timer.stop();
+        }
+    }
+
     /// High-frequency phone gestures must move the scale, scroll position
     /// and playhead at pointer speed. Rebuilding hundreds of waveform paths,
     /// filmstrips and inspector models on *every* touch event caused jank and
     /// large transient allocations. Publish the heavyweight models at most
-    /// every 64ms, and always flush once after the final gesture event.
+    /// every 64ms for ordinary view changes. A pinch defers those expensive
+    /// models until release; the newest absolute scale is never dropped.
     /// Desktop retains its original full-publish semantics.
     pub fn publish_lanes_view(&self, app: &App, models: &Models) {
         if !cfg!(target_os = "android") {
@@ -206,6 +216,11 @@ impl Studio {
         editor.set_scroll_left(self.lanes.scroll_left);
         editor.set_seconds_per_pixel(self.lanes.seconds_per_pixel);
         editor.set_playhead(self.playhead);
+        if self.pinch_active {
+            // The old clip and wave models transform with the live viewport.
+            // Rebuild once on pinch end, instead of allocating on every tick.
+            return;
+        }
         self.publish_frame(app);
 
         const INTERVAL: std::time::Duration = std::time::Duration::from_millis(64);
