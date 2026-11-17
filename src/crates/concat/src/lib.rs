@@ -794,7 +794,12 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     // Pure viewport changes never change source clips or their artwork.
     // Skip the full media-art scan on every pinch/scroll/resize tick.
     macro_rules! on_lanes_view {
-        ($($handler:tt)*) => { handler!(publish_lanes, false, $($handler)*) };
+        ($($handler:tt)*) => { handler!(publish_lanes_view, false, $($handler)*) };
+    }
+    // Android scrubs also arrive once per finger move: skip full art scanning
+    // and throttle model regeneration. Desktop retains its existing path.
+    macro_rules! on_lanes_scrub {
+        ($($handler:tt)*) => { handler!(publish_lanes_view, !cfg!(target_os = "android"), $($handler)*) };
     }
     // A dock change is remembered for the next launch, too.
     macro_rules! on_dock {
@@ -1221,7 +1226,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     editor.on_key_mark_moved(on_lanes!(|state, from: f32, to: f32| {
         state.move_keys_at(from, to);
     }));
-    editor.on_scrubbed(on_lanes!(|state, seconds: f32| {
+    editor.on_scrubbed(on_lanes_scrub!(|state, seconds: f32| {
         state.scrub(seconds);
     }));
     editor.on_finger_held(on_lanes!(|state| {

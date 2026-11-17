@@ -191,9 +191,52 @@ impl Studio {
             .set_preview_frame(self.monitor.image.clone());
     }
 
+    /// High-frequency phone gestures must move the scale, scroll position
+    /// and playhead at pointer speed. Rebuilding hundreds of waveform paths,
+    /// filmstrips and inspector models on *every* touch event caused jank and
+    /// large transient allocations. Publish the heavyweight models at most
+    /// every 64ms, and always flush once after the final gesture event.
+    /// Desktop retains its original full-publish semantics.
+    pub fn publish_lanes_view(&self, app: &App, models: &Models) {
+        if !cfg!(target_os = "android") {
+            self.publish_lanes(app, models);
+            return;
+        }
+        let editor = app.global::<Editor>();
+        editor.set_scroll_left(self.lanes.scroll_left);
+        editor.set_seconds_per_pixel(self.lanes.seconds_per_pixel);
+        editor.set_playhead(self.playhead);
+        self.publish_frame(app);
+
+        const INTERVAL: std::time::Duration = std::time::Duration::from_millis(64);
+        let elapsed = self
+            .last_view_published
+            .get()
+            .map(|last| last.elapsed())
+            .unwrap_or(INTERVAL);
+        if elapsed >= INTERVAL {
+            self.publish_lanes(app, models);
+        } else {
+            // The timer is owned by the Studio: restarting schedules the
+            // latest complete view, with no unbounded callback backlog.
+            self.view_publish_timer
+                .start(slint::TimerMode::SingleShot, INTERVAL - elapsed, || {
+                    crate::host::Shell::with(|shell, app| {
+                        shell.studio.borrow().publish_lanes(&app, &shell.models);
+                    });
+                });
+        }
+    }
+
     /// The timeline and the readouts that follow it: what runs on every
     /// event of a scrub, a drag, a trim or a knob.
     pub fn publish_lanes(&self, app: &App, models: &Models) {
+        let started = cfg!(target_os = "android").then(std::time::Instant::now);
+        if cfg!(target_os = "android") {
+            self.last_view_published
+                .set(Some(std::time::Instant::now()));
+            self.view_publish_timer.stop();
+        }
         let editor = app.global::<Editor>();
         let project = self.project();
         sync(
@@ -619,5 +662,15 @@ impl Studio {
         }
         sync(&models.visual_wheels, wheel_groups);
         sync(&models.visual_curves, curve_groups);
+        if let Some(started) = started {
+            let elapsed = started.elapsed();
+            if elapsed >= std::time::Duration::from_millis(32) {
+                log::warn!(
+                    "bk-cat-perf event=timeline_publish duration_ms={} visible_clips={}",
+                    elapsed.as_millis(),
+                    models.clips.row_count()
+                );
+            }
+        }
     }
 }

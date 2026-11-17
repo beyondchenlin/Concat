@@ -80,8 +80,35 @@ pub(crate) fn install(app: &App) -> slint::Timer {
                     approval_ui.set_tool_mode(permission.mode);
                     approval_ui.set_tool_connected(ready);
                     approval_ui.set_tool_pending(pending);
-                    approval_ui
-                        .set_tool_summary(permission.pending_summary.unwrap_or_default().into());
+                    let mut summary = permission.pending_summary.unwrap_or_default();
+                    if pending && !permission.pending_clip_ids.is_empty() {
+                        summary.push_str("\n当前工程中已有片段（批准前核对）：");
+                        let studio = shell.studio.borrow();
+                        for id in &permission.pending_clip_ids {
+                            if let Some(clip) = studio.clip(id) {
+                                let name: String = clip
+                                    .name
+                                    .chars()
+                                    .filter(|ch| !ch.is_control())
+                                    .take(48)
+                                    .collect();
+                                summary.push_str(&format!(
+                                    "\n• 片段 {}「{}」：当前轨道 {}，当前时间 {:.3}～{:.3} 秒",
+                                    id,
+                                    name,
+                                    clip.track_id,
+                                    clip.start,
+                                    clip.start + clip.duration
+                                ));
+                            } else {
+                                summary.push_str(&format!(
+                                    "\n• 片段 {}：当前工程中找不到，编辑器将拒绝无效目标。",
+                                    id
+                                ));
+                            }
+                        }
+                    }
+                    approval_ui.set_tool_summary(summary.into());
                     if pending {
                         let chat = app.global::<AgentUi>();
                         chat.set_view(ui::AgentView::Chat);
