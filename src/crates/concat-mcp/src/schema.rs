@@ -481,7 +481,24 @@ mod tests {
     #[test]
     fn the_embedded_list_contains_only_one_edit_vocabulary() {
         let list = crate::tools::Toolbox::embedded().list();
-        assert_eq!(list.len(), 4);
+        assert_eq!(list.len(), 6);
+        let names: std::collections::BTreeSet<&str> = list
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "concat_version",
+                "project_get",
+                "timeline_read",
+                "effects_list",
+                "template_list",
+                "edit_apply_guarded"
+            ]
+            .into_iter()
+            .collect()
+        );
         let total: usize = list.iter().map(|tool| tool.to_string().len()).sum();
         assert!(total < 80_000, "embedded tool context: {total} bytes");
         assert_eq!(

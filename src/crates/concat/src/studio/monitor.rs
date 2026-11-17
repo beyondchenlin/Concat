@@ -373,8 +373,17 @@ impl Studio {
             || {
                 crate::host::Shell::with(|shell, app| {
                     shell.studio.borrow_mut().glide_step();
-                    shell.studio.borrow_mut().refresh_art();
-                    shell.studio.borrow().publish_lanes(&app, &shell.models);
+                    if cfg!(target_os = "android") {
+                        // A phone glide ticks every 16ms. Keep its position
+                        // responsive, but coalesce artwork/model regeneration.
+                        shell
+                            .studio
+                            .borrow()
+                            .publish_lanes_view(&app, &shell.models);
+                    } else {
+                        shell.studio.borrow_mut().refresh_art();
+                        shell.studio.borrow().publish_lanes(&app, &shell.models);
+                    }
                 });
             },
         );

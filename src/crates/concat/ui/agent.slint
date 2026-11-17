@@ -55,6 +55,8 @@ export global AgentUi {
     in-out property <AgentView> view: AgentView.chat;
     /// Desktop only: hiding the sidebar does not stop or reset a task.
     in-out property <bool> sidebar-open: true;
+    // Only the assistant rail is resizable; the original editor dock is unchanged.
+    in-out property <length> sidebar-width: 340px;
     in-out property <string> draft;
     in-out property <int> draft-cursor;
     in-out property <bool> script-picker;
@@ -104,6 +106,13 @@ export global AgentUi {
     callback continue-requested();
     callback discard-requested();
     callback connect-requested();
+    // The native session owns these values; the page cannot set authority.
+    in property <int> tool-mode: 0;
+    in property <bool> tool-connected: false;
+    in property <bool> tool-pending: false;
+    in property <string> tool-summary;
+    callback tool-mode-requested(index: int);
+    callback tool-decision-requested(approve: bool);
 }
 
 /// The same three destinations on a desk and a phone. The full original
@@ -179,6 +188,12 @@ export component AgentChat inherits Rectangle {
     background: Theme.panel;
     border-radius: Theme.r-lg;
     private property <bool> send-help;
+    // Full access remains unchanged until the person explicitly confirms it.
+    private property <bool> confirm-full-access;
+    // Select commits its own current index; resynchronise when the native
+    // permission owner replies, including after explicit Full confirmation.
+    private property <int> native-permission-mode: AgentUi.tool-mode;
+    changed native-permission-mode => { permission-picker.current = self.native-permission-mode; }
     private property <bool> helping: root.send-help && AgentUi.draft != "" && !AgentUi.status.busy;
 
     function send-draft() {
@@ -368,6 +383,75 @@ export component AgentChat inherits Rectangle {
                 if AgentCallUi.allowed && !AgentUi.status.can-send: Button { label: "撤回授权"; clicked => { AgentCallUi.authorize-requested(); } }
             }
         }
+        // A guarded edit is approved beside the prompt, where it is read.
+        // A long batch can be inspected by scrolling its complete plan.
+        if AgentUi.tool-pending: Rectangle {
+            min-height: approval-layout.preferred-height;
+            border-radius: Theme.r;
+            background: Theme.well;
+            border-width: 1px;
+            border-color: Theme.accent;
+            approval-layout := VerticalLayout {
+                padding: 8px; spacing: 6px;
+                Text {
+                    text: "批准当前工程的剪辑操作？";
+                    color: Theme.fg; font-size: Theme.fs;
+                    font-weight: Theme.weight-title;
+                }
+                Flickable {
+                    height: Math.min(156px, approval-summary.preferred-height);
+                    content-width: self.width;
+                    content-height: approval-summary.preferred-height;
+                    approval-summary := Text {
+                        width: parent.width;
+                        height: self.preferred-height;
+                        text: AgentUi.tool-summary;
+                        color: Theme.fg-muted;
+                        font-size: Theme.fs-sm;
+                        wrap: word-wrap;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    Button { label: "拒绝"; ghost: true; clicked => { AgentUi.tool-decision-requested(false); } }
+                    Button { label: "批准本次"; clicked => { AgentUi.tool-decision-requested(true); } }
+                }
+            }
+        }
+        if root.confirm-full-access: Rectangle {
+            min-height: full-warning-layout.preferred-height;
+            border-radius: Theme.r;
+            background: Theme.well;
+            border-width: 1px;
+            border-color: Theme.danger;
+            full-warning-layout := VerticalLayout {
+                padding: 8px; spacing: 6px;
+                Text {
+                    text: "确认开启完全访问权限？";
+                    color: Theme.danger; font-size: Theme.fs;
+                    font-weight: Theme.weight-title;
+                }
+                Text {
+                    text: "本会话将自动执行当前工程内通过原生校验的剪辑写操作，包括移动、删除和批量修改，不再逐项询问。仍受当前工程和任务权限限制；不等于访问电脑全部文件或网络。";
+                    color: Theme.fg; font-size: Theme.fs-sm; wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    Button {
+                        label: "取消"; ghost: true;
+                        clicked => { root.confirm-full-access = false; permission-picker.current = AgentUi.tool-mode; }
+                    }
+                    Button {
+                        label: "确认开启"; primary: true;
+                        enabled: AgentUi.tool-connected && !AgentUi.tool-pending;
+                        clicked => {
+                            root.confirm-full-access = false;
+                            AgentUi.tool-mode-requested(2);
+                        }
+                    }
+                }
+            }
+        }
         composer := Rectangle {
             min-height: composer-layout.preferred-height; max-height: composer-layout.preferred-height;
             background: Theme.well; border-radius: Theme.r; border-width: 1px;
@@ -445,6 +529,41 @@ export component AgentChat inherits Rectangle {
                         enabled: AgentUi.draft != "";
                         clicked => { root.send-draft(); }
                     }
+                }
+                // Like the conversation composer, the session permission is
+                // always visible beside the prompt, not detached above chat.
+                HorizontalLayout {
+                    height: 30px; spacing: 6px; alignment: center;
+                    Text { text: "操作权限"; color: Theme.fg-muted; font-size: Theme.fs-sm; }
+                    permission-picker := Select {
+                        options: ["请求批准", "帮我批准", "完全访问权限"];
+                        details: ["每次剪辑写入前询问", "仅安全新增自动通过，其他操作询问", "当前工程内自动执行，不再逐次询问"];
+                        current: AgentUi.tool-mode;
+                        enabled: AgentUi.tool-connected && !AgentUi.tool-pending && !root.confirm-full-access;
+                        flat: true; snug: true; min-width: 80px; max-width: 138px;
+                        horizontal-stretch: 0;
+                        changed(index) => {
+                            if (index == 2 && AgentUi.tool-mode != 2) {
+                                // The dropdown never grants Full by itself.
+                                self.current = AgentUi.tool-mode;
+                                root.confirm-full-access = true;
+                            } else {
+                                root.confirm-full-access = false;
+                                AgentUi.tool-mode-requested(index);
+                            }
+                        }
+                    }
+                    if AgentUi.tool-mode == 2: Text {
+                        text: "完全访问已开启 · 仅限当前工程";
+                        color: Theme.danger; font-size: Theme.fs-sm;
+                        overflow: elide; horizontal-stretch: 1;
+                    }
+                    if !AgentUi.tool-connected: Text {
+                        text: "连接会话后可切换";
+                        color: Theme.fg-dim; font-size: Theme.fs-sm;
+                        overflow: elide; horizontal-stretch: 1;
+                    }
+                    Rectangle { horizontal-stretch: 1; }
                 }
             }
         }

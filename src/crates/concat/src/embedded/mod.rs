@@ -1026,6 +1026,7 @@ impl EmbeddedRuntime {
         // Native execution loses authority synchronously, before any page or
         // database cleanup. A late JavaScript callback cannot keep it alive.
         self.bridge.stop();
+        self.native.tool_approval.cancel();
         self.native.tasks.cancel();
         let first = !self.revoked.swap(true, Ordering::AcqRel);
         if let Ok(mut accepted) = self.accepted_submission.lock() {
@@ -1048,6 +1049,26 @@ impl EmbeddedRuntime {
             deliver_generation(generation, Err("文案生成已停止，未覆盖手稿。".into()));
         }
         self.publish();
+    }
+
+    pub(crate) fn tool_permission_view(
+        &self,
+    ) -> Result<crate::agent::tool_approval::PermissionView, String> {
+        self.native.tool_approval.view()
+    }
+
+    pub(crate) fn set_tool_mode_from_ui(&self, index: i32) -> Result<(), String> {
+        if self.revoked.load(Ordering::Acquire) || self.view().phase != "ready" {
+            return Err("请先连接并核对智能体会话，再修改操作权限。".into());
+        }
+        self.native.tool_approval.set_mode_from_ui(index)
+    }
+
+    pub(crate) fn decide_tool_from_ui(&self, approve: bool) -> Result<(), String> {
+        if self.revoked.load(Ordering::Acquire) || self.view().phase != "ready" {
+            return Err("当前会话未就绪，不能批准剪辑。".into());
+        }
+        self.native.tool_approval.decide_from_ui(approve)
     }
 
     pub(crate) fn stop(&self) {
@@ -1099,6 +1120,7 @@ impl EmbeddedRuntime {
 impl Drop for EmbeddedRuntime {
     fn drop(&mut self) {
         self.bridge.stop();
+        self.native.tool_approval.cancel();
         self.native.tasks.cancel();
         if let Ok(platform) = self.platform.lock()
             && let Some(platform) = platform.as_ref()
@@ -1209,6 +1231,28 @@ pub(crate) fn authorize_call_from_ui() {
                 .and_then(|bridge| bridge.status()),
         );
     });
+}
+
+/// Only a trusted Slint window callback calls these; the web component never
+/// receives a port to set modes or resolve approvals.
+pub(crate) fn set_tool_mode_from_ui(index: i32) -> Result<(), String> {
+    let mut result = Err("聊天运行组件尚未连接。".to_owned());
+    Shell::with(|shell, _| {
+        if let Some(runtime) = shell.embedded.borrow().as_ref() {
+            result = runtime.set_tool_mode_from_ui(index);
+        }
+    });
+    result
+}
+
+pub(crate) fn decide_tool_from_ui(approve: bool) -> Result<(), String> {
+    let mut result = Err("聊天运行组件尚未连接。".to_owned());
+    Shell::with(|shell, _| {
+        if let Some(runtime) = shell.embedded.borrow().as_ref() {
+            result = runtime.decide_tool_from_ui(approve);
+        }
+    });
+    result
 }
 
 pub(crate) fn submit_chat_from_ui(input: String, edit: bool) -> Result<(), String> {

@@ -766,7 +766,10 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     // before until the next event republished it: Generate captions from a
     // clip's menu opened the sheet only at the next click (#433).
     macro_rules! handler {
-        ($publish:ident, |$state:ident $(, $arg:ident : $ty:ty)*| $body:block) => {{
+        ($publish:ident, |$state:ident $(, $arg:ident : $ty:ty)*| $body:block) => {
+            handler!($publish, true, |$state $(, $arg : $ty)*| $body)
+        };
+        ($publish:ident, $refresh_art:expr, |$state:ident $(, $arg:ident : $ty:ty)*| $body:block) => {{
             move |$($arg : $ty),*| {
                 Shell::with(|shell, app| {
                     {
@@ -774,7 +777,9 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
                         #[allow(clippy::redundant_closure_call)]
                         (|| $body)();
                     }
-                    shell.studio.borrow_mut().refresh_art();
+                    if $refresh_art {
+                        shell.studio.borrow_mut().refresh_art();
+                    }
                     shell.studio.borrow().$publish(&app, &shell.models);
                 });
             }
@@ -785,6 +790,16 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     }
     macro_rules! on_lanes {
         ($($handler:tt)*) => { handler!(publish_lanes, $($handler)*) };
+    }
+    // Pure viewport changes never change source clips or their artwork.
+    // Skip the full media-art scan on every pinch/scroll/resize tick.
+    macro_rules! on_lanes_view {
+        ($($handler:tt)*) => { handler!(publish_lanes_view, false, $($handler)*) };
+    }
+    // Android scrubs also arrive once per finger move: skip full art scanning
+    // and throttle model regeneration. Desktop retains its existing path.
+    macro_rules! on_lanes_scrub {
+        ($($handler:tt)*) => { handler!(publish_lanes_view, !cfg!(target_os = "android"), $($handler)*) };
     }
     // A dock change is remembered for the next launch, too.
     macro_rules! on_dock {
@@ -1211,25 +1226,32 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     editor.on_key_mark_moved(on_lanes!(|state, from: f32, to: f32| {
         state.move_keys_at(from, to);
     }));
-    editor.on_scrubbed(on_lanes!(|state, seconds: f32| {
+    editor.on_scrubbed(on_lanes_scrub!(|state, seconds: f32| {
         state.scrub(seconds);
     }));
-    editor.on_finger_held(on_lanes!(|state| {
+    // Finger state only controls inertial scrolling; it does not edit clips.
+    // Avoid an expensive full timeline publish when a pinch first lands.
+    editor.on_finger_held(on_lanes_view!(|state| {
         state.finger_held();
     }));
-    editor.on_finger_lifted(on_lanes!(|state| {
+    editor.on_finger_lifted(on_lanes_view!(|state| {
         state.finger_lifted();
     }));
-    editor.on_scrolled(on_lanes!(|state, seconds: f32| {
+    editor.on_scrolled(on_lanes_view!(|state, seconds: f32| {
         state.handle(Msg::Timeline(TimelineMsg::Scrolled(seconds)));
     }));
-    editor.on_zoom(on_lanes!(|state, factor: f32, anchor: f32| {
+    editor.on_zoom(on_lanes_view!(|state, factor: f32, anchor: f32| {
         state.handle(Msg::Timeline(TimelineMsg::Zoomed { factor, anchor }));
     }));
-    editor.on_zoom_to_fit(on_lanes!(|state, width: f32| {
+    editor.on_pinch_active(|active: bool| {
+        Shell::with(|shell, _app| {
+            shell.studio.borrow_mut().set_pinch_active(active);
+        });
+    });
+    editor.on_zoom_to_fit(on_lanes_view!(|state, width: f32| {
         state.handle(Msg::Timeline(TimelineMsg::ZoomToFit(width)));
     }));
-    editor.on_lanes_resized(on_lanes!(|state, width: f32| {
+    editor.on_lanes_resized(on_lanes_view!(|state, width: f32| {
         state.handle(Msg::Timeline(TimelineMsg::Resized(width)));
     }));
 

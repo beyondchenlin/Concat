@@ -27,6 +27,13 @@ pub(crate) fn install(app: &App) -> slint::Timer {
     agent_ui.on_stop_requested(embedded::stop_from_ui);
     app.global::<ui::AgentCallUi>()
         .on_authorize_requested(embedded::authorize_call_from_ui);
+    app.global::<AgentUi>().on_tool_mode_requested(|index| {
+        embedded::show_ui_error(embedded::set_tool_mode_from_ui(index));
+    });
+    app.global::<AgentUi>()
+        .on_tool_decision_requested(|approve| {
+            embedded::show_ui_error(embedded::decide_tool_from_ui(approve));
+        });
     agent_ui.on_review_requested(|| {
         let mut result = Err("聊天运行组件尚未连接。".to_owned());
         Shell::with(|shell, _| {
@@ -61,6 +68,58 @@ pub(crate) fn install(app: &App) -> slint::Timer {
         std::time::Duration::from_millis(250),
         || {
             Shell::with(|shell, app| {
+                let approval_ui = app.global::<AgentUi>();
+                let permission = shell.embedded.borrow().as_ref().map(|runtime| {
+                    (
+                        runtime.view().phase == "ready",
+                        runtime.tool_permission_view(),
+                    )
+                });
+                if let Some((ready, Ok(permission))) = permission {
+                    let pending = permission.pending_summary.is_some();
+                    approval_ui.set_tool_mode(permission.mode);
+                    approval_ui.set_tool_connected(ready);
+                    approval_ui.set_tool_pending(pending);
+                    let mut summary = permission.pending_summary.unwrap_or_default();
+                    if pending && !permission.pending_clip_ids.is_empty() {
+                        summary.push_str("\n当前工程中已有片段（批准前核对）：");
+                        let studio = shell.studio.borrow();
+                        for id in &permission.pending_clip_ids {
+                            if let Some(clip) = studio.clip(id) {
+                                let name: String = clip
+                                    .name
+                                    .chars()
+                                    .filter(|ch| !ch.is_control())
+                                    .take(48)
+                                    .collect();
+                                summary.push_str(&format!(
+                                    "\n• 片段 {}「{}」：当前轨道 {}，当前时间 {:.3}～{:.3} 秒",
+                                    id,
+                                    name,
+                                    clip.track_id,
+                                    clip.start,
+                                    clip.start + clip.duration
+                                ));
+                            } else {
+                                summary.push_str(&format!(
+                                    "\n• 片段 {}：当前工程中找不到，编辑器将拒绝无效目标。",
+                                    id
+                                ));
+                            }
+                        }
+                    }
+                    approval_ui.set_tool_summary(summary.into());
+                    if pending {
+                        let chat = app.global::<AgentUi>();
+                        chat.set_view(ui::AgentView::Chat);
+                        chat.set_sidebar_open(true);
+                    }
+                } else {
+                    approval_ui.set_tool_mode(0);
+                    approval_ui.set_tool_connected(false);
+                    approval_ui.set_tool_pending(false);
+                    approval_ui.set_tool_summary("".into());
+                }
                 if let Some(runtime) = shell.embedded.borrow().as_ref() {
                     runtime.poll_saved();
                 }
