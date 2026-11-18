@@ -862,6 +862,109 @@ fn enforces_event_and_response_bounds_and_cancels_backpressured_stream() {
 }
 
 #[test]
+fn admits_all_reviewed_native_tools_without_admitting_extra_tools() {
+    const NAMES: [&str; 6] = [
+        "concat_version",
+        "project_get",
+        "timeline_read",
+        "effects_list",
+        "template_list",
+        "edit_apply_guarded",
+    ];
+    for protocol in [
+        ModelProtocol::OpenAiCompletions,
+        ModelProtocol::OpenAiResponses,
+        ModelProtocol::AnthropicMessages,
+    ] {
+        let listener = listener();
+        let fixture = Fixture::new(&listener, protocol);
+        let tools = |names: &[&str]| -> Value {
+            Value::Array(
+                names
+                    .iter()
+                    .map(|name| match protocol {
+                        ModelProtocol::OpenAiCompletions => json!({
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "description": "Reviewed native tool",
+                                "parameters": {"type": "object", "properties": {}}
+                            }
+                        }),
+                        ModelProtocol::OpenAiResponses => json!({
+                            "type": "function",
+                            "name": name,
+                            "description": "Reviewed native tool",
+                            "parameters": {"type": "object", "properties": {}}
+                        }),
+                        ModelProtocol::AnthropicMessages => json!({
+                            "name": name,
+                            "description": "Reviewed native tool",
+                            "input_schema": {"type": "object", "properties": {}}
+                        }),
+                    })
+                    .collect(),
+            )
+        };
+
+        // The boundary still rejects an overlong list, unknown tools and
+        // duplicates without opening a network connection.
+        let mut over_limit = NAMES.to_vec();
+        over_limit.push("concat_version");
+        let mut unknown = NAMES.to_vec();
+        unknown[5] = "unregistered";
+        let mut duplicate = NAMES.to_vec();
+        duplicate[5] = "project_get";
+        for names in [&over_limit[..], &unknown[..], &duplicate[..]] {
+            let mut request = fixture.request();
+            let mut body: Value = serde_json::from_str(&request.body).unwrap();
+            body["tools"] = tools(names);
+            request.body = body.to_string();
+            assert!(fixture.network.open(request).is_err());
+        }
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+
+        let server = std::thread::spawn(move || {
+            for expected_count in [5, 6] {
+                let mut socket = accept(&listener);
+                let captured = read_request(&mut socket);
+                assert_eq!(
+                    captured.body["tools"].as_array().unwrap().len(),
+                    expected_count
+                );
+                start_response(&mut socket);
+                let terminal = match protocol {
+                    ModelProtocol::OpenAiCompletions => b"data: [DONE]\n\n".to_vec(),
+                    ModelProtocol::OpenAiResponses => event(json!({"type":"response.completed"})),
+                    ModelProtocol::AnthropicMessages => event(json!({"type":"message_stop"})),
+                };
+                chunk(&mut socket, &terminal).unwrap();
+                finish(&mut socket);
+            }
+        });
+        // Five read-only tools and six edit tools must both reach the chosen
+        // endpoint under the same native ownership and credential rules.
+        for count in [5, 6] {
+            let mut request = fixture.request();
+            if protocol == ModelProtocol::AnthropicMessages {
+                request
+                    .headers
+                    .push(("anthropic-version".into(), "2023-06-01".into()));
+            }
+            let mut body: Value = serde_json::from_str(&request.body).unwrap();
+            body["tools"] = tools(&NAMES[..count]);
+            request.body = body.to_string();
+            let head = fixture.network.open(request).unwrap();
+            assert!(drain(&fixture.network, stream_id(&head)).1.is_none());
+        }
+        server.join().unwrap();
+    }
+}
+
+#[test]
 fn original_responses_and_anthropic_shapes_admit_only_registered_local_tools() {
     for protocol in [
         ModelProtocol::OpenAiResponses,

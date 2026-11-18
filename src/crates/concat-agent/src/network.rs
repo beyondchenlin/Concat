@@ -522,18 +522,20 @@ fn allowed_keys(value: &Value, allowed: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
+// Keep the admission count tied to the exact approved native tool surface.
+const LOCAL_TOOL_NAMES: &[&str] = &[
+    "concat_version",
+    "project_get",
+    "timeline_read",
+    "effects_list",
+    "template_list",
+    "edit_apply_guarded",
+];
+
 fn local_tool_name(value: &Value) -> bool {
-    matches!(
-        value.as_str(),
-        Some(
-            "concat_version"
-                | "project_get"
-                | "timeline_read"
-                | "effects_list"
-                | "template_list"
-                | "edit_apply_guarded"
-        )
-    )
+    value
+        .as_str()
+        .is_some_and(|name| LOCAL_TOOL_NAMES.contains(&name))
 }
 
 fn validate_body(protocol: ModelProtocol, body: &Value) -> Result<(), String> {
@@ -595,7 +597,7 @@ fn validate_body(protocol: ModelProtocol, body: &Value) -> Result<(), String> {
     if let Some(tools) = body.get("tools") {
         let tools = tools
             .as_array()
-            .filter(|tools| tools.len() <= 4)
+            .filter(|tools| tools.len() <= LOCAL_TOOL_NAMES.len())
             .ok_or("模型工具列表超出本机授权范围。")?;
         let mut names = std::collections::BTreeSet::new();
         for tool in tools {
