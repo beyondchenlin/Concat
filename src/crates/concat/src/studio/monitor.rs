@@ -271,7 +271,19 @@ impl Studio {
                             studio.request_preview();
                         }
                     }
-                    shell.studio.borrow().publish_lanes(&app, &shell.models);
+                    if cfg!(target_os = "android") {
+                        // Only the playhead, visible frame and viewport move
+                        // with the audio clock. Clip models are unchanged until
+                        // playback reaches beyond their cached visible span.
+                        let studio = shell.studio.borrow();
+                        if studio.playing {
+                            studio.publish_playback_tick(&app, &shell.models);
+                        } else {
+                            studio.publish_lanes(&app, &shell.models);
+                        }
+                    } else {
+                        shell.studio.borrow().publish_lanes(&app, &shell.models);
+                    }
                 });
             },
         );
@@ -373,8 +385,17 @@ impl Studio {
             || {
                 crate::host::Shell::with(|shell, app| {
                     shell.studio.borrow_mut().glide_step();
-                    shell.studio.borrow_mut().refresh_art();
-                    shell.studio.borrow().publish_lanes(&app, &shell.models);
+                    if cfg!(target_os = "android") {
+                        // A phone glide ticks every 16ms. Keep its position
+                        // responsive, but coalesce artwork/model regeneration.
+                        shell
+                            .studio
+                            .borrow()
+                            .publish_lanes_view(&app, &shell.models);
+                    } else {
+                        shell.studio.borrow_mut().refresh_art();
+                        shell.studio.borrow().publish_lanes(&app, &shell.models);
+                    }
                 });
             },
         );

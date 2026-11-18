@@ -32,6 +32,7 @@ pub(crate) mod project_save;
 #[cfg(feature = "bk-cat-native-probe")]
 pub mod script_probe;
 pub(crate) mod tasks;
+pub(crate) mod tool_approval;
 pub(crate) mod window;
 
 type JournalSlot = Arc<Mutex<Option<Arc<OperationJournal>>>>;

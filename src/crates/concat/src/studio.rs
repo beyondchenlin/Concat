@@ -1057,6 +1057,14 @@ pub struct Studio {
     /// The timeline's view: scroll, zoom, tool, and what the lanes know
     /// about a track that the document does not.
     pub lanes: crate::panes::timeline::TimelinePane,
+    /// Android: paint the live pointer position immediately while amortising
+    /// expensive clip, waveform and inspector model regeneration.
+    last_view_published: std::cell::Cell<Option<std::time::Instant>>,
+    /// Clip models currently cover this wider span; transport ticks may reuse them.
+    last_published_clip_span: std::cell::Cell<Option<(f32, f32)>>,
+    view_publish_timer: slint::Timer,
+    /// True only while a phone pinch is changing the viewport.
+    pinch_active: bool,
     pub selection: Vec<String>,
     pub playhead: f32,
     pub playing: bool,
@@ -2735,6 +2743,10 @@ impl Studio {
             window_pending: HashSet::new(),
             waves: RefCell::new(HashMap::new()),
             lanes: crate::panes::timeline::TimelinePane::default(),
+            last_view_published: std::cell::Cell::new(None),
+            last_published_clip_span: std::cell::Cell::new(None),
+            view_publish_timer: slint::Timer::default(),
+            pinch_active: false,
             selection: Vec::new(),
             playhead: 0.0,
             // ~20px a second: a ten-second cut fits a pane at its default width.

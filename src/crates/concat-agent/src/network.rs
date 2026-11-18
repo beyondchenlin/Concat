@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 use std::time::Duration;
@@ -23,8 +23,6 @@ use crate::configuration::{
 use crate::credentials::{CredentialScope, CredentialStore, Secret};
 use crate::{OperationPermit, OwnerToken, SessionOwner};
 
-/// Product ceiling, shown beside the native send action. It is not a price quote.
-pub const MAX_REQUESTS_PER_TASK: u32 = 4;
 /// Maximum request JSON, including the original persisted conversation.
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
@@ -78,7 +76,7 @@ struct TransportPolicy {
     snapshot: ConfigurationSnapshot,
 }
 
-/// One explicit native task's bounded model access. Debug is deliberately absent.
+/// One explicitly authorized native task's model access. Debug is deliberately absent.
 pub struct ModelNetwork {
     owner: Arc<SessionOwner>,
     token: OwnerToken,
@@ -87,7 +85,6 @@ pub struct ModelNetwork {
     channel: ModelChannel,
     credentials: Arc<dyn CredentialStore>,
     cancellation: Arc<Cancellation>,
-    remaining: AtomicU32,
     active: Arc<AtomicU64>,
     next_request: AtomicU64,
     streams: Mutex<BTreeMap<String, Stream>>,
@@ -116,11 +113,7 @@ impl ModelNetwork {
         store: ConfigurationStore,
         snapshot: ConfigurationSnapshot,
         credentials: Arc<dyn CredentialStore>,
-        request_limit: u32,
     ) -> Result<Self, String> {
-        if !(1..=MAX_REQUESTS_PER_TASK).contains(&request_limit) {
-            return Err("本次模型请求次数须为1至4次。".into());
-        }
         let channel = snapshot.active().cloned().ok_or("请先明确选择模型渠道。")?;
         if channel.protocol == ModelProtocol::OpenAiResponses && channel.max_output_tokens < 16 {
             return Err("当前响应协议至少需要16个输出词元，请修改输出上限后重新授权。".into());
@@ -152,7 +145,6 @@ impl ModelNetwork {
                 stopped: AtomicBool::new(false),
                 changed: Notify::new(),
             }),
-            remaining: AtomicU32::new(request_limit),
             active: Arc::new(AtomicU64::new(0)),
             next_request: AtomicU64::new(1),
             streams: Mutex::new(BTreeMap::new()),
@@ -205,17 +197,9 @@ impl ModelNetwork {
                 .owner
                 .begin(&self.token)
                 .map_err(|_| CANCELLED.to_owned())?;
-            permit
-                .with_valid(|| {
-                    self.remaining
-                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-                            value.checked_sub(1)
-                        })
-                })
-                .map_err(|_| CANCELLED.to_owned())?
-                .map_err(|_| {
-                    "已达到本次明确授权的模型请求次数；请检查结果后重新发送。".to_owned()
-                })?;
+            // Each sequential request revalidates ownership and cancellation.
+            // There is no product-imposed request-count or task-wide cost budget.
+            permit.with_valid(|| ()).map_err(|_| CANCELLED.to_owned())?;
             let id = random_id()?;
             let stream_cancel = Arc::new(Cancellation {
                 stopped: AtomicBool::new(false),
@@ -541,7 +525,14 @@ fn allowed_keys(value: &Value, allowed: &[&str]) -> Result<(), String> {
 fn local_tool_name(value: &Value) -> bool {
     matches!(
         value.as_str(),
-        Some("concat_version" | "project_get" | "timeline_read" | "edit_apply_guarded")
+        Some(
+            "concat_version"
+                | "project_get"
+                | "timeline_read"
+                | "effects_list"
+                | "template_list"
+                | "edit_apply_guarded"
+        )
     )
 }
 

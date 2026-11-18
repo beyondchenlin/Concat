@@ -602,6 +602,17 @@ impl Studio {
                 self.notify("工程已落盘；智能任务回执需要重新核对。", true);
             }
         }
+        // A real save completion, not a periodic editor timer, triggers the
+        // native worker's durable operation receipt check.
+        if current {
+            let _ = slint::invoke_from_event_loop(|| {
+                crate::host::Shell::with(|shell, _| {
+                    if let Some(runtime) = shell.embedded.borrow().as_ref() {
+                        runtime.poll_saved();
+                    }
+                });
+            });
+        }
     }
 
     /// The audible clip set, handed to playback whenever the edit changes.

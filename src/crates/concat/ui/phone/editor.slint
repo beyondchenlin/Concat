@@ -846,6 +846,7 @@ export component PhoneEditor inherits Rectangle {
                         Math.min(stack.overflow, stack.overflow - stack.at - pixels));
                 }
                 zoomed(factor, anchor) => { Editor.zoom(factor, anchor); }
+                pinch-active(active) => { Editor.pinch-active(active); }
                 drag-hovered(payload, seconds, row) => {
                     Editor.drag-hovered(payload, seconds, row);
                 }

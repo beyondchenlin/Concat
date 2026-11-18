@@ -10,9 +10,7 @@ use concat_agent::conversations::{
     ConversationBindings, inspect_latest, inspect_project_conversations,
 };
 use concat_agent::credentials::platform_store;
-use concat_agent::network::{
-    MAX_REQUESTS_PER_TASK, ModelNetwork, ModelRequest, runtime_configuration,
-};
+use concat_agent::network::{ModelNetwork, ModelRequest, runtime_configuration};
 use concat_agent::operations::Invocation;
 use concat_agent::scripts::{ScriptStore, VersionBinding};
 use serde_json::{Value, json};
@@ -36,6 +34,19 @@ impl TaskMode {
             Self::Script => "script",
             Self::Edit => "edit",
         }
+    }
+}
+
+/// A direct edit must never invoke the script-based full-video template.
+/// Inspect the entire command tree so a nested batch cannot bypass the gate.
+fn contains_main_template(value: &Value) -> bool {
+    match value {
+        Value::Object(object) => {
+            object.get("op").and_then(Value::as_str) == Some("applySingleMainTemplate")
+                || object.values().any(contains_main_template)
+        }
+        Value::Array(items) => items.iter().any(contains_main_template),
+        _ => false,
     }
 }
 
@@ -132,38 +143,43 @@ impl NativeTasks {
         let (input, existing) = self.at_project_location(&current, || {
             let mut input = intent.input.clone();
             if intent.mode == TaskMode::Edit {
-                let selected = intent
-                    .selected
-                    .as_ref()
-                    .ok_or("请先在文案工作区明确选择本次剪辑版本。")?;
-                if selected.project_id != current.project_id {
-                    return Err("所选文案不属于当前工程。".into());
-                }
-                let scripts = ScriptStore::open_read_only(
-                    &self
-                        .bridge
-                        .dirs
-                        .data
-                        .join("bk-cat")
-                        .join("script-workspaces"),
-                )
-                .map_err(|error| error.to_string())?;
-                if scripts
-                    .bind_selected(&current.project_id)
-                    .map_err(|error| error.to_string())?
-                    != *selected
-                {
-                    return Err("本次剪辑选版已改变，请重新发送。".into());
-                }
-                let version = scripts
-                    .resolve_binding(selected)
+                if let Some(selected) = intent.selected.as_ref() {
+                    if selected.project_id != current.project_id {
+                        return Err("所选文案不属于当前工程。".into());
+                    }
+                    let scripts = ScriptStore::open_read_only(
+                        &self
+                            .bridge
+                            .dirs
+                            .data
+                            .join("bk-cat")
+                            .join("script-workspaces"),
+                    )
                     .map_err(|error| error.to_string())?;
-                input = format!(
-                    "原生捕获的本次剪辑依据（不可改写版本声明）：{}\n文案正文：\n{}\n\n用户要求：\n{}\n\n先读取当前工程；只能使用已实际导入且可用的素材。空时间线使用顶层applySingleMainTemplate类型化计划，由原生一次创建主视频、字幕、贴片文字、音乐和配音角色轨；已存在片段时不能使用该模板替换它们，应使用现有轨道的精确编辑。必须按真实时长生成一个精确批次；素材或轨道不具备时明确说明缺口，禁止虚构。媒体新增仅使用addMediaClipExact或受限applySingleMainTemplate，禁止自动寻找空隙、嵌套模板及通用建轨。调用一次edit_apply_guarded提交完整批次。",
-                    serde_json::to_string(selected).map_err(|_| "文案绑定无法编码。")?,
-                    version.content,
-                    input
-                );
+                    if scripts
+                        .bind_selected(&current.project_id)
+                        .map_err(|error| error.to_string())?
+                        != *selected
+                    {
+                        return Err("本次剪辑选版已改变，请重新发送。".into());
+                    }
+                    let version = scripts
+                        .resolve_binding(selected)
+                        .map_err(|error| error.to_string())?;
+                    input = format!(
+                        "原生捕获的本次剪辑依据（不可改写版本声明）：{}\n文案正文：\n{}\n\n用户要求：\n{}\n\n先读取当前工程；只能使用已实际导入且可用的素材。空时间线使用顶层applySingleMainTemplate类型化计划，由原生一次创建主视频、字幕、贴片文字、音乐和配音角色轨；已存在片段时不能使用该模板替换它们，应使用现有轨道的精确编辑。必须按真实时长生成一个精确批次；素材或轨道不具备时明确说明缺口，禁止虚构。媒体新增仅使用addMediaClipExact或受限applySingleMainTemplate，禁止自动寻找空隙、嵌套模板及通用建轨。调用一次edit_apply_guarded提交完整批次。",
+                        serde_json::to_string(selected).map_err(|_| "文案绑定无法编码。")?,
+                        version.content,
+                        input
+                    );
+                } else {
+                    // A direct timeline edit has no script dependency. A full
+                    // one-track template still requires a selected version.
+                    input = format!(
+                        "本次直接编辑原生当前工程，没有已选择的文案版本。先读取project_get或timeline_read，再按用户要求精确修改已有轨道和已导入素材。禁止使用applySingleMainTemplate整片模板；如用户要按文案自动生成整片，请提示先在文案工作区保存并选定版本。媒体新增仅使用addMediaClipExact，轨道、起止时间和素材必须真实存在；不得猜测素材或自动新建轨道。将写入组织成一次edit_apply_guarded批次，由原生审批、撤销和保存规则保护。\n用户要求：\n{}",
+                        input
+                    );
+                }
             }
             if let Some(generation) = &intent.generation {
                 if intent.mode != TaskMode::Script
@@ -212,7 +228,6 @@ impl NativeTasks {
             self.store.clone(),
             snapshot,
             platform_store().map_err(|error| error.to_string())?,
-            MAX_REQUESTS_PER_TASK,
         )?);
         let permit = random_capability()?;
         let payload = json!({"method":"runtime.submit","taskId":intent.id,"networkPermit":permit,
@@ -340,6 +355,22 @@ impl NativeTasks {
         if name == "concat_version" {
             return Ok(());
         }
+        if matches!(name.as_str(), "effects_list" | "template_list") {
+            // Metadata queries have no project path. Refuse injected arguments
+            // here, before the native MCP schema and backend are reached.
+            let args = message
+                .pointer("/params/arguments")
+                .and_then(Value::as_object)
+                .ok_or("只读目录工具参数无效。")?;
+            if (name == "template_list" && !args.is_empty())
+                || (name == "effects_list"
+                    && (args.keys().any(|key| key != "kind")
+                        || args.get("kind").is_some_and(|kind| !kind.is_string())))
+            {
+                return Err("只读目录工具不得携带工程路径或未审查的参数。".into());
+            }
+            return Ok(());
+        }
         let args = message
             .pointer_mut("/params/arguments")
             .and_then(Value::as_object_mut)
@@ -348,8 +379,16 @@ impl NativeTasks {
             return Err("工具仅可访问本次原生任务绑定的当前工程。".into());
         }
         if name == "edit_apply_guarded" {
-            if task.mode != TaskMode::Edit || task.selected.is_none() {
+            if task.mode != TaskMode::Edit {
                 return Err("本次为只读任务，原生权限层拒绝修改工程。".into());
+            }
+            // The user may directly edit the current timeline without first
+            // choosing a script. Full-video template generation is different:
+            // it remains bound to a verified, explicitly selected version.
+            if task.selected.is_none() && args.get("command").is_none_or(contains_main_template) {
+                return Err(
+                    "按文案生成整片前，请先保存并选择文案版本；直接剪辑仍可使用精确批次。".into(),
+                );
             }
             if args.get("expectedSession").and_then(Value::as_u64) != Some(task.project.session_id)
                 || args.get("expectedRevision").and_then(Value::as_u64)
@@ -383,7 +422,10 @@ impl NativeTasks {
         {
             return Err("工程已变化或本次任务没有剪辑权限，旧计划被拒绝。".into());
         }
-        if !studio.script.selection_settled() || studio.script.selected_binding() != task.selected {
+        if let Some(selected) = task.selected.as_ref()
+            && (!studio.script.selection_settled()
+                || studio.script.selected_binding().as_ref() != Some(selected))
+        {
             return Err("文案选版已改变或正在保存，本次旧计划被拒绝。".into());
         }
         Ok(())
@@ -705,7 +747,6 @@ mod tests {
                     tasks.store.clone(),
                     snapshot.clone(),
                     credentials.clone(),
-                    MAX_REQUESTS_PER_TASK,
                 )
                 .unwrap(),
             );
@@ -1018,11 +1059,34 @@ mod tests {
         for mode in [TaskMode::Chat, TaskMode::Script] {
             let fixture = Fixture::new(mode, None);
             fixture.tasks.bind(TASK, CONVERSATION).unwrap();
-            for tool in ["concat_version", "project_get", "timeline_read"] {
+            for tool in [
+                "concat_version",
+                "project_get",
+                "timeline_read",
+                "effects_list",
+                "template_list",
+            ] {
                 let mut message = fixture.message(tool);
+                if matches!(tool, "effects_list" | "template_list") {
+                    message["params"]["arguments"] = json!({});
+                }
                 fixture.authorize(&mut message, CONVERSATION).unwrap();
                 assert!(fixture.authorize(&mut message, CONVERSATION + 1).is_err());
                 assert!(fixture.tasks.authorize_tool(&mut message, None).is_err());
+            }
+            let mut filtered_effects = fixture.message("effects_list");
+            filtered_effects["params"]["arguments"] = json!({"kind":"effect"});
+            fixture
+                .authorize(&mut filtered_effects, CONVERSATION)
+                .unwrap();
+            for tool in ["effects_list", "template_list"] {
+                // A model cannot smuggle another project's path or arbitrary
+                // input through globally read-only metadata tools.
+                assert!(
+                    fixture
+                        .authorize(&mut fixture.message(tool), CONVERSATION)
+                        .is_err()
+                );
             }
             for tool in ["edit_apply_guarded", "project_delete", "media_upload"] {
                 assert!(
@@ -1040,7 +1104,7 @@ mod tests {
     }
 
     #[test]
-    fn editable_task_requires_selected_script_and_exact_native_session_revision() {
+    fn direct_edit_needs_exact_project_but_only_template_needs_selected_script() {
         let fixture = Fixture::new(TaskMode::Edit, None);
         fixture.tasks.bind(TASK, CONVERSATION).unwrap();
         let valid = fixture.message("edit_apply_guarded");
@@ -1060,6 +1124,14 @@ mod tests {
             message["params"]["arguments"][field] = wrong;
             assert!(fixture.authorize(&mut message, CONVERSATION).is_err());
         }
+        // A selected version permits the full-video template path.
+        let mut selected_template = valid.clone();
+        selected_template["params"]["arguments"]["command"] =
+            json!({"op":"applySingleMainTemplate","plan":{}});
+        fixture
+            .authorize(&mut selected_template, CONVERSATION)
+            .unwrap();
+        // Without a selected version, ordinary exact edits still work.
         fixture
             .tasks
             .task
@@ -1068,7 +1140,25 @@ mod tests {
             .as_mut()
             .unwrap()
             .selected = None;
-        assert!(fixture.authorize(&mut valid.clone(), CONVERSATION).is_err());
+        fixture.authorize(&mut valid.clone(), CONVERSATION).unwrap();
+        // A model cannot hide a full-video template inside a direct edit.
+        assert!(
+            fixture
+                .authorize(&mut selected_template, CONVERSATION)
+                .is_err()
+        );
+        let mut nested_template = valid;
+        nested_template["params"]["arguments"]["command"] = json!({
+            "op":"batch", "commands":[
+                {"op":"addCaption", "text":"safe"},
+                {"op":"applySingleMainTemplate", "plan":{}}
+            ]
+        });
+        assert!(
+            fixture
+                .authorize(&mut nested_template, CONVERSATION)
+                .is_err()
+        );
     }
 
     #[test]

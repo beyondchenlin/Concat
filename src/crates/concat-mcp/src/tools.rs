@@ -574,7 +574,12 @@ impl Toolbox {
         Self::from_tools(catalogue().into_iter().filter(|tool| {
             matches!(
                 tool.name,
-                "concat_version" | "project_get" | "timeline_read" | "edit_apply_guarded"
+                "concat_version"
+                    | "project_get"
+                    | "timeline_read"
+                    | "effects_list"
+                    | "template_list"
+                    | "edit_apply_guarded"
             )
         }))
     }

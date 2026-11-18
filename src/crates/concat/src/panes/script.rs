@@ -1221,7 +1221,11 @@ pub(crate) fn complete_generation(request: GenerationRequest, result: Result<Str
 /// needed to write, read or choose the user's own document versions.
 pub fn install(app: &App) {
     let ui = app.global::<ScriptUi>();
-    ui.on_open_requested(|| with_studio(|studio| studio.open_script_workspace(false)));
+    ui.on_open_requested(|| {
+        with_studio(|studio| studio.open_script_workspace(false));
+        #[cfg(all(target_os = "windows", not(feature = "bk-cat-native-probe")))]
+        crate::embedded::activate_from_user_intent();
+    });
     ui.on_reload_requested(|| with_studio(|studio| studio.open_script_workspace(true)));
     ui.on_edited(|text| with_studio(|studio| studio.script.set_text(text.to_string())));
     ui.on_generate_requested(|instruction, rewrite| {

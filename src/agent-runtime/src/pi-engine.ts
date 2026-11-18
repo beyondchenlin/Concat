@@ -182,7 +182,9 @@ async function runOriginal(
             ? "在当前原生工程中按用户明确选择的文案版本和任务要求剪辑。先读取工程和时间线，仅使用受保护编辑工具；工具拒绝时说明实际原因，不得宣称执行成功。"
             : "回答用户关于当前工程的问题。当前任务只允许读取信息，不得修改剪辑工程。";
         const change: AgentChange = {
-          model: { provider: model.id, modelId: model.model }, instructions, maxTurns: 4,
+          // Null also clears a four-turn cap persisted by an older conversation.
+          // The original Pi scheduler can continue until the user stops it.
+          model: { provider: model.id, modelId: model.model }, instructions, maxTurns: null,
           tools: tools.filter((tool) => input.mode === "edit" || tool.name !== "edit_apply_guarded"),
           compaction: { enabled: false },
         };

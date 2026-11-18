@@ -6,7 +6,7 @@ import { Button } from "primitives/modal.slint";
 export global AgentCallUi {
     in property <bool> allowed;
     in property <bool> can-authorize;
-    in property <string> limits: "每次任务最多4次模型请求；输出上限取当前渠道设置，费用按服务商计费。";
+    in property <string> usage-policy: "不设置任务级请求次数、总费用或会话词元预算；单次输出受渠道技术设置约束，服务商按实际使用计费。";
     callback authorize-requested();
 }
 
@@ -14,15 +14,15 @@ export component AgentCallAuthorization inherits VerticalLayout {
     in property <bool> compact;
     spacing: 4px;
     Text {
-        text: AgentCallUi.limits;
+        text: AgentCallUi.usage-policy;
         color: Theme.fg-muted;
         font-size: Theme.fs-sm;
         wrap: word-wrap;
     }
     Button {
-        label: root.compact ? (AgentCallUi.allowed ? "撤回授权" : "允许调用") : (AgentCallUi.allowed ? "已允许本次调用 · 点击撤回" : "允许本次调用");
+        label: root.compact ? (AgentCallUi.allowed ? "撤回授权" : "允许调用") : (AgentCallUi.allowed ? "已授权当前模型 · 点击撤回" : "允许当前模型");
         max-width: root.compact ? 120px : 100000px;
-        enabled: AgentCallUi.can-authorize;
+        enabled: AgentCallUi.can-authorize || AgentCallUi.allowed;
         primary: AgentCallUi.allowed;
         clicked => { AgentCallUi.authorize-requested(); }
     }

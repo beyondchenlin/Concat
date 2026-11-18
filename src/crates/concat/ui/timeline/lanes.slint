@@ -1393,6 +1393,8 @@ export component Lanes inherits Rectangle {
     callback scrolled(seconds: float);
     callback track-scrolled(pixels: length);
     callback zoomed(factor: float, anchor-seconds: float);
+    /// The phone can defer costly clip/waveform publication until a pinch ends.
+    callback pinch-active(active: bool);
     /// A finger landed on the lanes, or two began a pinch: whatever was
     /// still gliding stops. Only with `finger`.
     callback finger-held();
@@ -1572,13 +1574,27 @@ export component Lanes inherits Rectangle {
         started => {
             self.last-scale = 1;
             if (root.finger) {
+                root.pinch-active(true);
                 root.finger-held();
             }
         }
         updated => {
             if (self.scale > 0 && self.last-scale > 0) {
+                // Match the upstream gesture: publish each incremental scale
+                // immediately. The Android native handler updates only the
+                // viewport here; expensive clip models wait until release.
                 root.zoomed(self.last-scale / self.scale, root.seconds-at(self.center.x));
                 self.last-scale = self.scale;
+            }
+        }
+        ended => {
+            if (root.finger) {
+                root.pinch-active(false);
+            }
+        }
+        cancelled => {
+            if (root.finger) {
+                root.pinch-active(false);
             }
         }
     }

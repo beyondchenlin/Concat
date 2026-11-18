@@ -10,7 +10,7 @@ import { combinedSignal, ExecutionGate, RuntimeRefused } from "./gate.ts";
 import type { InvocationContext, NativePorts, OwnerLease } from "./ports.ts";
 
 export const EMBEDDED_TOOLS = Object.freeze([
-  "concat_version", "project_get", "timeline_read", "edit_apply_guarded",
+  "concat_version", "project_get", "timeline_read", "effects_list", "template_list", "edit_apply_guarded",
 ] as const);
 
 /** Original Pi's portable SQLite driver facade, fenced at every call. */

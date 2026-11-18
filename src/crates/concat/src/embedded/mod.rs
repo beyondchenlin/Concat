@@ -11,12 +11,13 @@ use std::time::{Duration, Instant};
 
 use concat_api::AppDirs;
 use serde_json::{Value, json};
+#[cfg(any(target_os = "android", feature = "bk-cat-native-probe"))]
+use slint::ComponentHandle;
 
 use crate::agent::AgentBridge;
 use crate::agent::native::{NativeSession, STORAGE_ID};
 use crate::agent::tasks::{SubmissionIntent, TaskMode};
 use crate::host::Shell;
-use slint::ComponentHandle;
 
 mod resources;
 pub use resources::RuntimeResources;
@@ -91,6 +92,8 @@ type Factory = dyn Fn(Arc<RuntimeResources>, RuntimeCallbacks) -> Result<Box<dyn
     + Send
     + Sync;
 static FACTORY: OnceLock<Box<Factory>> = OnceLock::new();
+// Set only during a real native project switch. No idle reconnect polling.
+static REOPEN_AFTER_PROJECT_SWITCH: AtomicBool = AtomicBool::new(false);
 
 // A private construction seam: failure must happen before a native component
 // claims this generation. Production always uses the real OS thread builder.
@@ -301,6 +304,17 @@ impl EmbeddedRuntime {
                         }
                     }
                     runtime.publish();
+                    if REOPEN_AFTER_PROJECT_SWITCH.swap(false, Ordering::AcqRel) {
+                        let _ = slint::invoke_from_event_loop(|| {
+                            let mut opened = false;
+                            Shell::with(|shell, _| {
+                                opened = shell.studio.borrow().session.is_some();
+                            });
+                            if opened {
+                                show_ui_error(connect_from_ui());
+                            }
+                        });
+                    }
                     break;
                 }
                 if runtime.revoked.load(Ordering::Acquire) {
@@ -423,6 +437,16 @@ impl EmbeddedRuntime {
                 error: "聊天运行状态不可用。".into(),
                 ..RuntimeView::default()
             })
+    }
+
+    /// Read a tiny readiness snapshot without cloning the persisted conversation.
+    /// A busy worker must never stall the editor's rendering thread.
+    pub(crate) fn try_ready(&self) -> Option<bool> {
+        match self.view.try_lock() {
+            Ok(view) => Some(view.phase == "ready" && !view.closed),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+            Err(std::sync::TryLockError::Poisoned(_)) => Some(false),
+        }
     }
 
     fn receive(&self, raw: String) {
@@ -660,6 +684,35 @@ impl EmbeddedRuntime {
             view.snapshot = Some(result.clone());
             view.error.clear();
         }
+        // The normal project-open path needs no extra recovery clicks. The
+        // worker only admits a *clean* native snapshot; the existing confirm
+        // handler re-hashes the project and all stores before granting access.
+        // Real interrupted work still waits for a human recovery decision.
+        if matches!(kind, CommandKind::Start)
+            && let Some(id) = result["snapshotId"].as_str()
+        {
+            // If the project was opened while the component was acquiring an
+            // empty launch snapshot, rebind after ownership fully retires.
+            if result["projectPath"].is_null() {
+                let _ = slint::invoke_from_event_loop(project_opened);
+            }
+            match self.native.approve_clean_project(id) {
+                Ok(Some(approval)) => {
+                    if let Err(error) = self.command(
+                        json!({"method":"runtime.confirmRecovery","approval":approval}),
+                        CommandKind::Confirm,
+                    ) {
+                        self.fail(&error);
+                        return;
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.fail(&error);
+                    return;
+                }
+            }
+        }
         if matches!(kind, CommandKind::Confirm)
             && let Ok(mut view) = self.view.lock()
         {
@@ -726,7 +779,7 @@ impl EmbeddedRuntime {
         let title = match intent.mode {
             TaskMode::Chat => "正在对话",
             TaskMode::Script => "正在生成文案候选",
-            TaskMode::Edit => "正在执行所选文案剪辑",
+            TaskMode::Edit => "正在剪辑当前工程",
         };
         {
             let mut submission = self.submission.lock().map_err(|_| "本次任务状态不可用。")?;
@@ -979,7 +1032,9 @@ impl EmbeddedRuntime {
         Ok(())
     }
 
-    /// Poll only native completion receipts; this never dispatches a Pi task.
+    /// Triggered only by a real save completion, never by an idle timer.
+    /// The brief native-view lock guarantees we do not silently lose a
+    /// completion receipt if a worker is publishing at the same instant.
     pub(crate) fn poll_saved(&self) {
         if self.revoked.load(Ordering::Acquire) || self.view().phase != "ready" {
             return;
@@ -1027,6 +1082,7 @@ impl EmbeddedRuntime {
         // Native execution loses authority synchronously, before any page or
         // database cleanup. A late JavaScript callback cannot keep it alive.
         self.bridge.stop();
+        self.native.tool_approval.cancel();
         self.native.tasks.cancel();
         let first = !self.revoked.swap(true, Ordering::AcqRel);
         if let Ok(mut accepted) = self.accepted_submission.lock() {
@@ -1049,6 +1105,26 @@ impl EmbeddedRuntime {
             deliver_generation(generation, Err("文案生成已停止，未覆盖手稿。".into()));
         }
         self.publish();
+    }
+
+    pub(crate) fn tool_permission_view(
+        &self,
+    ) -> Result<crate::agent::tool_approval::PermissionView, String> {
+        self.native.tool_approval.view()
+    }
+
+    pub(crate) fn set_tool_mode_from_ui(&self, index: i32) -> Result<(), String> {
+        if self.revoked.load(Ordering::Acquire) || self.view().phase != "ready" {
+            return Err("请先连接并核对智能体会话，再修改操作权限。".into());
+        }
+        self.native.tool_approval.set_mode_from_ui(index)
+    }
+
+    pub(crate) fn decide_tool_from_ui(&self, approve: bool) -> Result<(), String> {
+        if self.revoked.load(Ordering::Acquire) || self.view().phase != "ready" {
+            return Err("当前会话未就绪，不能批准剪辑。".into());
+        }
+        self.native.tool_approval.decide_from_ui(approve)
     }
 
     pub(crate) fn stop(&self) {
@@ -1074,6 +1150,7 @@ impl EmbeddedRuntime {
         let component = self.component.clone();
         let view = self.view();
         let _ = slint::invoke_from_event_loop(move || {
+            let mut refresh_permission = false;
             Shell::with(|shell, app| {
                 let current = shell
                     .embedded
@@ -1083,6 +1160,8 @@ impl EmbeddedRuntime {
                 if !current {
                     return;
                 }
+                // The worker pushes actual state changes only. There is no
+                // 250ms poll during ordinary editing or playback.
                 let owner = shell
                     .agent
                     .borrow()
@@ -1090,9 +1169,16 @@ impl EmbeddedRuntime {
                     .ok_or_else(|| "会话暂不可用，仍可使用手动编辑。".to_owned())
                     .and_then(|bridge| bridge.status());
                 let mut pane = shell.agent_pane.borrow_mut();
+                let was_ready = pane.readiness.runtime_ready;
                 pane.apply_runtime(&view);
+                refresh_permission = was_ready != pane.readiness.runtime_ready;
                 pane.publish(&app, owner);
             });
+            if refresh_permission {
+                // The original poll also updated the tool's connected badge.
+                // Preserve that update on actual connect/disconnect only.
+                crate::agent::window::refresh_tool_permission();
+            }
         });
     }
 }
@@ -1100,6 +1186,7 @@ impl EmbeddedRuntime {
 impl Drop for EmbeddedRuntime {
     fn drop(&mut self) {
         self.bridge.stop();
+        self.native.tool_approval.cancel();
         self.native.tasks.cancel();
         if let Ok(platform) = self.platform.lock()
             && let Some(platform) = platform.as_ref()
@@ -1140,6 +1227,28 @@ pub(crate) fn validate_current_edit(
     result
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModelGrantAction {
+    Grant,
+    Revoke,
+    RevokeAndStop,
+    Refuse,
+}
+
+fn model_grant_action(authorized: bool, ready: bool, running: bool) -> ModelGrantAction {
+    if authorized {
+        if running {
+            ModelGrantAction::RevokeAndStop
+        } else {
+            ModelGrantAction::Revoke
+        }
+    } else if ready {
+        ModelGrantAction::Grant
+    } else {
+        ModelGrantAction::Refuse
+    }
+}
+
 pub(crate) fn authorize_call_from_ui() {
     Shell::with(|shell, app| {
         let runtime = shell.embedded.borrow().clone();
@@ -1150,17 +1259,33 @@ pub(crate) fn authorize_call_from_ui() {
             && pane.readiness.credentials_ready
             && !pane.readiness.provider.is_empty()
             && !pane.readiness.model.is_empty();
-        if ready {
-            pane.readiness.calls_authorized = !pane.readiness.calls_authorized;
-            pane.error.clear();
-            if let Some(runtime) = runtime
-                && let Ok(mut view) = runtime.view.lock()
-            {
-                view.error.clear();
+        let running = runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.view().task_running);
+        match model_grant_action(pane.readiness.calls_authorized, ready, running) {
+            ModelGrantAction::RevokeAndStop => {
+                // Revoke synchronously: no further model request can cross this boundary.
+                drop(pane);
+                stop_current_task(shell, &app);
+                return;
             }
-        } else {
-            pane.readiness.calls_authorized = false;
-            pane.error = "请先配置本项目渠道和系统凭据，并连接、核对当前会话。".into();
+            ModelGrantAction::Revoke => {
+                pane.readiness.calls_authorized = false;
+                pane.error.clear();
+            }
+            ModelGrantAction::Grant => {
+                pane.readiness.calls_authorized = true;
+                pane.error.clear();
+                if let Some(runtime) = runtime
+                    && let Ok(mut view) = runtime.view.lock()
+                {
+                    view.error.clear();
+                }
+            }
+            ModelGrantAction::Refuse => {
+                pane.readiness.calls_authorized = false;
+                pane.error = "请先配置本项目渠道和系统凭据，并连接、核对当前会话。".into();
+            }
         }
         pane.publish(
             &app,
@@ -1172,6 +1297,28 @@ pub(crate) fn authorize_call_from_ui() {
                 .and_then(|bridge| bridge.status()),
         );
     });
+}
+
+/// Only a trusted Slint window callback calls these; the web component never
+/// receives a port to set modes or resolve approvals.
+pub(crate) fn set_tool_mode_from_ui(index: i32) -> Result<(), String> {
+    let mut result = Err("聊天运行组件尚未连接。".to_owned());
+    Shell::with(|shell, _| {
+        if let Some(runtime) = shell.embedded.borrow().as_ref() {
+            result = runtime.set_tool_mode_from_ui(index);
+        }
+    });
+    result
+}
+
+pub(crate) fn decide_tool_from_ui(approve: bool) -> Result<(), String> {
+    let mut result = Err("聊天运行组件尚未连接。".to_owned());
+    Shell::with(|shell, _| {
+        if let Some(runtime) = shell.embedded.borrow().as_ref() {
+            result = runtime.decide_tool_from_ui(approve);
+        }
+    });
+    result
 }
 
 pub(crate) fn submit_chat_from_ui(input: String, edit: bool) -> Result<(), String> {
@@ -1196,6 +1343,25 @@ fn submit_from_ui(input: String, mode: TaskMode, rewrite: bool) -> Result<(), St
                 .clone()
                 .ok_or("请先连接聊天会话。")?;
             let bridge = shell.agent.borrow().clone().ok_or("当前会话不可用。")?;
+            // Pressing Send is the user's explicit intent for this model
+            // request. Do not require a separate fee-consent click for each
+            // ordinary prompt. Tool editing remains independently gated.
+            {
+                let mut pane = shell.agent_pane.borrow_mut();
+                if !pane.readiness.calls_authorized
+                    && runtime.try_ready() == Some(true)
+                    && pane.readiness.credentials_ready
+                    && !pane.readiness.provider.is_empty()
+                    && !pane.readiness.model.is_empty()
+                    && !pane.task.running
+                {
+                    pane.readiness.calls_authorized = true;
+                    log::info!("bk-cat-agent-audit event=user_send_authorized_model_call");
+                }
+                if !pane.readiness.calls_authorized {
+                    return Err("模型调用授权暂不可用，请等待会话就绪后重新发送。".into());
+                }
+            }
             let text = shell
                 .agent_pane
                 .borrow()
@@ -1224,16 +1390,17 @@ fn submit_from_ui(input: String, mode: TaskMode, rewrite: bool) -> Result<(), St
             } else {
                 None
             };
+            // Direct edits to the open timeline do not require a script.
+            // When a script has been selected, keep its immutable binding for
+            // template edits and reject a stale selection at native apply time.
             let selected = if mode == TaskMode::Edit {
-                if !studio.script.selection_settled() {
+                let selected = studio.script.selected_binding();
+                // A direct edit does not depend on an unfinished script save.
+                // Only a task bound to a script version must wait for it.
+                if selected.is_some() && !studio.script.selection_settled() {
                     return Err("请等待文案保存和选版操作完成。".into());
                 }
-                Some(
-                    studio
-                        .script
-                        .selected_binding()
-                        .ok_or("请先在文案工作区明确选择本次剪辑版本。")?,
-                )
+                selected
             } else {
                 None
             };
@@ -1261,9 +1428,8 @@ fn submit_from_ui(input: String, mode: TaskMode, rewrite: bool) -> Result<(), St
                 }
                 return Err(error);
             }
-            // Sending consumes the one native authorization. Saving settings,
-            // loading a conversation or completing a task never replenishes it.
-            shell.agent_pane.borrow_mut().readiness.calls_authorized = false;
+            // Keep this model authorization across sequential user messages.
+            // Model changes, explicit revoke/stop and owner retirement clear it.
             studio.script.publish(&app);
             Ok(())
         })();
@@ -1272,26 +1438,29 @@ fn submit_from_ui(input: String, mode: TaskMode, rewrite: bool) -> Result<(), St
 }
 
 pub(crate) fn stop_from_ui() {
-    Shell::with(|shell, app| {
-        shell.agent_pane.borrow_mut().readiness.calls_authorized = false;
-        shell.studio.borrow_mut().script.cancel_generation();
-        if let Some(bridge) = shell.agent.borrow().as_ref() {
-            bridge.stop();
-        }
-        if let Some(runtime) = shell.embedded.borrow().as_ref() {
-            runtime.stop();
-        }
-        shell.studio.borrow().script.publish(&app);
-        shell.agent_pane.borrow().publish(
-            &app,
-            shell
-                .agent
-                .borrow()
-                .as_ref()
-                .ok_or_else(|| "会话暂不可用。".into())
-                .and_then(|bridge| bridge.status()),
-        );
-    });
+    Shell::with(|shell, app| stop_current_task(shell, &app));
+}
+
+// The same fail-closed stop is used when a user revokes an active model grant.
+fn stop_current_task(shell: &Shell, app: &crate::ui::App) {
+    shell.agent_pane.borrow_mut().readiness.calls_authorized = false;
+    shell.studio.borrow_mut().script.cancel_generation();
+    if let Some(bridge) = shell.agent.borrow().as_ref() {
+        bridge.stop();
+    }
+    if let Some(runtime) = shell.embedded.borrow().as_ref() {
+        runtime.stop();
+    }
+    shell.studio.borrow().script.publish(app);
+    shell.agent_pane.borrow().publish(
+        app,
+        shell
+            .agent
+            .borrow()
+            .as_ref()
+            .ok_or_else(|| "会话暂不可用。".into())
+            .and_then(|bridge| bridge.status()),
+    );
 }
 
 fn authenticate(raw: &str, component: &str) -> Result<Value, String> {
@@ -1354,6 +1523,60 @@ fn stop_project_runtime(bridge: &Arc<AgentBridge>, runtime: Option<&EmbeddedRunt
     }
 }
 
+/// Opening an editor project is the only automatic session-binding trigger.
+/// The existing native owner is never replaced until actual platform close.
+pub(crate) fn project_opened() {
+    let mut previous = None;
+    let mut connect_now = false;
+    Shell::with(|shell, _| {
+        let path = match shell.studio.borrow().session.as_ref() {
+            Some(session) => session.path().to_owned(),
+            None => return,
+        };
+        let runtime = shell.embedded.borrow().clone();
+        match runtime {
+            None => connect_now = true,
+            Some(runtime) => {
+                let view = runtime.view();
+                let bound = view
+                    .snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot["projectPath"].as_str());
+                let old_owner_draining = shell.agent.borrow().as_ref().is_some_and(|agent| {
+                    agent
+                        .status()
+                        .is_ok_and(|status| status.phase == concat_agent::Phase::Draining)
+                });
+                if !view.closed
+                    && !old_owner_draining
+                    && (bound == Some(path.as_str())
+                        || (bound.is_none() && view.snapshot.is_none()))
+                {
+                    return;
+                }
+                if !view.closed {
+                    REOPEN_AFTER_PROJECT_SWITCH.store(true, Ordering::Release);
+                    previous = Some(runtime);
+                } else if shell.agent.borrow().as_ref().is_some_and(|agent| {
+                    agent
+                        .status()
+                        .is_ok_and(|status| status.phase == concat_agent::Phase::Released)
+                }) {
+                    connect_now = true;
+                } else {
+                    REOPEN_AFTER_PROJECT_SWITCH.store(true, Ordering::Release);
+                }
+            }
+        }
+    });
+    if let Some(runtime) = previous {
+        runtime.stop();
+    }
+    if connect_now {
+        show_ui_error(connect_from_ui());
+    }
+}
+
 /// Explicit native UI action. Reopening after background/stop first requires
 /// the old platform's destruction and its database/ownership release.
 pub(crate) fn connect_from_ui() -> Result<(), String> {
@@ -1410,13 +1633,39 @@ pub(crate) fn connect_from_ui() -> Result<(), String> {
     result
 }
 
+/// A desktop editor must not start Pi until the user actually starts using
+/// it. Manual cutting and playback allocate no agent runtime or model thread.
+/// Native probes and Android keep their existing initialization semantics.
+#[cfg(all(target_os = "windows", not(feature = "bk-cat-native-probe")))]
+pub(crate) fn start_for_window() {}
+
+/// An explicit draft edit or script-workspace visit is user intent to use AI.
+/// Do not silently retry after a stop, closed session, or failed connection.
+#[cfg(all(target_os = "windows", not(feature = "bk-cat-native-probe")))]
+pub(crate) fn activate_from_user_intent() {
+    let mut should_connect = false;
+    Shell::with(|shell, _| {
+        should_connect = shell.studio.borrow().session.is_some()
+            && shell.embedded.borrow().is_none()
+            && shell.agent_pane.borrow().error.is_empty();
+    });
+    if should_connect {
+        show_ui_error(connect_from_ui());
+    }
+}
+
 /// No API key, model provider or fee authorization is inferred by startup.
-#[cfg(any(
-    target_os = "windows",
-    target_os = "android",
-    feature = "bk-cat-native-probe"
-))]
+#[cfg(any(target_os = "android", feature = "bk-cat-native-probe"))]
 pub(crate) fn start_for_window() {
+    // The welcome screen has no current project. Start the agent only after
+    // the editor opens one; manual cutting never needs an idle AI component.
+    let mut has_project = false;
+    Shell::with(|shell, _| {
+        has_project = shell.studio.borrow().session.is_some();
+    });
+    if !has_project {
+        return;
+    }
     if let Err(error) = connect_from_ui() {
         log::error!("bk-cat-agent: state=failed");
         Shell::with(|shell, app| {
@@ -1457,6 +1706,30 @@ pub(crate) fn show_ui_error(result: Result<(), String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_grant_can_span_messages_but_revocation_stops_active_work() {
+        assert_eq!(
+            model_grant_action(false, true, false),
+            ModelGrantAction::Grant
+        );
+        assert_eq!(
+            model_grant_action(true, true, false),
+            ModelGrantAction::Revoke
+        );
+        assert_eq!(
+            model_grant_action(true, false, true),
+            ModelGrantAction::RevokeAndStop
+        );
+        assert_eq!(
+            model_grant_action(false, false, true),
+            ModelGrantAction::Refuse
+        );
+        assert_eq!(
+            model_grant_action(false, false, false),
+            ModelGrantAction::Refuse
+        );
+    }
 
     mod project_retirement {
         use std::path::PathBuf;

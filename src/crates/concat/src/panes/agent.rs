@@ -25,7 +25,7 @@ pub struct AgentReadiness {
     pub model: String,
     /// Native credential storage has an available credential.
     pub credentials_ready: bool,
-    /// Explicit authorization for this configured channel and its cost limit.
+    /// Explicit authorization for the selected channel, without a task-wide budget.
     pub calls_authorized: bool,
 }
 
@@ -62,7 +62,6 @@ pub struct AgentPane {
     pub runtime_loading: bool,
     pub runtime_loaded: bool,
     messages: Vec<AgentMessageData>,
-    call_limits: String,
     references: Vec<MediaReference>,
     pending_attachments: Vec<PendingAttachment>,
     completion: Option<CompletionContext>,
@@ -136,16 +135,6 @@ impl AgentPane {
         } else {
             String::new()
         };
-        if let Some(configuration) = &runtime.configuration {
-            self.call_limits =
-                configuration["maxOutputTokens"]
-                    .as_u64()
-                    .map_or_else(String::new, |limit| {
-                        format!(
-                            "本次最多4次模型请求，每次输出最多{limit}个词元；费用按服务商计费。"
-                        )
-                    });
-        }
         self.messages.clear();
         if let Some(presentation) = &runtime.presentation {
             if let Some(messages) = presentation["messages"].as_array() {
@@ -216,9 +205,6 @@ impl AgentPane {
         }
         if !self.readiness.credentials_ready {
             missing.push("调用凭据");
-        }
-        if !self.readiness.calls_authorized {
-            missing.push("调用授权与费用限额");
         }
         if !self.readiness.runtime_ready {
             missing.push("聊天功能就绪");
@@ -373,22 +359,11 @@ impl AgentPane {
     /// Native UI-thread publication only. It does not touch conversation
     /// storage or the current project and is safe in read-only recovery.
     pub fn publish(&self, app: &App, owner: Result<OwnerStatus, String>) {
-        let can_authorize = owner
-            .as_ref()
-            .is_ok_and(|status| status.phase == Phase::Ready)
-            && self.readiness.runtime_ready
-            && self.readiness.credentials_ready
-            && !self.task.running
-            && !self.readiness.provider.is_empty()
-            && !self.readiness.model.is_empty();
         let call = app.global::<AgentCallUi>();
         call.set_allowed(self.readiness.calls_authorized);
-        call.set_can_authorize(can_authorize);
-        call.set_limits(if self.call_limits.is_empty() {
-            "每次任务最多4次模型请求；请先配置模型输出上限。".into()
-        } else {
-            self.call_limits.as_str().into()
-        });
+        // Pressing Send now grants the current model request. The separate
+        // pre-send permission button is unnecessary; explicit revoke remains.
+        call.set_can_authorize(false);
         let ui = app.global::<AgentUi>();
         if ui.get_script_picker() {
             let count = app.global::<ScriptUi>().get_versions().row_count();
@@ -564,6 +539,7 @@ impl AgentPane {
         app.global::<AgentUi>().set_attachment_pending(true);
         app.global::<AgentUi>()
             .set_attachment_status("正在导入并引用素材…".into());
+        crate::agent::window::schedule_attachment_watch();
     }
 
     pub(crate) fn collect_attachments(&mut self, studio: &crate::studio::Studio, app: &App) {
@@ -706,6 +682,12 @@ pub(crate) fn install_composer(app: &App) {
             ui.set_draft_cursor(cursor.min(i32::MAX as usize) as i32);
         });
         refresh_suggestions(text.as_str(), cursor);
+        // Start the desktop agent only after the user actually types a
+        // request. This has no idle polling and does not run on Android.
+        #[cfg(all(target_os = "windows", not(feature = "bk-cat-native-probe")))]
+        if !text.trim().is_empty() {
+            crate::embedded::activate_from_user_intent();
+        }
     });
     ui.on_trigger_requested(|marker| {
         if marker != "@" && marker != "/" {
@@ -858,6 +840,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn model_authorization_survives_a_running_and_completed_task_but_not_owner_loss() {
+        let mut pane = AgentPane::default();
+        pane.readiness.calls_authorized = true;
+        let mut runtime = crate::embedded::RuntimeView {
+            phase: "ready".into(),
+            task_running: true,
+            ..Default::default()
+        };
+        pane.apply_runtime(&runtime);
+        assert!(pane.readiness.calls_authorized);
+        runtime.task_running = false;
+        pane.apply_runtime(&runtime);
+        assert!(pane.readiness.calls_authorized);
+        runtime.closed = true;
+        pane.apply_runtime(&runtime);
+        assert!(!pane.readiness.calls_authorized);
+    }
+
+    #[test]
     fn moving_caret_invalidates_an_unchanged_completion_draft() {
         let draft = "use @video after";
         let cursor = "use @video".len();
@@ -998,9 +999,8 @@ mod tests {
         let mut pane = configured();
         pane.readiness.credentials_ready = false;
         absent.push(pane);
-        let mut pane = configured();
-        pane.readiness.calls_authorized = false;
-        absent.push(pane);
+        // Sending a prompt is the explicit model-call authorization.
+        // The preceding UI should not require a separate permission click.
         absent.push(AgentPane::default());
         for pane in absent {
             let data = pane.data(owner(Phase::Ready));
@@ -1015,6 +1015,19 @@ mod tests {
             configured().validate_submission(owner(Phase::Ready), "  添加两段字幕  "),
             Ok("添加两段字幕".to_owned())
         );
+    }
+
+    #[test]
+    fn send_button_needs_no_separate_model_consent_click() {
+        let mut pane = configured();
+        pane.readiness.calls_authorized = false;
+        assert!(pane.data(owner(Phase::Ready)).can_send);
+        assert!(
+            pane.validate_submission(owner(Phase::Ready), "在当前工程添加字幕")
+                .is_ok()
+        );
+        // Native submit_from_ui must grant and recheck model authority before
+        // queueing a task. This rendering-only check is never its substitute.
     }
 
     #[test]

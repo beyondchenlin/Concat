@@ -178,6 +178,10 @@ impl Studio {
                         ));
                     }
                 }
+                // The application already knows which project the user opened.
+                // Bind its assistant after this mutable Studio borrow ends;
+                // ordinary manual cutting never waits for the AI component.
+                let _ = slint::invoke_from_event_loop(crate::embedded::project_opened);
                 Ok(())
             }
             Err(error) => {

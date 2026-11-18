@@ -96,7 +96,6 @@ impl Fixture {
                 store.clone(),
                 snapshot.clone(),
                 credentials,
-                4,
             )
             .unwrap(),
         );
@@ -307,7 +306,7 @@ fn streams_real_bytes_before_socket_end_and_injects_only_native_scoped_credentia
 }
 
 #[test]
-fn rejects_full_destination_and_fee_escalations_before_socket_or_budget_consumption() {
+fn rejects_full_destination_and_fee_escalations_without_limiting_task_requests() {
     let listener = listener();
     let other = self::listener();
     let fixture = Fixture::new(&listener, ModelProtocol::OpenAiCompletions);
@@ -363,7 +362,7 @@ fn rejects_full_destination_and_fee_escalations_before_socket_or_budget_consumpt
     );
 
     let server = std::thread::spawn(move || {
-        for _ in 0..4 {
+        for _ in 0..8 {
             let mut socket = accept(&listener);
             read_request(&mut socket);
             start_response(&mut socket);
@@ -371,12 +370,15 @@ fn rejects_full_destination_and_fee_escalations_before_socket_or_budget_consumpt
             finish(&mut socket);
         }
     });
-    for _ in 0..4 {
+    // Eight sequential requests exceed both former four-request gates.
+    // There is no task-wide request counter, but cancellation still fails closed.
+    for _ in 0..8 {
         let head = fixture.network.open(fixture.request()).unwrap();
         assert!(drain(&fixture.network, stream_id(&head)).1.is_none());
     }
+    fixture.network.cancel();
     let error = fixture.network.open(fixture.request()).unwrap_err();
-    assert!(error.contains("请求次数"));
+    assert!(error.contains("已停止"));
     server.join().unwrap();
 }
 
