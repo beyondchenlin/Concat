@@ -58,7 +58,8 @@ export global AgentUi {
     /// Desktop only: hiding the sidebar does not stop or reset a task.
     in-out property <bool> sidebar-open: true;
     // Only the assistant rail is resizable; the original editor dock is unchanged.
-    in-out property <length> sidebar-width: 340px;
+    // Keep the editor dominant at startup; the user can widen the rail with its gutter.
+    in-out property <length> sidebar-width: 420px;
     in-out property <string> draft;
     in-out property <int> draft-cursor;
     in-out property <bool> script-picker;
@@ -244,10 +245,16 @@ export component AgentChat inherits Rectangle {
             Text {
                 text: AgentUi.status.error; color: Theme.danger; font-size: Theme.fs; wrap: word-wrap;
             }
-            if AgentUi.status.error == "模型服务拒绝了当前凭据或权限。": HorizontalLayout {
+            if AgentUi.status.error == "模型服务未接受当前密钥（401）。"
+                || AgentUi.status.error == "模型账户余额或计费额度不足（402）。"
+                || AgentUi.status.error == "模型服务拒绝当前账户或模型访问权限（403）。": HorizontalLayout {
                 spacing: 6px;
                 Text {
-                    text: "请检查模型凭据及服务账户权限。";
+                    text: AgentUi.status.error == "模型服务未接受当前密钥（401）。"
+                        ? "请核对当前服务密钥及模型配置。"
+                        : AgentUi.status.error == "模型账户余额或计费额度不足（402）。"
+                            ? "请检查模型服务账户的余额和计费额度。"
+                            : "请检查当前账户是否拥有所选模型的访问权限。";
                     color: Theme.fg-muted; font-size: Theme.fs-sm;
                     wrap: word-wrap; horizontal-stretch: 1;
                 }

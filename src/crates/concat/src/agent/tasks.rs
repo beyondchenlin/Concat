@@ -35,6 +35,20 @@ impl TaskMode {
             Self::Edit => "edit",
         }
     }
+
+    /// Keep model-facing instructions aligned with the native, fail-closed
+    /// tool gate. A permitted edit is not a read-only conversation.
+    fn authority_instructions(self) -> &'static str {
+        match self {
+            Self::Chat => {
+                "对话（只读）：仅答疑和分析，不能修改工程；如需执行修改，请用户选择剪辑模式"
+            }
+            Self::Script => "文案（只读）：仅生成候选文案，不得直接修改工程或时间线",
+            Self::Edit => {
+                "剪辑（受控写入）：仅按用户明确要求修改当前工程；写入必须经过edit_apply_guarded、原生审批与工程修订校验，禁止绕过权限保护"
+            }
+        }
+    }
 }
 
 /// A direct edit must never invoke the script-based full-video template.
@@ -196,12 +210,12 @@ impl NativeTasks {
                 );
             }
             input = format!(
-                "原生当前工程上下文：{}\n任务权限：{}。只读任务不能编辑工程。\n{}",
+                "原生当前工程上下文：{}\n任务权限：{}。\n{}",
                 json!({
                     "path":current.path,"projectId":current.project_id,
                     "expectedSession":current.session_id,"expectedRevision":current.revision,
                 }),
-                intent.mode.as_str(),
+                intent.mode.authority_instructions(),
                 input
             );
             if input.len() > 512 * 1024 {
@@ -650,6 +664,27 @@ mod tests {
     const CONVERSATION: u64 = 71;
     const TASK: &str = "isolated-native-task";
     const PERMIT: &str = "isolated-native-permit";
+
+    #[test]
+    fn mode_instructions_keep_read_only_and_native_edit_authority_distinct() {
+        assert!(TaskMode::Chat.authority_instructions().contains("只读"));
+        assert!(TaskMode::Script.authority_instructions().contains("只读"));
+        let edit = TaskMode::Edit.authority_instructions();
+        assert!(edit.contains("受控写入"));
+        assert!(edit.contains("edit_apply_guarded"));
+        assert!(edit.contains("原生审批"));
+        assert!(!edit.contains("只读"));
+        assert!(
+            !TaskMode::Chat
+                .authority_instructions()
+                .contains("edit_apply_guarded")
+        );
+        assert!(
+            !TaskMode::Script
+                .authority_instructions()
+                .contains("edit_apply_guarded")
+        );
+    }
 
     struct Directory(PathBuf);
     impl Drop for Directory {

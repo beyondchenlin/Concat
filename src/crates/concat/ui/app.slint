@@ -365,7 +365,7 @@ export component App inherits Window {
     /// Draw minimise / maximise / close on the strip. False on macOS, where
     /// the traffic lights are the window's own.
     in property <bool> own-window-buttons;
-    private property <length> sidebar-drag-start: 340px;
+    private property <length> sidebar-drag-start: 420px;
     /// Read back from the platform on every resize, so the strip can show
     /// restore rather than maximise - whichever route maximised it.
     in-out property <bool> window-maximized;
@@ -853,14 +853,21 @@ export component App inherits Window {
                     preferred-width: 8px;
                     pressed => { root.sidebar-drag-start = sidebar.width; }
                     moved(delta) => {
+                        // Leave a usable native editor instead of allowing Pi to
+                        // cover all but its 64px recovery grip. On wide screens
+                        // the editor keeps at least 54% of the window, with a
+                        // 600px floor and an 840px cap for the assistant.
+                        // Calculate this on drag, not as a layout-bound max:
+                        // a root-width-dependent max-width forms a layout cycle.
                         AgentUi.sidebar-width = Math.clamp(
-                            root.sidebar-drag-start - delta, 280px,
-                            // Match the native dock's 64px recovery grip plus 8px gutter.
-                            Math.max(280px, root.width - 72px));
+                            root.sidebar-drag-start - delta, 320px,
+                            Math.max(320px,
+                                Math.min(840px,
+                                    Math.min(root.width * 0.46, root.width - 600px))));
                     }
                 }
                 sidebar := AgentSidebar {
-                    min-width: AgentUi.sidebar-open ? 280px : 36px;
+                    min-width: AgentUi.sidebar-open ? 320px : 36px;
                     // A fixed layout bound avoids a root-width / layout-info cycle.
                     // The drag callback independently caps actual user changes.
                     max-width: AgentUi.sidebar-open ? 16384px : 36px;
