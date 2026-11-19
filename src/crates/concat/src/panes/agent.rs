@@ -122,6 +122,34 @@ impl MediaReference {
     }
 }
 
+/// A short excerpt for the compact transcript. The complete record stays
+/// intact and can always be expanded; the UI never alters durable Pi history.
+fn message_preview(author: &str, body: &str) -> (String, bool) {
+    // This runs as streaming text changes: cap scans to a few hundred
+    // characters/lines, even when a tool returned a very large payload.
+    let collapsible =
+        author == "执行结果" || body.chars().nth(360).is_some() || body.lines().take(9).count() > 8;
+    if !collapsible {
+        return (String::new(), false);
+    }
+    let line = body
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with("```") && *line != "{" && *line != "[")
+        .unwrap_or_else(|| body.trim());
+    let limit = if author == "执行结果" { 120 } else { 220 };
+    let mut excerpt: String = line.chars().take(limit).collect();
+    if line.chars().nth(limit).is_some() || body.trim().len() > line.len() {
+        excerpt.push('…');
+    }
+    let preview = if author == "执行结果" {
+        format!("工具返回：{excerpt}")
+    } else {
+        excerpt
+    };
+    (preview, true)
+}
+
 impl AgentPane {
     pub(crate) fn apply_runtime(&mut self, runtime: &crate::embedded::RuntimeView) {
         self.readiness.runtime_ready = runtime.phase == "ready" && !runtime.closed;
@@ -145,9 +173,13 @@ impl AgentPane {
                         "tool" => "执行结果",
                         _ => return None,
                     };
+                    let body = message["text"].as_str()?;
+                    let (preview, collapsible) = message_preview(author, body);
                     Some(AgentMessageData {
                         author: author.into(),
-                        body: message["text"].as_str()?.into(),
+                        body: body.into(),
+                        preview: preview.into(),
+                        collapsible,
                         pending: false,
                     })
                 }));
@@ -156,9 +188,12 @@ impl AgentPane {
                 .as_str()
                 .filter(|text| !text.is_empty())
             {
+                let (preview, collapsible) = message_preview("助手", partial);
                 self.messages.push(AgentMessageData {
                     author: "助手".into(),
                     body: partial.into(),
+                    preview: preview.into(),
+                    collapsible,
                     pending: true,
                 });
             }
@@ -838,6 +873,38 @@ pub(crate) fn install_composer(app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_transcript_keeps_exact_text_and_exposes_full_details() {
+        let (short, folded) = message_preview("助手", "字幕已经添加。");
+        assert!(!folded);
+        assert!(short.is_empty());
+
+        let tool_text = "{\n  \"error\": \"render failed\",\n  \"step\": 4\n}";
+        let (tool_preview, tool_folded) = message_preview("执行结果", tool_text);
+        assert!(tool_folded);
+        assert!(tool_preview.contains("render failed"));
+
+        let long_text = format!("已经添加标题。\n{}", "详细检查记录。".repeat(55));
+        let (preview, folded) = message_preview("助手", &long_text);
+        assert!(folded);
+        assert!(preview.starts_with("已经添加标题。"));
+        assert!(preview.ends_with('…'));
+
+        let mut pane = AgentPane::default();
+        pane.apply_runtime(&crate::embedded::RuntimeView {
+            presentation: Some(serde_json::json!({"messages": [
+                {"role":"assistant", "text":long_text},
+                {"role":"tool", "text":tool_text}
+            ]})),
+            ..Default::default()
+        });
+        assert_eq!(pane.messages.len(), 2);
+        assert_eq!(pane.messages[0].body.as_str(), long_text);
+        assert!(pane.messages[0].collapsible);
+        assert_eq!(pane.messages[1].body.as_str(), tool_text);
+        assert!(pane.messages[1].collapsible);
+    }
 
     #[test]
     fn model_authorization_survives_a_running_and_completed_task_but_not_owner_loss() {
