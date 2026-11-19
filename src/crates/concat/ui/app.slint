@@ -868,9 +868,11 @@ export component App inherits Window {
                 }
                 sidebar := AgentSidebar {
                     min-width: AgentUi.sidebar-open ? 320px : 36px;
-                    // A fixed layout bound avoids a root-width / layout-info cycle.
-                    // The drag callback independently caps actual user changes.
-                    max-width: AgentUi.sidebar-open ? 16384px : 36px;
+                    // A preferred width alone lets HorizontalLayout stretch
+                    // Pi across the remaining window and hide editor panes.
+                    // Bind its cap to the requested width, never root.width:
+                    // the latter would create a layout-info cycle.
+                    max-width: AgentUi.sidebar-open ? AgentUi.sidebar-width : 36px;
                     preferred-width: AgentUi.sidebar-open ? AgentUi.sidebar-width : 36px;
                 }
             }
