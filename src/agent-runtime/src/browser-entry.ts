@@ -9,6 +9,19 @@ import { conversationPresentation } from "./presentation.ts";
 type RuntimeLibrary = typeof import("./index.ts");
 type HostWindow = Window & typeof globalThis & { BKCatNative?: NativeMessageBridge; BKCatRuntime?: RuntimeLibrary };
 
+/** A bounded diagnostic, never the provider URL, local project path or key. */
+export function safeStartupFailure(error: unknown): string {
+  const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return (raw || "运行组件初始化失败")
+    .replace(/https?:\/\/[^\s"']+/gi, "[网络地址]")
+    .replace(/[a-z]:\\[^\s"']+/gi, "[本地路径]")
+    .replace(/\bBearer\s+\S+/gi, "[已隐藏凭据]")
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}/g, "[已隐藏凭据]")
+    .replace(/\b(?:api[_-]?key|token|secret)\s*[:=]\s*\S+/gi, "[已隐藏凭据]")
+    .replace(/[\x00-\x1f\x7f]/g, " ")
+    .trim().slice(0, 384);
+}
+
 /** One controlled component. Native commands come from the native UI, not
  * from model tools. The component must be replaced to start a new host. */
 export function attachNativeController(library: RuntimeLibrary, bridge: NativeMessageBridge): () => void {
@@ -83,7 +96,11 @@ export function attachNativeController(library: RuntimeLibrary, bridge: NativeMe
         if (runtime) throw new library.RuntimeRefused("a component can start only one host generation");
         if (typeof payload.storageId !== "string" || !payload.storageId) throw new library.RuntimeRefused("native storage identity is required");
         runtime = new library.AgentRuntime(payload.storageId, ports,
-          library.piEngineFactory(library.nativeModelConfiguration(payload.modelConfiguration)));
+          library.piEngineFactory(library.nativeModelConfiguration(payload.modelConfiguration)),
+          (stage, error) => {
+            if (!disposed) bridge.postMessage(JSON.stringify({ channel: library.NATIVE_CHANNEL,
+              event: "runtime.failed", stage, message: safeStartupFailure(error) }));
+          });
         return runtime.start();
       }
       case "runtime.inspect": return requireRuntime().inspect();

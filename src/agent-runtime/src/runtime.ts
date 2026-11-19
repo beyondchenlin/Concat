@@ -20,6 +20,7 @@ export class AgentRuntime {
   readonly #storageId: string;
   readonly #ports: NativePorts;
   readonly #factory: PiEngineFactory;
+  readonly #onStartupFailure: ((stage: "acquire" | "activate", error: unknown) => void) | undefined;
   readonly #gate = new ExecutionGate();
   #lease: OwnerLease | undefined;
   #engine: PiEngine | undefined;
@@ -31,11 +32,15 @@ export class AgentRuntime {
   #nativeConfirmed = false;
   readonly #observations = new Set<() => void>();
 
-  constructor(storageId: string, ports: NativePorts, factory: PiEngineFactory) {
+  constructor(
+    storageId: string, ports: NativePorts, factory: PiEngineFactory,
+    onStartupFailure?: (stage: "acquire" | "activate", error: unknown) => void,
+  ) {
     if (!storageId) throw new RuntimeRefused("a native session store is required");
     this.#storageId = storageId;
     this.#ports = ports;
     this.#factory = factory;
+    this.#onStartupFailure = onStartupFailure;
   }
 
   get phase() { return this.#gate.phase; }
@@ -45,6 +50,7 @@ export class AgentRuntime {
     const work = this.#start();
     this.#transition = work;
     return work.catch(async (error: unknown) => {
+      this.#reportStartupFailure("acquire", error);
       await this.stop().catch(() => {});
       throw error;
     });
@@ -88,9 +94,18 @@ export class AgentRuntime {
     const work = this.#activate(approval).finally(() => { this.#confirming = false; });
     this.#transition = work;
     return work.catch(async (error: unknown) => {
-      if (this.phase === "activating" || this.#nativeConfirmed) await this.stop().catch(() => {});
+      if (this.phase === "activating" || this.#nativeConfirmed) {
+        // Report the original failure before revocation closes the native
+        // message channel. Waiting for drain first loses the only diagnostic.
+        this.#reportStartupFailure("activate", error);
+        await this.stop().catch(() => {});
+      }
       throw error;
     });
+  }
+
+  #reportStartupFailure(stage: "acquire" | "activate", error: unknown): void {
+    try { this.#onStartupFailure?.(stage, error); } catch { /* Reporting cannot grant authority or delay revocation. */ }
   }
 
   async #activate(approval: RecoveryApproval): Promise<void> {

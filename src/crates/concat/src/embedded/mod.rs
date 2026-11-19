@@ -401,6 +401,7 @@ impl EmbeddedRuntime {
             closed: Arc::new(move |reason| {
                 if let Some(runtime) = weak_closed.upgrade() {
                     runtime.revoke(&reason);
+                    runtime.remember_terminal_failure(&reason);
                     runtime.platform_closed.store(true, Ordering::Release);
                     // A full queue already wakes the worker, which checks the
                     // close flag before consuming any more privileged work.
@@ -541,6 +542,28 @@ impl EmbeddedRuntime {
                     {
                         view.phase = phase.to_owned();
                     }
+                }
+                "runtime.failed" => {
+                    // The bundled runtime reports this before revoking an
+                    // activation that cannot finish. Otherwise its cleanup
+                    // closes WebView2 before the original error reaches UI.
+                    let stage = envelope["stage"].as_str();
+                    let message = envelope["message"].as_str();
+                    if !matches!(stage, Some("acquire" | "activate"))
+                        || message.is_none_or(|message| {
+                            message.is_empty()
+                                || message.len() > 1024
+                                || message.chars().any(char::is_control)
+                        })
+                    {
+                        self.fail("运行组件报告了无效的启动诊断，会话已安全停止。");
+                        return;
+                    }
+                    let stage = stage.expect("checked above");
+                    let message = message.expect("checked above");
+                    log::error!("bk-cat-agent: startup_failed stage={stage} reason={message}");
+                    self.fail(&format!("智能体启动失败：{message}"));
+                    return;
                 }
                 "conversation.presentation" => {
                     if let Err(error) = self.accept_presentation(&envelope) {
@@ -1107,6 +1130,15 @@ impl EmbeddedRuntime {
         self.publish();
     }
 
+    fn remember_terminal_failure(&self, reason: &str) {
+        if let Ok(mut view) = self.view.lock()
+            && terminal_reason_replaces_placeholder(&view.error, reason)
+        {
+            log::error!("bk-cat-agent: platform_failed reason={reason}");
+            view.error = format!("内置运行组件异常：{reason}");
+        }
+    }
+
     pub(crate) fn tool_permission_view(
         &self,
     ) -> Result<crate::agent::tool_approval::PermissionView, String> {
@@ -1181,6 +1213,16 @@ impl EmbeddedRuntime {
             }
         });
     }
+}
+
+fn terminal_reason_replaces_placeholder(current: &str, reason: &str) -> bool {
+    matches!(
+        current,
+        "" | "Windows runtime stopping" | "Windows runtime closed"
+    ) && !matches!(
+        reason,
+        "" | "Windows runtime stopping" | "Windows runtime closed"
+    )
 }
 
 impl Drop for EmbeddedRuntime {
@@ -2203,6 +2245,42 @@ mod tests {
             assert_eq!(fixture.runtime.view().error, error);
             fixture.finish();
         }
+    }
+
+    #[test]
+    fn activation_failure_is_preserved_through_platform_teardown() {
+        let fixture = StartupFixture::new(Duration::from_secs(30));
+        fixture.message(json!({"event":"runtime.failed", "stage":"activate",
+            "message":"原版 Pi 会话存储初始化失败"}));
+        fixture.wait_for(|view| view.phase == "stopping" && !view.error.is_empty());
+        assert_eq!(
+            fixture.runtime.view().error,
+            "智能体启动失败：原版 Pi 会话存储初始化失败"
+        );
+        assert_eq!(fixture.closes.load(Ordering::Acquire), 1);
+        (fixture.callbacks.closed)("Windows runtime closed".into());
+        fixture.wait_for(|view| view.closed);
+        assert_eq!(
+            fixture.runtime.view().error,
+            "智能体启动失败：原版 Pi 会话存储初始化失败"
+        );
+        fixture.finish();
+    }
+
+    #[test]
+    fn platform_terminal_reason_replaces_only_generic_placeholder() {
+        assert!(terminal_reason_replaces_placeholder(
+            "Windows runtime stopping",
+            "WebView2 initialisation timed out"
+        ));
+        assert!(!terminal_reason_replaces_placeholder(
+            "智能体启动失败：原始错误",
+            "WebView2 initialisation timed out"
+        ));
+        assert!(!terminal_reason_replaces_placeholder(
+            "Windows runtime stopping",
+            "Windows runtime closed"
+        ));
     }
 
     #[test]

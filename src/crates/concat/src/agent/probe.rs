@@ -15,7 +15,7 @@ use concat_agent::Phase;
 use concat_agent::configuration::{ChannelDraft, ModelProtocol};
 use concat_agent::credentials::{CredentialScope, CredentialStatus, Secret, platform_store};
 use concat_agent::operations::inspect_operations;
-use concat_agent::sqlite::{DATABASE_FILE_NAME, inspect_storage};
+use concat_agent::sqlite::inspect_storage;
 use concat_api::AppDirs;
 use concat_host::projects;
 use concat_project::Command;
@@ -1363,36 +1363,22 @@ fn platform_mode(configuration: &Configuration, steps: &mut Vec<Value>) -> Resul
             shell.agent.borrow().clone().ok_or("native owner absent")?,
         ))
     })?;
-    let first = wait_for("actual bundled webpage recovery", || {
+    // Clean, already-open projects are now bound through the native one-shot
+    // approval path. The real platform probe must exercise that production
+    // path instead of waiting for a recovery prompt which is not displayed.
+    let first = wait_for("actual bundled webpage ready after clean binding", || {
         let view = runtime.view();
         if !view.error.is_empty() {
             return Err(view.error);
         }
-        Ok((view.phase == "recovery" && view.snapshot.is_some()).then_some(view))
+        Ok((view.phase == "ready" && view.snapshot.is_some()).then_some(view))
     })?;
     ensure(
-        first.loaded && bridge.status()?.phase == Phase::RecoveryRequired,
-        "page load auto-approved execution",
-    )?;
-    ensure(
-        !bridge
-            .owner
-            .storage_root()
-            .join(DATABASE_FILE_NAME)
-            .exists(),
-        "page opened writable storage before user approval",
+        first.loaded && bridge.status()?.phase == Phase::Ready,
+        "clean project failed the native one-shot binding",
     )?;
     let generation = bridge.status()?.generation;
     let component = runtime.component().to_owned();
-    let confirming = Arc::clone(&runtime);
-    on_ui(move |_, _| confirming.confirm())?;
-    wait_for("actual bundled webpage ready", || {
-        let view = runtime.view();
-        if !view.error.is_empty() {
-            return Err(view.error);
-        }
-        Ok((view.phase == "ready").then_some(()))
-    })?;
     ensure(
         bridge.status()?.phase == Phase::Ready,
         "ready page has no native authority",
@@ -1574,20 +1560,20 @@ fn platform_mode(configuration: &Configuration, steps: &mut Vec<Value>) -> Resul
                 .ok_or("replacement owner absent")?,
         ))
     })?;
-    let reopened = wait_for("replacement page recovery", || {
+    let reopened = wait_for("replacement page clean binding", || {
         let view = replacement.view();
         if !view.error.is_empty() {
             return Err(view.error);
         }
-        Ok((view.phase == "recovery" && view.snapshot.is_some()).then_some(view))
+        Ok((view.phase == "ready" && view.snapshot.is_some()).then_some(view))
     })?;
     ensure(
         replacement.component() != component && next.status()?.generation > generation,
         "replacement reused the old component generation",
     )?;
     ensure(
-        next.status()?.phase == Phase::RecoveryRequired,
-        "replacement automatically revived execution",
+        next.status()?.phase == Phase::Ready,
+        "replacement did not complete a fresh native binding",
     )?;
     let snapshot = reopened
         .snapshot
@@ -1598,8 +1584,10 @@ fn platform_mode(configuration: &Configuration, steps: &mut Vec<Value>) -> Resul
     )?;
     std::thread::sleep(Duration::from_millis(500));
     ensure(
-        replacement.view().phase == "recovery" && next.status()?.phase == Phase::RecoveryRequired,
-        "idle replacement auto-approved recovery",
+        replacement.view().phase == "ready"
+            && !replacement.view().task_running
+            && next.status()?.phase == Phase::Ready,
+        "idle replacement scheduled work or lost native binding",
     )?;
     let stopping = Arc::clone(&replacement);
     on_ui(move |_, _| {

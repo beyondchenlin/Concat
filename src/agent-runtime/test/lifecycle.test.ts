@@ -263,6 +263,20 @@ test("failed Pi open revokes and releases the owned generation", async () => {
   assert.deepEqual(f.log.slice(-2), ["revoke", "release"]);
 });
 
+test("an activation failure is reported before its native owner is revoked", async () => {
+  const f = fixture();
+  f.factory.open = async () => { throw new Error("actual Pi initialization failure"); };
+  const runtime = new AgentRuntime("store", f.ports, f.factory, (stage, error) => {
+    f.log.push(`failure:${stage}:${(error as Error).message}`);
+  });
+  await runtime.start();
+  await assert.rejects(runtime.confirmRecovery(f.approval), /actual Pi initialization failure/);
+  assert.deepEqual(f.log.slice(-3), [
+    "failure:activate:actual Pi initialization failure", "revoke", "release",
+  ]);
+  assert.equal(runtime.phase, "closed");
+});
+
 test("an observer cleanup failure cannot prevent native revocation, engine cleanup, or ownership drain", async () => {
   const f = fixture();
   f.engine.observeConversation = async () => ({ value: {}, detach() { throw new Error("listener cleanup failed"); } });
