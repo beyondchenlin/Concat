@@ -20,6 +20,8 @@ export enum AgentView { chat, editor, script }
 export struct AgentMessageData {
     author: string,
     body: string,
+    preview: string,
+    collapsible: bool,
     pending: bool,
 }
 
@@ -189,6 +191,9 @@ export component AgentChat inherits Rectangle {
     background: Theme.panel;
     border-radius: Theme.r-lg;
     private property <bool> send-help;
+    // Expansion belongs to the chat surface, not each recycled model row.
+    // It survives streamed model updates and avoids reflowing all tool logs.
+    private property <int> expanded-message-index: -1;
     // Full access remains unchanged until the person explicitly confirms it.
     private property <bool> confirm-full-access;
     // Select commits its own current index; resynchronise when the native
@@ -202,6 +207,7 @@ export component AgentChat inherits Rectangle {
             root.send-help = true;
         } else {
             root.send-help = false;
+            root.expanded-message-index = -1;
             side-transcript.content-y = Math.min(0px, side-transcript.height - side-transcript.content-height);
             if AgentUi.composer-mode == 1 { AgentUi.edit-requested(AgentUi.draft); }
             else { AgentUi.send-requested(AgentUi.draft); }
@@ -270,12 +276,26 @@ export component AgentChat inherits Rectangle {
                 if AgentUi.messages.length == 0: Text {
                     text: "可以提问当前工程；需要修改时，请选择“剪辑”。"; color: Theme.fg-dim; font-size: Theme.fs; wrap: word-wrap;
                 }
-                for message in AgentUi.messages: Rectangle {
-                    height: message-row.preferred-height; background: Theme.well; border-radius: Theme.r;
+                for message[index] in AgentUi.messages: Rectangle {
+                    // Only the user's prompt is a bubble. Assistant responses and
+                    // tool events use a quiet transcript, like the reference UI.
+                    height: message-row.preferred-height;
+                    background: message.author == "我" ? Theme.well : transparent;
+                    border-radius: Theme.r;
                     message-row := VerticalLayout {
                         padding: 8px; spacing: 4px;
                         Text { text: message.author + (message.pending ? " · 接收中" : ""); color: Theme.fg-dim; font-size: Theme.fs-sm; }
-                        Text { text: message.body; color: Theme.fg; font-size: Theme.fs; wrap: word-wrap; }
+                        if !message.collapsible || root.expanded-message-index == index: Text {
+                            text: message.body; color: Theme.fg; font-size: Theme.fs; wrap: word-wrap;
+                        }
+                        if message.collapsible && root.expanded-message-index != index: Text {
+                            text: message.preview; color: Theme.fg; font-size: Theme.fs; wrap: word-wrap;
+                        }
+                        if message.collapsible: Button {
+                            label: root.expanded-message-index == index ? "收起详情" : "展开完整内容";
+                            ghost: true; align-left: true;
+                            clicked => { root.expanded-message-index = root.expanded-message-index == index ? -1 : index; }
+                        }
                     }
                 }
             }
@@ -452,7 +472,8 @@ export component AgentChat inherits Rectangle {
         composer := Rectangle {
             min-height: composer-layout.preferred-height; max-height: composer-layout.preferred-height;
             background: Theme.well; border-radius: Theme.r; border-width: 1px;
-            border-color: side-prompt.has-focus ? Theme.accent : Theme.line;
+            // Keep the compose area quiet even while typing.
+            border-color: Theme.line;
             composer-layout := VerticalLayout {
                 padding: 5px; spacing: 2px;
                 side-prompt-box := ResizeBox {
@@ -488,10 +509,13 @@ export component AgentChat inherits Rectangle {
                         }
                         cursor-position-changed(at) => { AgentUi.cursor-moved(self.cursor-position-byte-offset); side-prompt-box.reveal(at.y, self.font-size * 1.4); }
                     }
-                    if AgentUi.draft == "" && !side-prompt.has-focus: Text {
+                    if AgentUi.draft == "": Text {
                         x: 0px; y: side-prompt-box.pad-y;
                         width: side-prompt-box.width - 2 * side-prompt-box.pad-x;
-                        horizontal-alignment: left; text: AgentUi.composer-mode == 1 ? "描述你的剪辑要求…" : "向 Pi 提问，或引用工程素材…";
+                        horizontal-alignment: left;
+                        text: AgentUi.composer-mode == 1
+                            ? "描述剪辑要求；输入 @ 引用素材，/ 使用命令…"
+                            : "输入消息；输入 @ 引用素材，/ 使用命令…";
                         color: Theme.fg-dim; font-size: Theme.fs; wrap: word-wrap;
                     }
                 }
@@ -509,8 +533,6 @@ export component AgentChat inherits Rectangle {
                 HorizontalLayout {
                     height: 30px; spacing: 2px;
                     IconButton { glyph: Glyph.plus; label: "导入素材"; clicked => { AgentUi.attach-requested(); } }
-                    IconButton { text: "@"; label: "引用工程素材"; clicked => { AgentUi.trigger-requested("@"); root.resume-composing(); } }
-                    IconButton { text: "/"; label: "命令"; clicked => { AgentUi.trigger-requested("/"); root.resume-composing(); } }
                     if AgentUi.models.length > 0: Select {
                         options: AgentUi.models; current: AgentUi.model-index; placeholder: "选择模型";
                         enabled: !AgentSettingsUi.busy && !AgentUi.status.busy; flat: true; snug: true;
@@ -530,8 +552,7 @@ export component AgentChat inherits Rectangle {
                 // Like the conversation composer, the session permission is
                 // always visible beside the prompt, not detached above chat.
                 HorizontalLayout {
-                    height: 30px; spacing: 6px; alignment: center;
-                    Text { text: "操作权限"; color: Theme.fg-muted; font-size: Theme.fs-sm; }
+                    height: 28px; spacing: 4px; alignment: center;
                     permission-picker := Select {
                         options: ["请求批准", "帮我批准", "完全访问权限"];
                         details: ["每次剪辑写入前询问", "仅安全新增自动通过，其他操作询问", "当前工程内自动执行，不再逐次询问"];
@@ -551,7 +572,9 @@ export component AgentChat inherits Rectangle {
                         }
                     }
                     if AgentUi.tool-mode == 2: Text {
-                        text: "完全访问已开启 · 仅限当前工程";
+                        // The selected mode is already visible in the picker;
+                        // only keep the critical scope restriction beside it.
+                        text: "仅限当前工程";
                         color: Theme.danger; font-size: Theme.fs-sm;
                         overflow: elide; horizontal-stretch: 1;
                     }
