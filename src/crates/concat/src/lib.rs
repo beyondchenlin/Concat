@@ -726,8 +726,11 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     // route has in common.
     app.on_window_resized({
         let weak = app.as_weak();
-        // Treat startup as potentially narrow until its first settled size.
-        let was_narrow = std::cell::Cell::new(true);
+        // The window may report zero dimensions before its first frame.
+        // Assume no previous narrow event, so the first real narrow resize
+        // collapses the rail. Opening a narrow editor already collapses it
+        // in the on-start binding; the user can reopen it deliberately.
+        let was_narrow = std::cell::Cell::new(false);
         move || {
             if let Some(app) = weak.upgrade() {
                 // A wide sidebar would push the original dock below its compact

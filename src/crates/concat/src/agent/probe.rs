@@ -1353,15 +1353,17 @@ fn native_steps(
 }
 
 fn platform_mode(configuration: &Configuration, steps: &mut Vec<Value>) -> Result<(), String> {
-    let (runtime, bridge) = on_ui(|shell, _| {
-        Ok((
-            shell
+    // Windows opens command-line projects after the first configured frame.
+    // Its project-open callback connects the embedded host asynchronously;
+    // the probe thread may start before either native handle exists.
+    let (runtime, bridge) = wait_for("native host after deferred project open", || {
+        on_ui(|shell, _| {
+            Ok(shell
                 .embedded
                 .borrow()
                 .clone()
-                .ok_or("platform runtime absent")?,
-            shell.agent.borrow().clone().ok_or("native owner absent")?,
-        ))
+                .zip(shell.agent.borrow().clone()))
+        })
     })?;
     // Clean, already-open projects are now bound through the native one-shot
     // approval path. The real platform probe must exercise that production
@@ -1377,6 +1379,12 @@ fn platform_mode(configuration: &Configuration, steps: &mut Vec<Value>) -> Resul
         first.loaded && bridge.status()?.phase == Phase::Ready,
         "clean project failed the native one-shot binding",
     )?;
+    on_ui(|_, app| {
+        ensure(
+            app.global::<crate::ui::AgentUi>().get_composer_mode() == 0,
+            "new editor must default to read-only chat, not editing",
+        )
+    })?;
     let generation = bridge.status()?.generation;
     let component = runtime.component().to_owned();
     ensure(
@@ -1484,17 +1492,19 @@ fn platform_mode(configuration: &Configuration, steps: &mut Vec<Value>) -> Resul
         app.window().set_size(slint::PhysicalSize::new(900, 650));
         Ok((size.width, size.height))
     })?;
-    window_snapshot(configuration, "composer-narrow-window.png")?;
-    on_ui(|shell, app| {
-        ensure(
-            !app.global::<crate::ui::AgentUi>().get_sidebar_open(),
-            "sidebar did not collapse at narrow width",
-        )?;
-        ensure(
-            !shell.studio.borrow().compact,
-            "original editor entered compact layout despite collapsed sidebar",
-        )
+    wait_for("automatic sidebar collapse after window resize", || {
+        on_ui(|shell, app| {
+            if app.global::<crate::ui::AgentUi>().get_sidebar_open() {
+                return Ok(None);
+            }
+            ensure(
+                !shell.studio.borrow().compact,
+                "original editor entered compact layout despite collapsed sidebar",
+            )?;
+            Ok(Some(()))
+        })
     })?;
+    window_snapshot(configuration, "composer-narrow-window.png")?;
     click_visible_label("Pi")?;
     on_ui(|_, app| {
         ensure(

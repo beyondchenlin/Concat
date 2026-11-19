@@ -12,12 +12,14 @@ type HostWindow = Window & typeof globalThis & { BKCatNative?: NativeMessageBrid
 /** A bounded diagnostic, never the provider URL, local project path or key. */
 export function safeStartupFailure(error: unknown): string {
   const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "";
-  return (raw || "运行组件初始化失败")
+  return (raw || "运行组件初始化失败").slice(0, 4096)
+    // A Windows path can contain spaces. Redact the complete path segment,
+    // even at the cost of hiding a trailing operating-system explanation.
+    .replace(/\b[a-z]:[\\/][^,;'"\r\n]*?(?=\s+(?:https?:\/\/|Bearer\b|sk-|api[_-]?key\s*[:=])|[,;'"\r\n]|$)/gi, "[本地路径]")
     .replace(/https?:\/\/[^\s"']+/gi, "[网络地址]")
-    .replace(/[a-z]:\\[^\s"']+/gi, "[本地路径]")
     .replace(/\bBearer\s+\S+/gi, "[已隐藏凭据]")
     .replace(/\bsk-[A-Za-z0-9_-]{8,}/g, "[已隐藏凭据]")
-    .replace(/\b(?:api[_-]?key|token|secret)\s*[:=]\s*\S+/gi, "[已隐藏凭据]")
+    .replace(/["']?(?:api[_-]?key|token|secret)["']?\s*[:=]\s*["']?[^\s"'};,]+["']?/gi, "[已隐藏凭据]")
     .replace(/[\x00-\x1f\x7f]/g, " ")
     .trim().slice(0, 384);
 }

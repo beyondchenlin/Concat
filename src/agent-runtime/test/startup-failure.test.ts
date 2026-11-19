@@ -22,3 +22,12 @@ test("startup diagnostics remain single-line and bounded", () => {
   assert.equal(safeStartupFailure(new Error("x".repeat(5000) + "\nsecret")).length, 384);
   assert(!safeStartupFailure("first\nsecond").includes("\n"));
 });
+
+test("startup diagnostics do not expose paths with spaces or JSON-wrapped credentials", () => {
+  const path = safeStartupFailure('open C:\\Users\\ai\\My Projects\\sensitive.db, database locked');
+  assert(!path.includes("My Projects"));
+  assert(!path.includes("sensitive.db"));
+  assert(path.includes("database locked"));
+  const credentials = safeStartupFailure('{"apiKey":"private-value-123","token":"other-private-value"}');
+  assert(!credentials.includes("private-value"));
+});

@@ -70,7 +70,8 @@ export global AgentUi {
     in-out property <int> suggestion-index;
     in-out property <[string]> models;
     in-out property <int> model-index: -1;
-    in-out property <int> composer-mode: 1;
+    // Safe initial choice: ordinary questions never imply permission to edit.
+    in-out property <int> composer-mode: 0;
     callback draft-edited(text: string, cursor: int);
     callback cursor-moved(cursor: int);
     callback trigger-requested(marker: string);
@@ -267,7 +268,7 @@ export component AgentChat inherits Rectangle {
             side-entries := VerticalLayout {
                 width: side-transcript.width; height: self.preferred-height; spacing: 8px; alignment: start;
                 if AgentUi.messages.length == 0: Text {
-                    text: "描述你的剪辑要求，或引用工程素材。"; color: Theme.fg-dim; font-size: Theme.fs; wrap: word-wrap;
+                    text: "可以提问当前工程；需要修改时，请选择“剪辑”。"; color: Theme.fg-dim; font-size: Theme.fs; wrap: word-wrap;
                 }
                 for message in AgentUi.messages: Rectangle {
                     height: message-row.preferred-height; background: Theme.well; border-radius: Theme.r;
@@ -465,7 +466,7 @@ export component AgentChat inherits Rectangle {
                         color: Theme.fg; font-size: Theme.fs-input;
                         selection-background-color: Theme.accent; selection-foreground-color: Theme.on-accent;
                         accessible-role: text-input;
-                        accessible-label: "剪辑要求";
+                        accessible-label: AgentUi.composer-mode == 1 ? "剪辑要求" : "对话输入";
                         accessible-value <=> self.text;
                         accessible-action-set-value(value) => { self.text = value; AgentUi.draft-edited(self.text, self.cursor-position-byte-offset); }
                         accessible-action-set-selection-offsets(anchor, focus) => { self.set-selection-offsets(anchor, focus); }
@@ -490,7 +491,7 @@ export component AgentChat inherits Rectangle {
                     if AgentUi.draft == "" && !side-prompt.has-focus: Text {
                         x: 0px; y: side-prompt-box.pad-y;
                         width: side-prompt-box.width - 2 * side-prompt-box.pad-x;
-                        horizontal-alignment: left; text: "描述你的剪辑要求…";
+                        horizontal-alignment: left; text: AgentUi.composer-mode == 1 ? "描述你的剪辑要求…" : "向 Pi 提问，或引用工程素材…";
                         color: Theme.fg-dim; font-size: Theme.fs; wrap: word-wrap;
                     }
                 }
