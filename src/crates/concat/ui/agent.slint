@@ -239,8 +239,31 @@ export component AgentChat inherits Rectangle {
             height: 4px; border-radius: 2px; background: Theme.field;
             Rectangle { width: parent.width * Math.clamp(AgentUi.status.progress, 0, 1); height: parent.height; border-radius: 2px; background: Theme.accent; }
         }
-        if AgentUi.status.error != "": Text {
-            text: AgentUi.status.error; color: Theme.danger; font-size: Theme.fs; wrap: word-wrap;
+        if AgentUi.status.error != "": VerticalLayout {
+            spacing: 4px;
+            Text {
+                text: AgentUi.status.error; color: Theme.danger; font-size: Theme.fs; wrap: word-wrap;
+            }
+            if AgentUi.status.error == "模型服务拒绝了当前凭据或权限。": HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: "请检查模型凭据及服务账户权限。";
+                    color: Theme.fg-muted; font-size: Theme.fs-sm;
+                    wrap: word-wrap; horizontal-stretch: 1;
+                }
+                Button { label: "检查模型"; clicked => { AgentSettingsUi.open-requested(); } }
+            }
+            if AgentUi.status.error == "当前工程标识尚未保存或已改变，文案操作已停止，请重新打开工程。": HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: "保存后重新打开工程，再连接智能会话。";
+                    color: Theme.fg-muted; font-size: Theme.fs-sm;
+                    wrap: word-wrap; horizontal-stretch: 1;
+                }
+                if AgentUi.status.can-stop: Button {
+                    label: "停止会话"; clicked => { AgentUi.stop-requested(); }
+                }
+            }
         }
         if AgentUi.status.missing != "": Text {
             text: AgentUi.status.missing; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap;
@@ -530,36 +553,30 @@ export component AgentChat inherits Rectangle {
                         }
                     }
                 }
+                // Model, intent, native permission and Send share one toolbar.
+                // Keep all selectors compact even in the narrow assistant pane.
                 HorizontalLayout {
-                    height: 30px; spacing: 2px;
+                    height: 32px; spacing: 2px; alignment: center;
                     IconButton { glyph: Glyph.plus; label: "导入素材"; clicked => { AgentUi.attach-requested(); } }
                     if AgentUi.models.length > 0: Select {
                         options: AgentUi.models; current: AgentUi.model-index; placeholder: "选择模型";
                         enabled: !AgentSettingsUi.busy && !AgentUi.status.busy; flat: true; snug: true;
-                        min-width: 70px; max-width: 90px;
+                        min-width: 64px; max-width: 88px; horizontal-stretch: 0;
                         changed(index) => { AgentUi.model-chosen(index); }
                     }
                     if AgentUi.models.length == 0: Button { label: "配置模型"; ghost: true; enabled: !AgentSettingsUi.busy; clicked => { AgentSettingsUi.open-requested(); } }
-                    Select { options: ["对话", "剪辑"]; current <=> AgentUi.composer-mode; flat: true; snug: true; min-width: 60px; max-width: 70px; }
-                    Rectangle { horizontal-stretch: 1; }
-                    if AgentUi.status.busy && AgentUi.status.can-stop: IconButton { glyph: Glyph.stop; label: "停止"; clicked => { AgentUi.stop-requested(); } }
-                    if !AgentUi.status.busy: IconButton {
-                        glyph: Glyph.send; label: "发送"; accent: true;
-                        enabled: AgentUi.draft != "";
-                        clicked => { root.send-draft(); }
+                    Select {
+                        options: ["对话", "剪辑"]; current <=> AgentUi.composer-mode;
+                        flat: true; snug: true; min-width: 58px; max-width: 68px; horizontal-stretch: 0;
                     }
-                }
-                // Like the conversation composer, the session permission is
-                // always visible beside the prompt, not detached above chat.
-                HorizontalLayout {
-                    height: 28px; spacing: 4px; alignment: center;
                     permission-picker := Select {
-                        options: ["请求批准", "帮我批准", "完全访问权限"];
-                        details: ["每次剪辑写入前询问", "仅安全新增自动通过，其他操作询问", "当前工程内自动执行，不再逐次询问"];
+                        options: ["请求批准", "安全新增", "工程内全权"];
+                        details: ["每次剪辑写入前询问", "仅自动执行安全新增，其他操作仍需批准", "仅在当前工程内执行，不再逐次询问"];
                         current: AgentUi.tool-mode;
                         enabled: AgentUi.tool-connected && !AgentUi.tool-pending && !root.confirm-full-access;
-                        flat: true; snug: true; min-width: 80px; max-width: 138px;
+                        flat: true; snug: true; min-width: 86px; max-width: 108px;
                         horizontal-stretch: 0;
+                        popup-above: true; stacked-details: true; min-popup-width: 246px;
                         changed(index) => {
                             if (index == 2 && AgentUi.tool-mode != 2) {
                                 // The dropdown never grants Full by itself.
@@ -571,19 +588,13 @@ export component AgentChat inherits Rectangle {
                             }
                         }
                     }
-                    if AgentUi.tool-mode == 2: Text {
-                        // The selected mode is already visible in the picker;
-                        // only keep the critical scope restriction beside it.
-                        text: "仅限当前工程";
-                        color: Theme.danger; font-size: Theme.fs-sm;
-                        overflow: elide; horizontal-stretch: 1;
-                    }
-                    if !AgentUi.tool-connected: Text {
-                        text: "连接会话后可切换";
-                        color: Theme.fg-dim; font-size: Theme.fs-sm;
-                        overflow: elide; horizontal-stretch: 1;
-                    }
                     Rectangle { horizontal-stretch: 1; }
+                    if AgentUi.status.busy && AgentUi.status.can-stop: IconButton { glyph: Glyph.stop; label: "停止"; clicked => { AgentUi.stop-requested(); } }
+                    if !AgentUi.status.busy: IconButton {
+                        glyph: Glyph.send; label: "发送"; accent: true;
+                        enabled: AgentUi.draft != "";
+                        clicked => { root.send-draft(); }
+                    }
                 }
             }
         }
