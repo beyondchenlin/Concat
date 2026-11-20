@@ -3,7 +3,7 @@
 //! retry, redirect, provider discovery, or credential returned to JavaScript.
 //! A permit is created only by a native submission, never by settings or recovery.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -28,6 +28,11 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 const CHUNK_BYTES: usize = 64 * 1024;
 const CANCELLED: &str = "本次模型调用已停止；未继续发送后续请求。";
+// Retain only small terminal receipts, never sockets, bodies or credentials.
+// This matches the maximum outstanding native-wire messages and remains
+// bounded even when a long-lived task makes arbitrarily many model turns.
+const MAX_RETIRED_STREAMS: usize = 1024;
+const MAX_OPEN_STREAMS: usize = 32;
 
 /// The private native-wire request after removing the native ownership fields.
 #[derive(Deserialize)]
@@ -70,6 +75,56 @@ struct Stream {
     failure: Arc<Mutex<Option<&'static str>>>,
 }
 
+#[derive(Clone, Copy)]
+enum StreamTerminal {
+    Complete,
+    Cancelled,
+    Failed(&'static str),
+}
+
+impl StreamTerminal {
+    fn response(self) -> Result<Value, String> {
+        match self {
+            Self::Complete => Ok(json!({"chunk":"", "done":true})),
+            Self::Cancelled => Ok(json!({"chunk":"", "done":true, "cancelled":true})),
+            Self::Failed(message) => Err(message.into()),
+        }
+    }
+}
+
+struct StreamControl {
+    sequence: u64,
+    cancellation: Arc<Cancellation>,
+    failure: Arc<Mutex<Option<&'static str>>>,
+}
+
+#[derive(Default)]
+struct Streams {
+    readers: BTreeMap<String, Stream>,
+    controls: BTreeMap<String, StreamControl>,
+    retired: BTreeMap<String, StreamTerminal>,
+    retired_order: VecDeque<String>,
+}
+
+impl Streams {
+    fn retire(&mut self, id: &str, terminal: StreamTerminal) -> Option<StreamControl> {
+        self.readers.remove(id);
+        let control = self.controls.remove(id);
+        // The first terminal transition is authoritative. In particular a
+        // late reader cancellation cannot turn a real transport error into EOF.
+        if !self.retired.contains_key(id) {
+            if self.retired_order.len() == MAX_RETIRED_STREAMS
+                && let Some(oldest) = self.retired_order.pop_front()
+            {
+                self.retired.remove(&oldest);
+            }
+            self.retired.insert(id.to_owned(), terminal);
+            self.retired_order.push_back(id.to_owned());
+        }
+        control
+    }
+}
+
 struct TransportPolicy {
     channel: ModelChannel,
     store: ConfigurationStore,
@@ -87,8 +142,7 @@ pub struct ModelNetwork {
     cancellation: Arc<Cancellation>,
     active: Arc<AtomicU64>,
     next_request: AtomicU64,
-    streams: Mutex<BTreeMap<String, Stream>>,
-    stream_cancellations: Mutex<BTreeMap<String, (u64, Arc<Cancellation>)>>,
+    streams: Mutex<Streams>,
 }
 
 /// Non-secret exact configuration for the fixed original provider adapter.
@@ -147,8 +201,7 @@ impl ModelNetwork {
             }),
             active: Arc::new(AtomicU64::new(0)),
             next_request: AtomicU64::new(1),
-            streams: Mutex::new(BTreeMap::new()),
-            stream_cancellations: Mutex::new(BTreeMap::new()),
+            streams: Mutex::new(Streams::default()),
         })
     }
 
@@ -189,6 +242,7 @@ impl ModelNetwork {
                 value.checked_add(1)
             })
             .map_err(|_| "模型请求序号已达上限。".to_owned())?;
+        let id = random_id()?;
         self.active
             .compare_exchange(0, sequence, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| "本次任务已有正在接收的模型请求。".to_owned())?;
@@ -200,20 +254,29 @@ impl ModelNetwork {
             // Each sequential request revalidates ownership and cancellation.
             // There is no product-imposed request-count or task-wide cost budget.
             permit.with_valid(|| ()).map_err(|_| CANCELLED.to_owned())?;
-            let id = random_id()?;
             let stream_cancel = Arc::new(Cancellation {
                 stopped: AtomicBool::new(false),
                 changed: Notify::new(),
             });
-            self.stream_cancellations
-                .lock()
-                .map_err(|_| "模型接收状态不可用。")?
-                .insert(id.clone(), (sequence, Arc::clone(&stream_cancel)));
             let reader_cancel = Arc::clone(&stream_cancel);
             let (sender, mut receiver) = mpsc::channel(2);
             // A terminal error cannot depend on free space in the bounded
             // body mailbox. Recording it never waits for the UI consumer.
             let failure = Arc::new(Mutex::new(None));
+            {
+                let mut streams = self.streams.lock().map_err(|_| "模型接收状态不可用。")?;
+                if streams.controls.len() >= MAX_OPEN_STREAMS {
+                    return Err("未关闭的模型响应超过上限，请先停止或读取已有响应。".into());
+                }
+                streams.controls.insert(
+                    id.clone(),
+                    StreamControl {
+                        sequence,
+                        cancellation: Arc::clone(&stream_cancel),
+                        failure: Arc::clone(&failure),
+                    },
+                );
+            }
             let worker_failure = Arc::clone(&failure);
             let cancellation = Arc::clone(&self.cancellation);
             let active = Arc::clone(&self.active);
@@ -261,33 +324,41 @@ impl ModelNetwork {
                 Some(Frame::Head(mut head)) => {
                     self.check_current()?;
                     head["streamId"] = json!(id);
-                    self.streams
+                    let mut streams = self
+                        .streams
                         .lock()
-                        .map_err(|_| "模型接收状态不可用。".to_owned())?
-                        .insert(
-                            id,
-                            Stream {
-                                receiver,
-                                cancellation: reader_cancel,
-                                failure,
-                            },
-                        );
+                        .map_err(|_| "模型接收状态不可用。".to_owned())?;
+                    if self.cancellation.stopped.load(Ordering::Acquire)
+                        || !streams.controls.contains_key(&id)
+                    {
+                        return Err(CANCELLED.into());
+                    }
+                    streams.readers.insert(
+                        id.clone(),
+                        Stream {
+                            receiver,
+                            cancellation: reader_cancel,
+                            failure,
+                        },
+                    );
                     Ok(head)
                 }
-                Some(Frame::Failed(message)) => {
-                    self.remove_stream(&id);
-                    Err(message.into())
-                }
-                _ => {
-                    self.remove_stream(&id);
-                    Err(terminal_failure(&failure)
-                        .unwrap_or("模型请求未返回可验证的响应头。")
-                        .into())
-                }
+                Some(Frame::Failed(message)) => Err(message.into()),
+                _ => Err(terminal_failure(&failure)
+                    .unwrap_or("模型请求未返回可验证的响应头。")
+                    .into()),
             }
         })();
         // A failed start may have left no worker to release this reservation.
         if start.is_err() {
+            // Header failures have not exposed a stream id to the page. Drop
+            // their resources instead of retaining a terminal receipt.
+            if let Ok(mut streams) = self.streams.lock() {
+                streams.readers.remove(&id);
+                if let Some(control) = streams.controls.remove(&id) {
+                    control.cancellation.stop();
+                }
+            }
             let _ = self
                 .active
                 .compare_exchange(sequence, 0, Ordering::AcqRel, Ordering::Acquire);
@@ -298,48 +369,52 @@ impl ModelNetwork {
     /// Backpressure: at most two bounded chunks wait between HTTP and the page.
     pub fn read(&self, stream_id: &str) -> Result<Value, String> {
         self.check_current()?;
-        let mut stream = self
-            .streams
-            .lock()
-            .map_err(|_| "模型接收状态不可用。".to_owned())?
-            .remove(stream_id)
-            .ok_or("模型接收编号无效或已结束。")?;
-        if stream.cancellation.stopped.load(Ordering::Acquire) {
-            return Err(CANCELLED.into());
-        }
+        let mut stream = {
+            let mut streams = self.streams.lock().map_err(|_| "模型接收状态不可用。")?;
+            if let Some(terminal) = streams.retired.get(stream_id) {
+                return terminal.response();
+            }
+            streams.readers.remove(stream_id).ok_or_else(|| {
+                if streams.controls.contains_key(stream_id) {
+                    "模型响应已有读取请求正在执行。"
+                } else {
+                    "模型接收编号无效或已结束。"
+                }
+                .to_owned()
+            })?
+        };
         let frame = stream.receiver.blocking_recv();
         self.check_current()?;
+        let mut streams = self.streams.lock().map_err(|_| "模型接收状态不可用。")?;
+        // Consumer cancellation and response completion are serialized by the
+        // same short lock. A cancellation can run while blocking_recv waits,
+        // but a late body frame cannot resurrect a retired response.
+        if let Some(terminal) = streams.retired.get(stream_id) {
+            return terminal.response();
+        }
         if stream.cancellation.stopped.load(Ordering::Acquire) {
             return Err(CANCELLED.into());
         }
         match frame {
             Some(Frame::Chunk(chunk)) => {
-                let mut streams = self
-                    .streams
-                    .lock()
-                    .map_err(|_| "模型接收状态不可用。".to_owned())?;
-                // A concurrent cancellation sets the flag before removing the
-                // entry. Recheck under its removal lock so a just-completed
-                // read cannot resurrect the retired response afterward.
-                if stream.cancellation.stopped.load(Ordering::Acquire) {
-                    return Err(CANCELLED.into());
-                }
-                streams.insert(stream_id.to_owned(), stream);
+                streams.readers.insert(stream_id.to_owned(), stream);
                 Ok(json!({"chunk": BASE64.encode(chunk), "done": false}))
             }
             Some(Frame::End) => {
-                self.remove_stream(stream_id);
-                Ok(json!({"chunk":"", "done":true}))
+                self.retire_stream(&mut streams, stream_id, StreamTerminal::Complete);
+                StreamTerminal::Complete.response()
             }
             Some(Frame::Failed(message)) => {
-                self.remove_stream(stream_id);
-                Err(message.into())
+                self.retire_stream(&mut streams, stream_id, StreamTerminal::Failed(message));
+                StreamTerminal::Failed(message).response()
             }
             _ => {
-                self.remove_stream(stream_id);
-                Err(terminal_failure(&stream.failure)
-                    .unwrap_or("模型响应中途结束，未自动重试；请检查本次任务状态。")
-                    .into())
+                let terminal = StreamTerminal::Failed(
+                    terminal_failure(&stream.failure)
+                        .unwrap_or("模型响应中途结束，未自动重试；请检查本次任务状态。"),
+                );
+                self.retire_stream(&mut streams, stream_id, terminal);
+                terminal.response()
             }
         }
     }
@@ -347,39 +422,48 @@ impl ModelNetwork {
     /// Immediate revocation, independent of the serial SQLite/message worker.
     pub fn cancel(&self) {
         self.cancellation.stop();
+        if let Ok(mut streams) = self.streams.lock() {
+            for control in streams.controls.values() {
+                control.cancellation.stop();
+            }
+            streams.readers.clear();
+            streams.controls.clear();
+            streams.retired.clear();
+            streams.retired_order.clear();
+        }
     }
 
     /// Body-consumer cancellation ends only that response. Original providers
     /// may cancel a reader after receiving their terminal event; that must not
     /// revoke the task before Pi persists its completed answer.
     pub fn cancel_stream(&self, id: &str) -> Result<(), String> {
-        if let Some((sequence, cancellation)) = self
-            .stream_cancellations
-            .lock()
-            .map_err(|_| "模型接收状态不可用。")?
-            .remove(id)
-        {
-            cancellation.stop();
-            // Retire only this response admission. The worker retains its real
-            // owner permit until the socket operation has actually drained.
-            let _ = self
-                .active
-                .compare_exchange(sequence, 0, Ordering::AcqRel, Ordering::Acquire);
+        let mut streams = self.streams.lock().map_err(|_| "模型接收状态不可用。")?;
+        if streams.retired.contains_key(id) {
+            return Ok(());
         }
-        self.streams
-            .lock()
-            .map_err(|_| "模型接收状态不可用。")?
-            .remove(id);
+        let control = streams
+            .controls
+            .get(id)
+            .ok_or("模型接收编号无效或已结束。")?;
+        control.cancellation.stop();
+        let terminal = terminal_failure(&control.failure)
+            .filter(|message| *message != CANCELLED)
+            .map(StreamTerminal::Failed)
+            .unwrap_or(StreamTerminal::Cancelled);
+        self.retire_stream(&mut streams, id, terminal);
         Ok(())
     }
 
-    fn remove_stream(&self, id: &str) {
-        if let Ok(mut cancellations) = self.stream_cancellations.lock()
-            && let Some((sequence, _)) = cancellations.remove(id)
-        {
-            let _ = self
-                .active
-                .compare_exchange(sequence, 0, Ordering::AcqRel, Ordering::Acquire);
+    fn retire_stream(&self, streams: &mut Streams, id: &str, terminal: StreamTerminal) {
+        if let Some(control) = streams.retire(id, terminal) {
+            // Retire only this response admission. The HTTP worker retains its
+            // real owner permit until its socket has actually drained.
+            let _ = self.active.compare_exchange(
+                control.sequence,
+                0,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
         }
     }
 }
@@ -399,6 +483,50 @@ fn terminal_failure(failure: &Mutex<Option<&'static str>>) -> Option<&'static st
     *failure
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+mod stream_receipt_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_receipts_are_bounded_and_do_not_retain_response_resources() {
+        let mut streams = Streams::default();
+        for sequence in 0..MAX_RETIRED_STREAMS + 7 {
+            let id = format!("response-{sequence}");
+            streams.retire(&id, StreamTerminal::Complete);
+            assert!(streams.readers.is_empty());
+            assert!(streams.controls.is_empty());
+            assert!(streams.retired.len() <= MAX_RETIRED_STREAMS);
+            assert_eq!(streams.retired.len(), streams.retired_order.len());
+        }
+        assert!(!streams.retired.contains_key("response-0"));
+        assert!(streams.retired.contains_key("response-7"));
+        assert!(
+            streams
+                .retired
+                .contains_key(&format!("response-{}", MAX_RETIRED_STREAMS + 6))
+        );
+    }
+
+    #[test]
+    fn first_terminal_result_cannot_be_rewritten_by_late_completion_or_cancel() {
+        let mut streams = Streams::default();
+        streams.retire("failed", StreamTerminal::Failed("verified transport error"));
+        streams.retire("failed", StreamTerminal::Cancelled);
+        streams.retire("failed", StreamTerminal::Complete);
+        assert_eq!(
+            streams.retired["failed"].response().unwrap_err(),
+            "verified transport error"
+        );
+        streams.retire("cancelled", StreamTerminal::Cancelled);
+        streams.retire("cancelled", StreamTerminal::Complete);
+        assert_eq!(
+            streams.retired["cancelled"].response().unwrap()["cancelled"],
+            true
+        );
+        assert_eq!(streams.retired_order.len(), 2);
+    }
 }
 
 impl Drop for ModelNetwork {
@@ -774,7 +902,9 @@ async fn transfer(
     if !(200..300).contains(&status) {
         return Err(match status {
             300..=399 => "模型服务要求跳转，已拒绝向其他目的地转发凭据。",
-            401 | 403 => "模型服务拒绝了当前凭据或权限。",
+            401 => "模型服务未接受当前密钥（401）。",
+            402 => "模型账户余额或计费额度不足（402）。",
+            403 => "模型服务拒绝当前账户或模型访问权限（403）。",
             429 => "模型服务额度或速率限制，任务已停止且未自动重试。",
             _ => "模型服务返回失败状态，任务未完成且未自动重试。",
         });

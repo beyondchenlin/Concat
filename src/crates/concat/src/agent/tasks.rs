@@ -35,6 +35,20 @@ impl TaskMode {
             Self::Edit => "edit",
         }
     }
+
+    /// Keep model-facing instructions aligned with the native, fail-closed
+    /// tool gate. A permitted edit is not a read-only conversation.
+    fn authority_instructions(self) -> &'static str {
+        match self {
+            Self::Chat => {
+                "对话（只读）：仅答疑和分析，不能修改工程；如需执行修改，请用户选择剪辑模式"
+            }
+            Self::Script => "文案（只读）：仅生成候选文案，不得直接修改工程或时间线",
+            Self::Edit => {
+                "剪辑（受控写入）：仅按用户明确要求修改当前工程；写入必须经过edit_apply_guarded、原生审批与工程修订校验，禁止绕过权限保护"
+            }
+        }
+    }
 }
 
 /// A direct edit must never invoke the script-based full-video template.
@@ -196,12 +210,12 @@ impl NativeTasks {
                 );
             }
             input = format!(
-                "原生当前工程上下文：{}\n任务权限：{}。只读任务不能编辑工程。\n{}",
+                "原生当前工程上下文：{}\n任务权限：{}。\n{}",
                 json!({
                     "path":current.path,"projectId":current.project_id,
                     "expectedSession":current.session_id,"expectedRevision":current.revision,
                 }),
-                intent.mode.as_str(),
+                intent.mode.authority_instructions(),
                 input
             );
             if input.len() > 512 * 1024 {
@@ -635,7 +649,7 @@ impl NativeTasks {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use concat_agent::configuration::{ChannelDraft, ModelProtocol};
     use concat_agent::credentials::{CredentialError, CredentialScope, CredentialStore, Secret};
@@ -650,6 +664,27 @@ mod tests {
     const CONVERSATION: u64 = 71;
     const TASK: &str = "isolated-native-task";
     const PERMIT: &str = "isolated-native-permit";
+
+    #[test]
+    fn mode_instructions_keep_read_only_and_native_edit_authority_distinct() {
+        assert!(TaskMode::Chat.authority_instructions().contains("只读"));
+        assert!(TaskMode::Script.authority_instructions().contains("只读"));
+        let edit = TaskMode::Edit.authority_instructions();
+        assert!(edit.contains("受控写入"));
+        assert!(edit.contains("edit_apply_guarded"));
+        assert!(edit.contains("原生审批"));
+        assert!(!edit.contains("只读"));
+        assert!(
+            !TaskMode::Chat
+                .authority_instructions()
+                .contains("edit_apply_guarded")
+        );
+        assert!(
+            !TaskMode::Script
+                .authority_instructions()
+                .contains("edit_apply_guarded")
+        );
+    }
 
     struct Directory(PathBuf);
     impl Drop for Directory {
@@ -691,6 +726,83 @@ mod tests {
         _directory: Directory,
     }
 
+    // Reuse the existing isolated vault/network/task setup for runtime
+    // completion tests. No platform credential store or model socket is used.
+    fn seed_task(
+        tasks: &NativeTasks,
+        project: CurrentProject,
+        mode: TaskMode,
+        expected_conversation: Option<u64>,
+    ) -> (Arc<ModelNetwork>, Arc<Credentials>) {
+        let saved = tasks
+            .store
+            .save_channel(
+                &tasks.store.load().unwrap(),
+                None,
+                ChannelDraft {
+                    label: "Isolated task-authority fixture".into(),
+                    protocol: ModelProtocol::OpenAiCompletions,
+                    endpoint: "https://native-task.invalid/explicit/v1".into(),
+                    model: "fixture-only".into(),
+                    request_timeout_ms: 1_000,
+                    max_output_tokens: 128,
+                },
+            )
+            .unwrap();
+        let id = saved.channels()[0].id.clone();
+        let snapshot = tasks.store.select(&saved, Some(&id)).unwrap();
+        let channel = snapshot.active().unwrap();
+        let credentials = Arc::new(Credentials {
+            scope: CredentialScope::new(channel.id.as_str(), &channel.service_origin().unwrap())
+                .unwrap(),
+            secret: Secret::new(random_capability().unwrap()).unwrap(),
+            reads: AtomicUsize::new(0),
+        });
+        let network = Arc::new(
+            ModelNetwork::authorize(
+                Arc::clone(&tasks.bridge.owner),
+                tasks.bridge.token.clone(),
+                tasks.store.clone(),
+                snapshot.clone(),
+                credentials.clone(),
+            )
+            .unwrap(),
+        );
+        *tasks.startup.lock().unwrap() = Some(snapshot);
+        *tasks.network.lock().unwrap() = Some(Arc::clone(&network));
+        *tasks.task.lock().unwrap() = Some(AuthorizedTask {
+            id: TASK.into(),
+            permit: PERMIT.into(),
+            project,
+            mode,
+            selected: (mode == TaskMode::Edit).then(|| VersionBinding {
+                project_id: PROJECT.into(),
+                document_id: "fixture-document".into(),
+                version: 2,
+                sha256: "a".repeat(64),
+            }),
+            expected_conversation,
+            conversation: None,
+            changed_by_native_tool: false,
+            network: Arc::clone(&network),
+        });
+        (network, credentials)
+    }
+
+    pub(crate) fn install_bound_edit_task(
+        tasks: &NativeTasks,
+        project: CurrentProject,
+        id: &str,
+        conversation: u64,
+    ) {
+        let _ = seed_task(tasks, project, TaskMode::Edit, Some(conversation));
+        let mut slot = tasks.task.lock().unwrap();
+        let task = slot.as_mut().unwrap();
+        task.id = id.to_owned();
+        task.conversation = Some(conversation);
+        task.selected = None;
+    }
+
     impl Fixture {
         fn new(mode: TaskMode, expected_conversation: Option<u64>) -> Self {
             let directory = Directory(std::env::temp_dir().join(format!(
@@ -713,66 +825,17 @@ mod tests {
                 )
                 .unwrap();
             let tasks = NativeTasks::new(Arc::clone(&bridge));
-            let saved = tasks
-                .store
-                .save_channel(
-                    &tasks.store.load().unwrap(),
-                    None,
-                    ChannelDraft {
-                        label: "Isolated task-authority fixture".into(),
-                        protocol: ModelProtocol::OpenAiCompletions,
-                        endpoint: "https://native-task.invalid/explicit/v1".into(),
-                        model: "fixture-only".into(),
-                        request_timeout_ms: 1_000,
-                        max_output_tokens: 128,
-                    },
-                )
-                .unwrap();
-            let id = saved.channels()[0].id.clone();
-            let snapshot = tasks.store.select(&saved, Some(&id)).unwrap();
-            let channel = snapshot.active().unwrap();
-            let credentials = Arc::new(Credentials {
-                scope: CredentialScope::new(
-                    channel.id.as_str(),
-                    &channel.service_origin().unwrap(),
-                )
-                .unwrap(),
-                secret: Secret::new(random_capability().unwrap()).unwrap(),
-                reads: AtomicUsize::new(0),
-            });
-            let network = Arc::new(
-                ModelNetwork::authorize(
-                    Arc::clone(&bridge.owner),
-                    bridge.token.clone(),
-                    tasks.store.clone(),
-                    snapshot.clone(),
-                    credentials.clone(),
-                )
-                .unwrap(),
-            );
-            *tasks.startup.lock().unwrap() = Some(snapshot);
-            *tasks.network.lock().unwrap() = Some(Arc::clone(&network));
-            *tasks.task.lock().unwrap() = Some(AuthorizedTask {
-                id: TASK.into(),
-                permit: PERMIT.into(),
-                project: CurrentProject {
+            let (network, credentials) = seed_task(
+                &tasks,
+                CurrentProject {
                     project_id: PROJECT.into(),
                     path: directory.0.join("project").to_string_lossy().into_owned(),
                     session_id: 17,
                     revision: 3,
                 },
                 mode,
-                selected: (mode == TaskMode::Edit).then(|| VersionBinding {
-                    project_id: PROJECT.into(),
-                    document_id: "fixture-document".into(),
-                    version: 2,
-                    sha256: "a".repeat(64),
-                }),
                 expected_conversation,
-                conversation: None,
-                changed_by_native_tool: false,
-                network: Arc::clone(&network),
-            });
+            );
             Self {
                 tasks,
                 network,

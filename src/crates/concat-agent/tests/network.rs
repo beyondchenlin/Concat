@@ -384,7 +384,14 @@ fn rejects_full_destination_and_fee_escalations_without_limiting_task_requests()
 
 #[test]
 fn redirect_and_error_bodies_never_forward_credentials_or_provider_error_text() {
-    for status in [307, 401, 429] {
+    for (status, expected) in [
+        (307, "模型服务要求跳转，已拒绝向其他目的地转发凭据。"),
+        (401, "模型服务未接受当前密钥（401）。"),
+        (402, "模型账户余额或计费额度不足（402）。"),
+        (403, "模型服务拒绝当前账户或模型访问权限（403）。"),
+        (429, "模型服务额度或速率限制，任务已停止且未自动重试。"),
+        (500, "模型服务返回失败状态，任务未完成且未自动重试。"),
+    ] {
         let listener = listener();
         let redirect_target = self::listener();
         let target = redirect_target.local_addr().unwrap();
@@ -400,12 +407,10 @@ fn redirect_and_error_bodies_never_forward_credentials_or_provider_error_text() 
         let error = fixture.network.open(fixture.request()).unwrap_err();
         assert!(!error.contains(TEST_SECRET));
         assert!(!error.contains("provider echoed"));
-        match status {
-            307 => assert!(error.contains("跳转")),
-            401 => assert!(error.contains("凭据")),
-            429 => assert!(error.contains("额度")),
-            _ => unreachable!(),
-        }
+        // Check the complete native diagnostic: provider status is preserved,
+        // while neither response headers nor its arbitrary body reach the page.
+        assert_eq!(error, expected, "native diagnostic for status {status}");
+        wait_operations(&fixture.owner, 0);
         server.join().unwrap();
         assert_eq!(
             redirect_target.accept().unwrap_err().kind(),
@@ -737,7 +742,19 @@ fn terminal_reader_cancel_admits_next_request_while_old_socket_is_still_open() {
     let started = Instant::now();
     fixture.network.cancel_stream(stream_id(&first)).unwrap();
     assert!(started.elapsed() < Duration::from_millis(250));
+    // A ReadableStream pull can already be queued when the original provider
+    // consumes [DONE] and cancels its reader. It receives an explicit terminal
+    // receipt, not an invalid-id error that would poison the native chat view.
+    assert_eq!(
+        fixture.network.read(stream_id(&first)).unwrap(),
+        json!({"done":true,"chunk":"","cancelled":true})
+    );
     let second = fixture.network.open(fixture.request()).unwrap();
+    fixture.network.cancel_stream(stream_id(&first)).unwrap();
+    assert_eq!(
+        fixture.network.read(stream_id(&first)).unwrap()["cancelled"],
+        true
+    );
     let frame = fixture.network.read(stream_id(&second)).unwrap();
     assert!(!frame["done"].as_bool().unwrap());
     // Once the first thread has really dropped its permit, its Active guard
@@ -752,6 +769,115 @@ fn terminal_reader_cancel_admits_next_request_while_old_socket_is_still_open() {
     );
     release_tx.send(()).unwrap();
     assert!(drain(&fixture.network, stream_id(&second)).1.is_none());
+    // Re-reading an actual completed response stays completed. A subsequent
+    // duplicate cleanup cannot change it into cancellation or affect turn two.
+    fixture.network.cancel_stream(stream_id(&second)).unwrap();
+    assert_eq!(
+        fixture.network.read(stream_id(&second)).unwrap(),
+        json!({"done":true,"chunk":""})
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn response_receipts_do_not_authorize_unknown_or_foreign_streams() {
+    let listener = listener();
+    let fixture = Fixture::new(&listener, ModelProtocol::OpenAiCompletions);
+    let foreign_listener = self::listener();
+    let foreign = Fixture::new(&foreign_listener, ModelProtocol::OpenAiCompletions);
+    let server = std::thread::spawn(move || {
+        let mut socket = accept(&listener);
+        read_request(&mut socket);
+        start_response(&mut socket);
+        chunk(&mut socket, b"data: [DONE]\n\n").unwrap();
+        finish(&mut socket);
+    });
+    let head = fixture.network.open(fixture.request()).unwrap();
+    assert!(drain(&fixture.network, stream_id(&head)).1.is_none());
+    for id in [stream_id(&head), "not-a-native-stream"] {
+        assert!(foreign.network.read(id).is_err());
+        assert!(foreign.network.cancel_stream(id).is_err());
+    }
+    assert!(fixture.network.read("not-a-native-stream").is_err());
+    assert!(
+        fixture
+            .network
+            .cancel_stream("not-a-native-stream")
+            .is_err()
+    );
+    fixture.owner.request_stop();
+    assert!(fixture.network.read(stream_id(&head)).is_err());
+    server.join().unwrap();
+}
+
+#[test]
+fn consumer_cancel_resolves_an_inflight_read_and_does_not_resurrect_its_stream() {
+    let listener = listener();
+    let fixture = Fixture::new(&listener, ModelProtocol::OpenAiCompletions);
+    let (release_tx, release_rx) = mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let mut socket = accept(&listener);
+        read_request(&mut socket);
+        start_response(&mut socket);
+        release_rx.recv_timeout(WAIT).unwrap();
+        let _ = chunk(&mut socket, &text_event("late response"));
+    });
+    let head = fixture.network.open(fixture.request()).unwrap();
+    let (read_tx, read_rx) = mpsc::channel();
+    let callers: Vec<_> = (0..2)
+        .map(|_| {
+            let network = Arc::clone(&fixture.network);
+            let id = stream_id(&head).to_owned();
+            let tx = read_tx.clone();
+            std::thread::spawn(move || tx.send(network.read(&id)).unwrap())
+        })
+        .collect();
+    // Only one reader can own a response. The duplicate refusal proves the
+    // other reader is already waiting inside the production body mailbox.
+    assert!(
+        read_rx
+            .recv_timeout(WAIT)
+            .unwrap()
+            .unwrap_err()
+            .contains("已有读取")
+    );
+    fixture.network.cancel_stream(stream_id(&head)).unwrap();
+    assert_eq!(
+        read_rx.recv_timeout(WAIT).unwrap().unwrap(),
+        json!({"done":true,"chunk":"","cancelled":true})
+    );
+    wait_operations(&fixture.owner, 0);
+    release_tx.send(()).unwrap();
+    for caller in callers {
+        caller.join().unwrap();
+    }
+    server.join().unwrap();
+    assert_eq!(
+        fixture.network.read(stream_id(&head)).unwrap(),
+        json!({"done":true,"chunk":"","cancelled":true})
+    );
+    fixture.network.cancel();
+    assert!(fixture.network.read(stream_id(&head)).is_err());
+}
+
+#[test]
+fn real_transport_failure_remains_failed_after_late_consumer_cleanup() {
+    let listener = listener();
+    let fixture = Fixture::new(&listener, ModelProtocol::OpenAiCompletions);
+    let server = std::thread::spawn(move || {
+        let mut socket = accept(&listener);
+        read_request(&mut socket);
+        start_response(&mut socket);
+        chunk(&mut socket, &text_event("partial answer")).unwrap();
+        // Drop without the required chunked-HTTP terminator.
+    });
+    let head = fixture.network.open(fixture.request()).unwrap();
+    let (_, failure) = drain(&fixture.network, stream_id(&head));
+    let failure = failure.expect("truncated HTTP must remain a transport failure");
+    fixture.network.cancel_stream(stream_id(&head)).unwrap();
+    assert_eq!(fixture.network.read(stream_id(&head)).unwrap_err(), failure);
+    fixture.network.cancel_stream(stream_id(&head)).unwrap();
+    assert_eq!(fixture.network.read(stream_id(&head)).unwrap_err(), failure);
     server.join().unwrap();
 }
 
@@ -856,9 +982,26 @@ fn enforces_event_and_response_bounds_and_cancels_backpressured_stream() {
     // mailbox. Cancellation must still release its real owner permit.
     fixture.network.cancel_stream(stream_id(&head)).unwrap();
     wait_operations(&fixture.owner, 0);
-    assert!(fixture.network.read(stream_id(&head)).is_err());
+    let after_cancel = fixture.network.read(stream_id(&head));
     release_tx.send(()).unwrap();
     server.join().unwrap();
+    // The late pull is an explicit empty cancellation receipt, not a new
+    // transport failure. None of the body queued before cancellation escapes.
+    let cancelled = json!({"done":true,"chunk":"","cancelled":true});
+    assert_eq!(after_cancel.unwrap(), cancelled);
+    fixture.network.check_current().unwrap();
+    fixture.network.cancel_stream(stream_id(&head)).unwrap();
+    assert_eq!(fixture.network.read(stream_id(&head)).unwrap(), cancelled);
+    // Ending the response keeps the task alive; ending the task still revokes
+    // all response access, including previously retained terminal receipts.
+    fixture.network.cancel();
+    assert!(
+        fixture
+            .network
+            .read(stream_id(&head))
+            .unwrap_err()
+            .contains("已停止")
+    );
 }
 
 #[test]

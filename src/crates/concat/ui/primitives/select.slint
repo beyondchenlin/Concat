@@ -49,6 +49,11 @@ export component Select inherits Rectangle {
     /// option would reserve is room the tray does not have; the trigger
     /// then changes width as the choice does, which is the trade.
     in property <bool> snug;
+    /// Use a deliberately upward popup in compact composer toolbars.
+    in property <bool> popup-above: false;
+    /// Give explanation-heavy choices two lines without widening the control.
+    in property <bool> stacked-details: false;
+    in property <length> min-popup-width: 0px;
     /// The corners, a side at a time, so a select can be joined onto a
     /// field as its unit with a square seam between them; see Field.
     in property <length> radius-left: Theme.r;
@@ -62,7 +67,7 @@ export component Select inherits Rectangle {
     callback changed(index: int);
 
     property <bool> ring;
-    property <length> row-h: 26px;
+    property <length> row-h: root.stacked-details ? 48px : 26px;
     /// What the rows need, and what the list is given: the rows, capped
     /// at nine or so. Past the cap the list scrolls, under a wheel or a
     /// finger - see `flick`.
@@ -282,14 +287,14 @@ export component Select inherits Rectangle {
     /// A marked trigger is only as wide as its icon, and the list it opens
     /// is the one place the options are written, so the list may not
     /// inherit that width.
-    property <length> list-w: Math.max(root.width, measure.preferred-width + 59px + root.avatar-w);
+    property <length> list-w: Math.max(root.min-popup-width, Math.max(root.width, measure.preferred-width + 59px + root.avatar-w));
 
     list := PopupWindow {
         // Right edge on the trigger's right edge: a list wider than an
         // icon-sized trigger at a row's end grows back into the row, not
         // off the pane.
         x: root.width - root.list-w;
-        y: root.height + 4px;
+        y: root.popup-above ? -root.list-h - 6px : root.height + 4px;
         width: root.list-w;
         height: root.list-h;
         close-policy: close-on-click-outside;
@@ -363,7 +368,7 @@ export component Select inherits Rectangle {
                     height: root.row-h;
                     border-radius: Theme.r-sm;
                     background: index == root.active && !root.off(index)
-                        ? Theme.accent : Colors.transparent;
+                        ? (root.stacked-details ? Theme.field-hover : Theme.accent) : Colors.transparent;
 
                     HorizontalLayout {
                         padding-left: 6px;
@@ -388,7 +393,7 @@ export component Select inherits Rectangle {
                             }
                         }
 
-                        Text {
+                        if !root.stacked-details: Text {
                             horizontal-stretch: 1;
                             text: option;
                             color: root.off(index) ? Theme.fg-dim
@@ -398,7 +403,7 @@ export component Select inherits Rectangle {
                             overflow: elide;
                         }
 
-                        if index < root.details.length: Text {
+                        if !root.stacked-details && index < root.details.length: Text {
                             text: root.details[index];
                             color: index == root.active && !root.off(index) ? Theme.on-accent : Theme.fg-dim;
                             font-family: Theme.font-technical;
@@ -406,12 +411,31 @@ export component Select inherits Rectangle {
                             vertical-alignment: center;
                         }
 
+                        if root.stacked-details: VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 2px;
+                            alignment: center;
+                            Text {
+                                text: option;
+                                color: root.off(index) ? Theme.fg-dim : Theme.fg;
+                                font-size: Theme.fs;
+                                font-weight: Theme.weight-title;
+                                overflow: elide;
+                            }
+                            if index < root.details.length: Text {
+                                text: root.details[index];
+                                color: root.off(index) ? Theme.fg-dim : Theme.fg-muted;
+                                font-size: Theme.fs-sm;
+                                overflow: elide;
+                            }
+                        }
+
                         if index == root.current: VerticalLayout {
                             alignment: center;
                             Icon {
                                 glyph: Glyph.check;
                                 size: 12px;
-                                tint: index == root.active ? Theme.on-accent : Theme.accent;
+                                tint: root.stacked-details ? Theme.accent : (index == root.active ? Theme.on-accent : Theme.accent);
                             }
                         }
                     }

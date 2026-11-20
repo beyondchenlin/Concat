@@ -47,13 +47,13 @@ export async function nativeNetworkFetch(
     detachRevoked(); detachClosed();
   };
   const cancel = () => wire.call({ method: "network.cancel", ...owner, networkPermit, streamId }).then(() => {}).catch(() => {});
-  const endWithError = (message: string) => {
+  const endWithError = (message: string, wasCancelled = false) => {
     if (terminal) return;
     terminal = true; clean();
-    controller?.error(new RuntimeRefused(message));
+    controller?.error(wasCancelled ? new DOMException(message, "AbortError") : new RuntimeRefused(message));
     void cancel();
   };
-  const aborted = () => endWithError("model request was cancelled");
+  const aborted = () => endWithError("model request was cancelled", true);
   try {
     request.signal.throwIfAborted();
     wire.assertOwner(lease);
@@ -76,6 +76,11 @@ export async function nativeNetworkFetch(
           const next = object(await wire.call({ method: "network.read", ...owner, networkPermit, streamId }, request.signal));
           if (terminal) return;
           request.signal.throwIfAborted(); wire.assertOwner(lease);
+          if (next.cancelled === true) {
+            if (next.done !== true || next.chunk !== "") throw new RuntimeRefused("native cancellation receipt is invalid");
+            endWithError("model request was cancelled", true);
+            return;
+          }
           if (typeof next.done !== "boolean" || typeof next.chunk !== "string" || next.chunk.length > 87384
             || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(next.chunk)) {
             throw new RuntimeRefused("native model stream chunk is invalid");

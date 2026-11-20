@@ -63,7 +63,15 @@ export function piEngineFactory(configuration: ModelConfiguration): PiEngineFact
             const argumentsObject = { ...args as Record<string, unknown> };
             const result = await transport.withInvocation(argumentsObject, {
               taskId: api.taskId, conversationId: api.conversationId, callId: api.callId,
-            }, () => client.callTool(tool.name, argumentsObject, { signal: context.abortSignal }));
+            }, async () => {
+              if (tool.name === "edit_apply_guarded") {
+                const decision = await transport.authorizeTool(argumentsObject, context.abortSignal);
+                if (!decision.approved) {
+                  return { content: [{ type: "text" as const, text: decision.message }], isError: true };
+                }
+              }
+              return client.callTool(tool.name, argumentsObject, { signal: context.abortSignal });
+            });
             gate.assertReady(lease);
             return { output: toLlmContent(result), isError: result.isError === true };
           },

@@ -208,7 +208,11 @@ impl AgentPane {
         self.can_discard = false;
         self.error = runtime.error.clone();
         self.recovery_summary.clear();
-        if let Some(snapshot) = &runtime.snapshot {
+        // The snapshot remains bound to the project after activation; its old
+        // blocking reason describes recovery, not the current ready session.
+        if self.can_review
+            && let Some(snapshot) = &runtime.snapshot
+        {
             self.can_discard = self.can_review
                 && snapshot["snapshotId"].is_string()
                 && snapshot["projectPath"].is_string()
@@ -278,7 +282,6 @@ impl AgentPane {
             can_review: self.can_review,
             can_continue: self.can_recover,
             can_discard: self.can_discard,
-            recovery_summary: self.recovery_summary.as_str().into(),
             ..AgentStatusData::default()
         };
         let owner = match owner {
@@ -308,6 +311,11 @@ impl AgentPane {
             data.can_review = false;
             data.can_continue = false;
             data.can_discard = false;
+        }
+        // Native ownership can advance before the runtime presentation does.
+        // Only a live recovery view may present the snapshot's blocking reason.
+        if data.can_review {
+            data.recovery_summary = self.recovery_summary.as_str().into();
         }
         match owner.phase {
             Phase::RecoveryRequired => {
@@ -356,8 +364,16 @@ impl AgentPane {
                 data.detail = "完成下列条件后才能发送。".into();
             }
             Phase::Ready => {
-                data.title = "等待输入".into();
-                data.detail = "描述需要修改的内容，所有编辑使用当前工程。".into();
+                if self.task.title.is_empty() {
+                    data.title = "等待输入".into();
+                    data.detail = "描述需要修改的内容，所有编辑使用当前工程。".into();
+                } else {
+                    // The native completion path retains only a refusal or
+                    // expiry reason here; ordinary success clears its title.
+                    // A human decision is an outcome, not a broken session.
+                    data.title = "操作未执行".into();
+                    data.detail = self.task.title.as_str().into();
+                }
                 data.can_send = true;
             }
         }
@@ -466,7 +482,7 @@ fn refresh_suggestions(text: &str, cursor: usize) {
         let status;
         if marker == '@' {
             let studio = shell.studio.borrow();
-            if studio.session.is_some() {
+            if let Some(session) = studio.session.as_ref() {
                 for item in studio
                     .project()
                     .media
@@ -475,16 +491,7 @@ fn refresh_suggestions(text: &str, cursor: usize) {
                     .take(8)
                 {
                     rows.push(AgentSuggestion {
-                        identity: format!(
-                            "media:{}:{}",
-                            studio
-                                .session
-                                .as_ref()
-                                .expect("session checked")
-                                .session_id(),
-                            item.id
-                        )
-                        .into(),
+                        identity: format!("media:{}:{}", session.session_id(), item.id).into(),
                         label: item.name.as_str().into(),
                         detail: "工程素材".into(),
                         thumbnail: studio
@@ -776,10 +783,10 @@ pub(crate) fn install_composer(app: &App) {
                 ],
             )),
             move |studio, app, _, paths| {
-                if !studio
+                if studio
                     .session
                     .as_ref()
-                    .is_some_and(|session| session.session_id() == selected_session)
+                    .is_none_or(|session| session.session_id() != selected_session)
                 {
                     app.global::<AgentUi>()
                         .set_attachment_status("工程已切换，请重新选择素材。".into());
@@ -1147,6 +1154,90 @@ mod tests {
     }
 
     #[test]
+    fn recovery_summary_tracks_live_recovery_without_hiding_current_errors() {
+        let mut pane = configured();
+        let reason = "检测到未完成任务。可明确放弃当前工程已登记的旧任务后打开会话；不会恢复模型调用，已有消息保留。";
+        let snapshot = serde_json::json!({
+            "snapshotId":"native-review", "projectPath":"native-project",
+            "schemaVersion":2, "hasInterruptedWork":true,
+            "canDiscardInterrupted":true, "blockedReason":reason,
+        });
+        let mut runtime = crate::embedded::RuntimeView {
+            loaded: true,
+            phase: "recovery".into(),
+            snapshot: Some(snapshot.clone()),
+            ..crate::embedded::RuntimeView::default()
+        };
+        pane.apply_runtime(&runtime);
+        let recovery = pane.data(owner(Phase::RecoveryRequired));
+        assert_eq!(recovery.recovery_summary, reason);
+        assert!(recovery.can_review && recovery.can_discard);
+        assert!(!recovery.can_send);
+
+        // A delayed runtime publication must not override current ownership.
+        for phase in [Phase::Ready, Phase::Draining, Phase::Released] {
+            let current = pane.data(owner(phase));
+            assert!(current.recovery_summary.is_empty());
+            assert!(!current.can_review && !current.can_discard);
+        }
+        let unavailable = pane.data(Err("会话所有权已失效。".into()));
+        assert!(unavailable.recovery_summary.is_empty());
+        assert_eq!(unavailable.error, "会话所有权已失效。");
+
+        // Reproduce discard -> activation -> a new task, retaining the exact
+        // old snapshot used by native project binding throughout the sequence.
+        runtime.phase = "activating".into();
+        pane.apply_runtime(&runtime);
+        assert!(
+            pane.data(owner(Phase::RecoveryRequired))
+                .recovery_summary
+                .is_empty()
+        );
+        runtime.phase = "ready".into();
+        pane.apply_runtime(&runtime);
+        let ready = pane.data(owner(Phase::Ready));
+        assert!(ready.recovery_summary.is_empty());
+        assert!(ready.can_send);
+        assert!(!ready.can_review && !ready.can_discard);
+        assert!(
+            pane.validate_submission(owner(Phase::Ready), "新增验收文字")
+                .is_ok()
+        );
+
+        runtime.task_running = true;
+        runtime.task_title = "正在剪辑当前工程".into();
+        pane.apply_runtime(&runtime);
+        let running = pane.data(owner(Phase::Ready));
+        assert!(running.recovery_summary.is_empty());
+        assert!(running.busy);
+        assert!(!running.can_send);
+        assert_eq!(running.title, "正在剪辑当前工程");
+        assert_eq!(runtime.snapshot.as_ref(), Some(&snapshot));
+
+        runtime.error = "原生工程状态核对失败。".into();
+        pane.apply_runtime(&runtime);
+        let failed = pane.data(owner(Phase::Ready));
+        assert_eq!(failed.error, runtime.error.as_str());
+        assert_eq!(failed.title, "任务失败");
+        assert!(failed.recovery_summary.is_empty());
+        assert!(!failed.can_send);
+
+        runtime.phase = "recovery".into();
+        runtime.task_running = false;
+        runtime.snapshot.as_mut().unwrap()["blockedReason"] =
+            serde_json::json!("当前工程版本已变化，请重新核对。");
+        pane.apply_runtime(&runtime);
+        let recovery = pane.data(owner(Phase::RecoveryRequired));
+        assert_eq!(
+            recovery.recovery_summary,
+            "当前工程版本已变化，请重新核对。"
+        );
+        assert_eq!(recovery.error, runtime.error.as_str());
+        assert!(recovery.can_review);
+        assert!(!recovery.can_send);
+    }
+
+    #[test]
     fn an_idle_open_database_does_not_look_like_a_running_task() {
         let pane = configured();
         let data = pane.data(Ok(OwnerStatus {
@@ -1184,6 +1275,66 @@ mod tests {
             pane.validate_submission(owner(Phase::Ready), "再次请求")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn refused_or_expired_edit_remains_visible_without_blocking_a_new_request() {
+        for reason in [
+            "用户拒绝了本次剪辑操作，工程未修改。",
+            "等待剪辑批准超时，工程未修改。",
+        ] {
+            let mut pane = configured();
+            pane.apply_runtime(&crate::embedded::RuntimeView {
+                loaded: true,
+                phase: "ready".into(),
+                task_running: false,
+                task_title: reason.into(),
+                ..crate::embedded::RuntimeView::default()
+            });
+            let data = pane.data(owner(Phase::Ready));
+            assert_eq!(data.title, "操作未执行");
+            assert_eq!(data.detail, reason);
+            assert!(data.error.is_empty());
+            assert!(!data.busy);
+            assert!(!data.has_progress);
+            assert!(data.can_send);
+            assert!(
+                pane.validate_submission(owner(Phase::Ready), "重新规划本次剪辑")
+                    .is_ok()
+            );
+            // Native refusal feedback never overrides ownership or errors.
+            assert!(!pane.data(owner(Phase::RecoveryRequired)).can_send);
+            pane.error = "原生工程状态核对失败。".into();
+            let failed = pane.data(owner(Phase::Ready));
+            assert_eq!(failed.title, "任务失败");
+            assert!(!failed.can_send);
+        }
+    }
+
+    #[test]
+    fn successful_completion_clears_the_running_title_instead_of_showing_refusal() {
+        let mut pane = configured();
+        let mut runtime = crate::embedded::RuntimeView {
+            loaded: true,
+            phase: "ready".into(),
+            task_running: true,
+            task_title: "正在剪辑".into(),
+            ..crate::embedded::RuntimeView::default()
+        };
+        pane.apply_runtime(&runtime);
+        let running = pane.data(owner(Phase::Ready));
+        assert!(running.busy);
+        assert_eq!(running.title, "正在剪辑");
+        assert!(!running.can_send);
+
+        runtime.task_running = false;
+        runtime.task_title.clear();
+        pane.apply_runtime(&runtime);
+        let finished = pane.data(owner(Phase::Ready));
+        assert_eq!(finished.title, "等待输入");
+        assert!(finished.can_send);
+        assert!(!finished.busy);
+        assert!(finished.error.is_empty());
     }
 
     #[test]

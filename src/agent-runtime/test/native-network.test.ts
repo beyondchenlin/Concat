@@ -109,3 +109,15 @@ test("a request cancelled while opening releases the late native stream", async 
     assert.ok(f.sent.some((frame) => frame.payload.method === "network.cancel" && frame.payload.streamId === "late-stream" && frame.payload.networkPermit === "task-permit"));
   } finally { f.wire.close(); }
 });
+
+test("native cancelled terminal receipt rejects the response body instead of reporting a completed model response", async () => {
+  const f = fixture((frame) => frame.payload.method === "network.open"
+    ? { streamId: "s", status: 200, headers: [] }
+    : frame.payload.method === "network.read" ? { done: true, chunk: "", cancelled: true } : null);
+  try {
+    const response = await f.ports.network.fetch(lease, "task-permit", "https://model.invalid/v1/chat/completions", { method: "POST", body: "{}" });
+    await assert.rejects(response.text(), (error: unknown) => error instanceof DOMException && error.name === "AbortError");
+    assert.equal(f.sent.filter((frame) => frame.payload.method === "network.read").length, 1);
+    assert.ok(f.sent.some((frame) => frame.payload.method === "network.cancel"));
+  } finally { f.wire.close(); }
+});

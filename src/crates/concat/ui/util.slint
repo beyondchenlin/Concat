@@ -55,10 +55,19 @@ export global Fmt {
     // disagrees with its own frame field near the boundaries. NDF runs
     // slightly behind the clock at NTSC rates; that is the standard trade.
     public pure function frames-timecode(seconds: float, rate: float) -> string {
-        return Fmt.pad2(Math.floor(Fmt.total-frames(seconds, rate) / Math.round(rate) / 3600))
-            + ":" + Fmt.pad2(Math.mod(Math.floor(Fmt.total-frames(seconds, rate) / Math.round(rate) / 60), 60))
-            + ":" + Fmt.pad2(Math.mod(Math.floor(Fmt.total-frames(seconds, rate) / Math.round(rate)), 60))
-            + ":" + Fmt.pad2(Math.mod(Fmt.total-frames(seconds, rate), Math.round(rate)));
+        return Fmt.frame-count-timecode(Fmt.total-frames(seconds, rate), rate);
+    }
+
+    // A frame-valued control must not convert its integer frame to float
+    // seconds and floor it back: 23 / 24 seconds can come back as frame 22.
+    // Both entry points share the same non-drop-frame field layout.
+    public pure function frame-count-timecode(frame-count: int, rate: float) -> string {
+        let frames = Math.max(0, frame-count);
+        let nominal-rate = Math.max(1, Math.round(rate));
+        return Fmt.pad2(Math.floor(frames / nominal-rate / 3600))
+            + ":" + Fmt.pad2(Math.mod(Math.floor(frames / nominal-rate / 60), 60))
+            + ":" + Fmt.pad2(Math.mod(Math.floor(frames / nominal-rate), 60))
+            + ":" + Fmt.pad2(Math.mod(frames, nominal-rate));
     }
 
     pure function total-frames(seconds: float, rate: float) -> int {

@@ -269,6 +269,21 @@ export component App inherits Window {
     property <bool> sheet-open: root.export.open || root.settings.open || AgentSettingsUi.open
         || root.project-sheet.open || root.captions.open || root.speech.open
         || root.start.composing || root.new-voice.open;
+    // Input observers must also respect the existing closing animation:
+    // these three pages remain visible after their open flag is cleared.
+    // Keep the separate sheet/focus behavior unchanged.
+    out property <bool> content-overlay-open: root.sheet-open || root.confirm.open || root.relink.open
+        || export-overlay.visible || settings-overlay.visible || model-settings-overlay.visible;
+    // All these root-level overlays originate at the window's (0, 0).
+    // Their own geometry keeps floating cards and animated pages from
+    // blocking gestures in portions of the editor they do not cover.
+    public pure function content-overlay-covers(x: float, y: float) -> bool {
+        return captions-overlay.covers-point(x, y) || speech-overlay.covers-point(x, y)
+            || new-project-overlay.covers-point(x, y) || export-overlay.covers-point(x, y)
+            || settings-overlay.covers-point(x, y) || model-settings-overlay.covers-point(x, y)
+            || project-overlay.covers-point(x, y) || new-voice-overlay.covers-point(x, y)
+            || relink-overlay.covers-point(x, y) || confirm-overlay.covers-point(x, y);
+    }
     changed sheet-open => {
         if (!root.sheet-open) {
             keys.focus();
@@ -365,7 +380,7 @@ export component App inherits Window {
     /// Draw minimise / maximise / close on the strip. False on macOS, where
     /// the traffic lights are the window's own.
     in property <bool> own-window-buttons;
-    private property <length> sidebar-drag-start: 340px;
+    private property <length> sidebar-drag-start: 420px;
     /// Read back from the platform on every resize, so the strip can show
     /// restore rather than maximise - whichever route maximised it.
     in-out property <bool> window-maximized;
@@ -853,17 +868,26 @@ export component App inherits Window {
                     preferred-width: 8px;
                     pressed => { root.sidebar-drag-start = sidebar.width; }
                     moved(delta) => {
+                        // Leave a usable native editor instead of allowing Pi to
+                        // cover all but its 64px recovery grip. On wide screens
+                        // the editor keeps at least 54% of the window, with a
+                        // 600px floor and an 840px cap for the assistant.
+                        // Calculate this on drag, not as a layout-bound max:
+                        // a root-width-dependent max-width forms a layout cycle.
                         AgentUi.sidebar-width = Math.clamp(
-                            root.sidebar-drag-start - delta, 280px,
-                            // Match the native dock's 64px recovery grip plus 8px gutter.
-                            Math.max(280px, root.width - 72px));
+                            root.sidebar-drag-start - delta, 320px,
+                            Math.max(320px,
+                                Math.min(840px,
+                                    Math.min(root.width * 0.46, root.width - 600px))));
                     }
                 }
                 sidebar := AgentSidebar {
-                    min-width: AgentUi.sidebar-open ? 280px : 36px;
-                    // A fixed layout bound avoids a root-width / layout-info cycle.
-                    // The drag callback independently caps actual user changes.
-                    max-width: AgentUi.sidebar-open ? 16384px : 36px;
+                    min-width: AgentUi.sidebar-open ? 320px : 36px;
+                    // A preferred width alone lets HorizontalLayout stretch
+                    // Pi across the remaining window and hide editor panes.
+                    // Bind its cap to the requested width, never root.width:
+                    // the latter would create a layout-info cycle.
+                    max-width: AgentUi.sidebar-open ? AgentUi.sidebar-width : 36px;
                     preferred-width: AgentUi.sidebar-open ? AgentUi.sidebar-width : 36px;
                 }
             }
@@ -928,7 +952,7 @@ export component App inherits Window {
         height: root.height;
         z: root.sheets-fill ? 1 : 0;
 
-        CaptionsDialog {
+        captions-overlay := CaptionsDialog {
             fill: root.sheets-fill;
             floating: !root.sheets-fill;
             z: root.front-tool == "captions" ? 1 : 0;
@@ -959,7 +983,7 @@ export component App inherits Window {
             export-srt => { root.captions-export-srt(); }
         }
 
-        SpeechDialog {
+        speech-overlay := SpeechDialog {
             fill: root.sheets-fill;
             floating: !root.sheets-fill;
             // Its own home, a step in from the captions card's, so the two
@@ -1012,7 +1036,7 @@ export component App inherits Window {
     // sheet the launch screen can put up, and never at the same time — the
     // scrim keeps the rail from being pressed — so the order between the two
     // decides nothing and this one reads first because it comes first.
-    NewProjectDialog {
+    new-project-overlay := NewProjectDialog {
         fill: root.sheets-fill;
         inset-top: root.safe-area-insets.top;
         inset-bottom: root.safe-area-insets.bottom;
@@ -1043,7 +1067,7 @@ export component App inherits Window {
         dismiss-error => { root.start-dismiss-error(); }
     }
 
-    ExportDialog {
+    export-overlay := ExportDialog {
         inset-top: root.safe-area-insets.top;
         inset-bottom: root.safe-area-insets.bottom;
         inset-left: root.safe-area-insets.left;
@@ -1074,7 +1098,7 @@ export component App inherits Window {
         again => { root.export-again(); }
     }
 
-    SettingsDialog {
+    settings-overlay := SettingsDialog {
         inset-top: root.safe-area-insets.top;
         inset-bottom: root.safe-area-insets.bottom;
         inset-left: root.safe-area-insets.left;
@@ -1135,7 +1159,7 @@ export component App inherits Window {
         model-choose-file(id) => { root.model-choose-file(id); }
     }
 
-    AgentSettingsDialog {
+    model-settings-overlay := AgentSettingsDialog {
         inset-top: root.safe-area-insets.top;
         inset-bottom: root.safe-area-insets.bottom;
         inset-left: root.safe-area-insets.left;
@@ -1150,7 +1174,7 @@ export component App inherits Window {
     callback relink-remove(id: string);
     callback relink-dismiss();
 
-    ProjectDialog {
+    project-overlay := ProjectDialog {
         fill: root.sheets-fill;
         inset-top: root.safe-area-insets.top;
         inset-bottom: root.safe-area-insets.bottom;
@@ -1176,7 +1200,7 @@ export component App inherits Window {
 
     // Over the Audio page it was opened from, and over the tool cards,
     // which may be open beside the page on a desk.
-    NewVoiceDialog {
+    new-voice-overlay := NewVoiceDialog {
         fill: root.sheets-fill;
         inset-top: root.safe-area-insets.top;
         inset-bottom: root.safe-area-insets.bottom;
@@ -1196,7 +1220,7 @@ export component App inherits Window {
         save => { root.new-voice-save(); }
     }
 
-    RelinkDialog {
+    relink-overlay := RelinkDialog {
         fill: root.sheets-fill;
         inset-top: root.safe-area-insets.top;
         inset-bottom: root.safe-area-insets.bottom;
@@ -1215,7 +1239,7 @@ export component App inherits Window {
     callback confirm-accepted();
     callback confirm-dismissed();
 
-    ConfirmDialog {
+    confirm-overlay := ConfirmDialog {
         inset-top: root.safe-area-insets.top;
         inset-bottom: root.safe-area-insets.bottom;
         inset-left: root.safe-area-insets.left;

@@ -61,6 +61,14 @@ export component Modal inherits Rectangle {
     /// A floating card was pressed on its header: it wants to be in front.
     callback raised();
 
+    // A floating tool only covers its own card; its surrounding editor
+    // remains usable. Coordinates are local to this full-window component.
+    public pure function covers-point(x: float, y: float) -> bool {
+        return root.visible && (!root.floating
+            || (x * 1px >= surface.x && x * 1px < surface.x + surface.width
+                && y * 1px >= surface.y && y * 1px < surface.y + surface.height));
+    }
+
     visible: root.open;
     // A card opened comes to the front.
     changed open => {
@@ -77,6 +85,9 @@ export component Modal inherits Rectangle {
     // its own presses. A click that lands here landed outside the dialog.
     // A floating card has none: a click beside it is a click on the editor.
     if !root.floating: TouchArea {
+        // Children above this layer receive scrolling first. Any remainder
+        // belongs to the scrim, not to the editor hidden underneath it.
+        scroll-event(event) => { return EventResult.accept; }
         clicked => {
             if (root.dismissable) {
                 root.closed();
@@ -127,8 +138,11 @@ export component Modal inherits Rectangle {
 
         // Swallows presses that land on the dialog, so they do not reach the
         // scrim underneath and dismiss it - or, floating, the lanes and the
-        // monitor under the card.
-        TouchArea { }
+        // monitor under the card. Child controls keep their own scrolling;
+        // only unhandled wheel input reaches this lower sibling.
+        TouchArea {
+            scroll-event(event) => { return EventResult.accept; }
+        }
 
         body := VerticalLayout {
             Rectangle {
@@ -289,14 +303,25 @@ export component Sheet inherits Rectangle {
     // the way out is seen as well as the way in.
     visible: root.open || root.lowered < 1;
 
-    Rectangle {
+    // Read the animated surface itself, including its departure. The part
+    // of the editor it has already uncovered is no longer covered.
+    public pure function covers-point(x: float, y: float) -> bool {
+        return root.visible && x * 1px >= surface.x && x * 1px < surface.x + surface.width
+            && y * 1px >= surface.y && y * 1px < surface.y + surface.height;
+    }
+
+    surface := Rectangle {
         x: 0;
         y: root.height * root.lowered;
         width: root.width;
         height: root.height;
         background: Theme.panel;
 
-        TouchArea { }
+        // The page's controls scroll first. Its header and empty space must
+        // not scroll the editor, including while this page slides away.
+        TouchArea {
+            scroll-event(event) => { return EventResult.accept; }
+        }
 
         VerticalLayout {
             padding-top: root.inset-top;

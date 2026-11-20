@@ -295,6 +295,9 @@ impl NativeSession {
     /// Worker-only: routes the exact native-wire/sqlite-port contract.
     pub(crate) fn handle(&self, payload: Value) -> Result<Value, String> {
         let method = text_field(&payload, "method")?.to_owned();
+        if method == "mcp.authorize" {
+            return self.authorize_tool_frame(&payload);
+        }
         let mut state = self.state()?;
         if method == "ownership.acquire" {
             allow_keys(&payload, &["method", "storageId"])?;
@@ -428,7 +431,7 @@ impl NativeSession {
                 Ok(Value::Null)
             }
             "mcp.send" => {
-                allow_bound_keys(&payload, &["message", "invocation"])?;
+                allow_bound_keys(&payload, &["message", "invocation", "approvalTicket"])?;
                 let mut message = payload
                     .get("message")
                     .filter(|value| value.is_object())
@@ -464,13 +467,18 @@ impl NativeSession {
                         == Some("edit_apply_guarded");
                 self.tasks
                     .authorize_tool(&mut message, invocation.as_ref())?;
-                // Page-supplied JSON cannot approve itself. Only the native UI
-                // callback resolves this separate, time-limited operation gate.
+                // Human approval is a separate native wait BEFORE the original
+                // MCP client starts its unchanged execution deadline. Consume
+                // exactly the approved invocation/arguments here; never wait
+                // for a UI decision while holding the session/mailbox lock.
                 if guarded_edit {
-                    self.tool_approval.admit(&message, invocation.as_ref())?;
-                    // A project/task can be revoked during a human approval wait.
-                    self.tasks
-                        .authorize_tool(&mut message, invocation.as_ref())?;
+                    self.tool_approval.consume(
+                        &message,
+                        invocation.as_ref(),
+                        text_field(&payload, "approvalTicket")?,
+                    )?;
+                } else if payload.get("approvalTicket").is_some() {
+                    return Err("只读调用不能携带剪辑审批票据。".into());
                 }
                 let tool_name = message
                     .pointer("/params/name")
@@ -489,12 +497,64 @@ impl NativeSession {
                     )?;
                 }
                 if let (Some(name), Some(reply)) = (tool_name.as_deref(), response.as_ref()) {
-                    self.tool_approval.record_result(name, reply);
+                    self.tool_approval
+                        .record_result(name, reply, invocation.as_ref());
                 }
                 Ok(response.unwrap_or(Value::Null))
             }
             _ => Err("unreviewed native port method".into()),
         }
+    }
+
+    /// Runs on the component's bounded approval worker, never its ordinary
+    /// mailbox or the editor thread. The brief state checks bracket the human
+    /// wait, so SQLite/model terminal frames can continue during approval.
+    fn authorize_tool_frame(&self, payload: &Value) -> Result<Value, String> {
+        allow_bound_keys(payload, &["message", "invocation"])?;
+        self.check_bound(payload)?;
+        let mut message = payload
+            .get("message")
+            .filter(|message| message.is_object())
+            .ok_or("剪辑审批缺少工具参数。")?
+            .clone();
+        if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
+            || message.get("method").and_then(Value::as_str) != Some("tools/call")
+            || message.pointer("/params/name").and_then(Value::as_str) != Some("edit_apply_guarded")
+        {
+            return Err("只能为受保护的原生剪辑工具申请审批。".into());
+        }
+        let invocation = parse_invocation(
+            payload
+                .get("invocation")
+                .ok_or("剪辑审批缺少原版调用身份。")?,
+        )?;
+        let check = |message: &mut Value| -> Result<(), String> {
+            let state = self.state()?;
+            if !state.acquired || !state.execution_ready() || state.closed {
+                return Err("当前会话未就绪，不能授权剪辑。".into());
+            }
+            self.check_owned()?;
+            self.tasks.authorize_tool(message, Some(&invocation))
+        };
+        // A business refusal is a normal tool result. It does not revoke the
+        // model conversation or turn a declined edit into a transport error.
+        let refused = |message: String| Ok(json!({"approved":false,"message":message}));
+        if let Err(error) = check(&mut message) {
+            return refused(error);
+        }
+        let ticket = match self.tool_approval.authorize(&message, Some(&invocation)) {
+            Ok(Some(ticket)) => ticket,
+            Ok(None) => return Err("剪辑审批没有产生原生票据。".into()),
+            Err(error) => return refused(error),
+        };
+        if let Err(error) = check(&mut message) {
+            // Dispose of a grant whose task/owner retired during approval.
+            let _ = self
+                .tool_approval
+                .consume(&message, Some(&invocation), &ticket);
+            return refused(error);
+        }
+        Ok(json!({"approved":true,"ticket":ticket}))
     }
 
     /// A network reader can be cancelled without waiting behind its own read.
