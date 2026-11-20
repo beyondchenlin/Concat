@@ -649,7 +649,7 @@ impl NativeTasks {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use concat_agent::configuration::{ChannelDraft, ModelProtocol};
     use concat_agent::credentials::{CredentialError, CredentialScope, CredentialStore, Secret};
@@ -726,6 +726,83 @@ mod tests {
         _directory: Directory,
     }
 
+    // Reuse the existing isolated vault/network/task setup for runtime
+    // completion tests. No platform credential store or model socket is used.
+    fn seed_task(
+        tasks: &NativeTasks,
+        project: CurrentProject,
+        mode: TaskMode,
+        expected_conversation: Option<u64>,
+    ) -> (Arc<ModelNetwork>, Arc<Credentials>) {
+        let saved = tasks
+            .store
+            .save_channel(
+                &tasks.store.load().unwrap(),
+                None,
+                ChannelDraft {
+                    label: "Isolated task-authority fixture".into(),
+                    protocol: ModelProtocol::OpenAiCompletions,
+                    endpoint: "https://native-task.invalid/explicit/v1".into(),
+                    model: "fixture-only".into(),
+                    request_timeout_ms: 1_000,
+                    max_output_tokens: 128,
+                },
+            )
+            .unwrap();
+        let id = saved.channels()[0].id.clone();
+        let snapshot = tasks.store.select(&saved, Some(&id)).unwrap();
+        let channel = snapshot.active().unwrap();
+        let credentials = Arc::new(Credentials {
+            scope: CredentialScope::new(channel.id.as_str(), &channel.service_origin().unwrap())
+                .unwrap(),
+            secret: Secret::new(random_capability().unwrap()).unwrap(),
+            reads: AtomicUsize::new(0),
+        });
+        let network = Arc::new(
+            ModelNetwork::authorize(
+                Arc::clone(&tasks.bridge.owner),
+                tasks.bridge.token.clone(),
+                tasks.store.clone(),
+                snapshot.clone(),
+                credentials.clone(),
+            )
+            .unwrap(),
+        );
+        *tasks.startup.lock().unwrap() = Some(snapshot);
+        *tasks.network.lock().unwrap() = Some(Arc::clone(&network));
+        *tasks.task.lock().unwrap() = Some(AuthorizedTask {
+            id: TASK.into(),
+            permit: PERMIT.into(),
+            project,
+            mode,
+            selected: (mode == TaskMode::Edit).then(|| VersionBinding {
+                project_id: PROJECT.into(),
+                document_id: "fixture-document".into(),
+                version: 2,
+                sha256: "a".repeat(64),
+            }),
+            expected_conversation,
+            conversation: None,
+            changed_by_native_tool: false,
+            network: Arc::clone(&network),
+        });
+        (network, credentials)
+    }
+
+    pub(crate) fn install_bound_edit_task(
+        tasks: &NativeTasks,
+        project: CurrentProject,
+        id: &str,
+        conversation: u64,
+    ) {
+        let _ = seed_task(tasks, project, TaskMode::Edit, Some(conversation));
+        let mut slot = tasks.task.lock().unwrap();
+        let task = slot.as_mut().unwrap();
+        task.id = id.to_owned();
+        task.conversation = Some(conversation);
+        task.selected = None;
+    }
+
     impl Fixture {
         fn new(mode: TaskMode, expected_conversation: Option<u64>) -> Self {
             let directory = Directory(std::env::temp_dir().join(format!(
@@ -748,66 +825,17 @@ mod tests {
                 )
                 .unwrap();
             let tasks = NativeTasks::new(Arc::clone(&bridge));
-            let saved = tasks
-                .store
-                .save_channel(
-                    &tasks.store.load().unwrap(),
-                    None,
-                    ChannelDraft {
-                        label: "Isolated task-authority fixture".into(),
-                        protocol: ModelProtocol::OpenAiCompletions,
-                        endpoint: "https://native-task.invalid/explicit/v1".into(),
-                        model: "fixture-only".into(),
-                        request_timeout_ms: 1_000,
-                        max_output_tokens: 128,
-                    },
-                )
-                .unwrap();
-            let id = saved.channels()[0].id.clone();
-            let snapshot = tasks.store.select(&saved, Some(&id)).unwrap();
-            let channel = snapshot.active().unwrap();
-            let credentials = Arc::new(Credentials {
-                scope: CredentialScope::new(
-                    channel.id.as_str(),
-                    &channel.service_origin().unwrap(),
-                )
-                .unwrap(),
-                secret: Secret::new(random_capability().unwrap()).unwrap(),
-                reads: AtomicUsize::new(0),
-            });
-            let network = Arc::new(
-                ModelNetwork::authorize(
-                    Arc::clone(&bridge.owner),
-                    bridge.token.clone(),
-                    tasks.store.clone(),
-                    snapshot.clone(),
-                    credentials.clone(),
-                )
-                .unwrap(),
-            );
-            *tasks.startup.lock().unwrap() = Some(snapshot);
-            *tasks.network.lock().unwrap() = Some(Arc::clone(&network));
-            *tasks.task.lock().unwrap() = Some(AuthorizedTask {
-                id: TASK.into(),
-                permit: PERMIT.into(),
-                project: CurrentProject {
+            let (network, credentials) = seed_task(
+                &tasks,
+                CurrentProject {
                     project_id: PROJECT.into(),
                     path: directory.0.join("project").to_string_lossy().into_owned(),
                     session_id: 17,
                     revision: 3,
                 },
                 mode,
-                selected: (mode == TaskMode::Edit).then(|| VersionBinding {
-                    project_id: PROJECT.into(),
-                    document_id: "fixture-document".into(),
-                    version: 2,
-                    sha256: "a".repeat(64),
-                }),
                 expected_conversation,
-                conversation: None,
-                changed_by_native_tool: false,
-                network: Arc::clone(&network),
-            });
+            );
             Self {
                 tasks,
                 network,

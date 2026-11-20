@@ -63,7 +63,7 @@ assert.equal(typeof api.AgentRuntime, "function");
 assert.equal(typeof api.piEngineFactory, "function");
 assert.equal(typeof api.nativeSqlitePort, "function");
 
-test("original pinned McpClient preserves per-call argument identity for the native durable invocation side channel", async () => {
+async function originalTransportContract(context = sandbox) {
   const { build } = await import(pathToFileURL(require.resolve("esbuild")).href);
   const output = await build({
     absWorkingDir: referenceRoot,
@@ -76,18 +76,24 @@ test("original pinned McpClient preserves per-call argument identity for the nat
     nodePaths: [resolve(referenceRoot, "node_modules")],
     bundle: true, platform: "browser", target: "es2022", format: "iife", globalName: "PiTransportContract", write: false,
   });
-  vm.runInContext(output.outputFiles[0].text, sandbox, { filename: "pinned-client-contract.js" });
-  const { McpClient, NativeMcpTransport, ExecutionGate } = sandbox.PiTransportContract;
+  vm.runInContext(output.outputFiles[0].text, context, { filename: "pinned-client-contract.js" });
+  return context.PiTransportContract;
+}
+
+test("original pinned McpClient preserves per-call argument identity for the native durable invocation side channel", async () => {
+  const { McpClient, NativeMcpTransport, ExecutionGate } = await originalTransportContract();
   const lease = { storageId: "contract", generation: "1", handle: "contract-owner" };
   const gate = new ExecutionGate(); gate.acquiring(); gate.owned(lease);
   gate.activating(lease, { generation: "1", snapshotId: "reviewed", allowInitializeEmptyStore: false }); gate.ready(lease);
   const received = [];
   const transport = new NativeMcpTransport({ mcp: {
-    async send(_lease, message, _signal, invocation) {
+    async authorize(_lease, _message, _signal, invocation) { return { approved: true, ticket: `native-ticket-${invocation.callId}` }; },
+    async send(_lease, message, _signal, invocation, approvalTicket) {
       if (message.method === "initialize") return { jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "explicit-fixture", version: "1" } } };
       if (message.method === "notifications/initialized") return undefined;
       assert.equal(message.method, "tools/call");
       assert.equal(message.params.name, "edit_apply_guarded");
+      assert.equal(approvalTicket, `native-ticket-${invocation.callId}`);
       received.push({ arguments: message.params.arguments, invocation });
       return { jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: "Explicit protocol fixture receipt" }], isError: false } };
     },
@@ -97,7 +103,10 @@ test("original pinned McpClient preserves per-call argument identity for the nat
     await client.connect(transport);
     const calls = [11, 12].map((taskId) => {
       const args = { expectedSession: 7, expectedRevision: 0, command: { op: "batch", commands: [] } };
-      return transport.withInvocation(args, { conversationId: 9, taskId, callId: `stable-${taskId}` }, () => client.callTool("edit_apply_guarded", args));
+      return transport.withInvocation(args, { conversationId: 9, taskId, callId: `stable-${taskId}` }, async () => {
+        await transport.authorizeTool(args, new AbortController().signal);
+        return client.callTool("edit_apply_guarded", args);
+      });
     });
     const results = await Promise.all(calls);
     assert.equal(results.every((result) => result.isError === false), true);
@@ -108,6 +117,64 @@ test("original pinned McpClient preserves per-call argument identity for the nat
     await assert.rejects(client.callTool("edit_apply_guarded", received[0].arguments), /original Pi invocation/);
     assert.equal(received.length, 2);
   } finally { await client.close(); }
+});
+
+test("original MCP timeout starts after human approval and remains exactly thirty seconds for execution", async () => {
+  let now = 0; let nextTimer = 0;
+  const timers = new Map(); const scheduled = [];
+  const context = vm.createContext({
+    AbortController, AbortSignal, DOMException,
+    setTimeout(callback, delay) { const id = ++nextTimer; scheduled.push(delay); timers.set(id, { callback, at: now + delay }); return id; },
+    clearTimeout(id) { timers.delete(id); },
+  });
+  const tick = (elapsed) => {
+    now += elapsed;
+    for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.callback(); }
+  };
+  const { McpClient, NativeMcpTransport, ExecutionGate } = await originalTransportContract(context);
+  const lease = { storageId: "clock-contract", generation: "1", handle: "clock-owner" };
+  const gate = new ExecutionGate(); gate.acquiring(); gate.owned(lease);
+  gate.activating(lease, { generation: "1", snapshotId: "reviewed", allowInitializeEmptyStore: false }); gate.ready(lease);
+  let decide; let releaseTool; let toolDispatched;
+  const approval = new Promise((resolve) => { decide = resolve; });
+  const response = new Promise((resolve) => { releaseTool = resolve; });
+  const dispatched = new Promise((resolve) => { toolDispatched = resolve; });
+  let writes = 0;
+  const transport = new NativeMcpTransport({ mcp: {
+    async authorize() { return approval; },
+    async send(_lease, message, _signal, invocation, ticket) {
+      if (message.method === "initialize") return { jsonrpc: "2.0", id: message.id, result: { protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "clock-fixture", version: "1" } } };
+      if (message.method.startsWith("notifications/")) return undefined;
+      writes++;
+      assert.equal(ticket, "clock-native-ticket");
+      assert.equal(invocation.callId, "clock-call");
+      toolDispatched();
+      await response;
+      return { jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: "fixture receipt" }] } };
+    },
+  } }, lease, gate);
+  const client = new McpClient({ name: "clock-client", version: "1", protocolVersion: "2025-11-25" });
+  try {
+    await client.connect(transport);
+    scheduled.length = 0;
+    const args = {};
+    const pending = transport.withInvocation(args, { conversationId: 9, taskId: 11, callId: "clock-call" }, async () => {
+      await transport.authorizeTool(args, new AbortController().signal);
+      return client.callTool("edit_apply_guarded", args);
+    });
+    tick(60_001);
+    assert.equal(writes, 0, "human waiting must not dispatch an MCP edit");
+    assert.equal(timers.size, 0, "human waiting must not start a protocol timeout");
+    assert.deepEqual(scheduled, []);
+    decide({ approved: true, ticket: "clock-native-ticket" });
+    await dispatched;
+    assert.deepEqual(scheduled, [30_000], "execution retains the pinned client's unchanged timeout");
+    let settled = false; void pending.catch(() => { settled = true; });
+    tick(29_999); await Promise.resolve(); assert.equal(settled, false);
+    tick(1);
+    await assert.rejects(pending, /timed out|timeout/i);
+    assert.equal(writes, 1, "no automatic retry after an execution timeout");
+  } finally { releaseTool(); await client.close(); }
 });
 
 test("built browser bootstrap answers native commands and opens no writable store before native confirmation", async () => {
@@ -212,6 +279,7 @@ function sqliteFixture(file, generation, options = {}) {
 function fixture(file, generation, configured, transport, options = {}) {
   const sqlite = sqliteFixture(file, generation, options);
   const mcpCalls = [];
+  const approvalCalls = [];
   let granted = false;
   let networkCalls = 0;
   let credentialReads = 0;
@@ -252,7 +320,13 @@ function fixture(file, generation, configured, transport, options = {}) {
     },
     sqlite: { async open(...args) { assert.equal(granted, true); return api.nativeSqlitePort(sqlite.wire).open(...args); } },
     mcp: {
-      async send(_lease, message, _signal, invocation) {
+      async authorize(_lease, message, signal, invocation) {
+        approvalCalls.push({ message, invocation });
+        assert.ok(taskBindings.some((binding) => binding.conversationId === invocation.conversationId));
+        if (!options.authorize) throw new Error("This fixture does not authorize edits");
+        return options.authorize(message, signal, invocation);
+      },
+      async send(_lease, message, _signal, invocation, approvalTicket) {
         mcpCalls.push(message);
         if (message.method === "initialize") {
           assert.equal(message.params.protocolVersion, "2025-11-25");
@@ -264,11 +338,11 @@ function fixture(file, generation, configured, transport, options = {}) {
         // rejected by the original durable strict-JSON checks.
         if (message.method === "tools/list") return nativeJsonReply({ jsonrpc: "2.0", id: message.id, result: { tools: [
           "concat_version", "project_get", "timeline_read", "effects_list", "template_list", "edit_apply_guarded",
-        ].map((name) => ({ name, description: "Protocol fixture only", inputSchema: { type: "object", properties: {} } })) } });
+        ].map((name) => ({ name, description: "Protocol fixture only", inputSchema: { type: "object", properties: {}, ...(name === "edit_apply_guarded" ? { additionalProperties: true } : {}) } })) } });
         if (transport && message.method === "tools/call") {
-          assert.equal(message.params.name, "project_get", "only the fixture's real read path is implemented");
           assert.ok(taskBindings.some((binding) => binding.conversationId === invocation.conversationId));
-          if (options.tool) return options.tool(message, _signal, invocation);
+          if (options.tool) return options.tool(message, _signal, invocation, approvalTicket);
+          assert.equal(message.params.name, "project_get", "only the fixture's real read path is implemented");
           return nativeJsonReply({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: "Explicit read-only project fixture" }] } });
         }
         throw new Error(`Unexpected model/native tool call ${message.method}`);
@@ -291,7 +365,7 @@ function fixture(file, generation, configured, transport, options = {}) {
     async delete() { throw new Error("No credential deletion"); },
   } };
   const runtime = new api.AgentRuntime(lease.storageId, ports, api.piEngineFactory(configured ?? configuration));
-  return { runtime, sqlite, mcpCalls, taskBindings, snapshotReads: () => snapshotReads, networkCalls: () => networkCalls,
+  return { runtime, sqlite, mcpCalls, approvalCalls, taskBindings, snapshotReads: () => snapshotReads, networkCalls: () => networkCalls,
     credentialReads: () => credentialReads, verificationCalls: () => verificationCalls };
 }
 
@@ -665,6 +739,69 @@ test("original model tool round carries native-bound Pi invocation and stays rea
   } finally { await f.runtime.stop().catch(() => {}); rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("original durable edit task resumes the same conversation after allow, refusal or approval expiry", { timeout: 20000 }, async () => {
+  for (const outcome of ["allow", "deny", "expire"]) {
+    const directory = mkdtempSync(resolve(tmpdir(), `bkcat-approval-${outcome}-`));
+    let decide; let approvalStarted;
+    const decision = new Promise((resolve) => { decide = resolve; });
+    const waiting = new Promise((resolve) => { approvalStarted = resolve; });
+    let requests = 0; let writes = 0;
+    const receipt = outcome === "allow" ? "原生测试回执：文字已添加" : outcome === "deny" ? "用户拒绝了本次剪辑操作，工程未修改。" : "等待剪辑批准超时，工程未修改。";
+    const args = { path: "isolated-project", expectedSession: 7, expectedRevision: 0,
+      command: { op: "addTextClip", trackId: "T3", start: 1, duration: 2, style: { content: "审批测试文字" } } };
+    const f = fixture(resolve(directory, "session.sqlite3"), 1, api.nativeModelConfiguration(nativeConfiguration()), async (_lease, _permit, input, init) => {
+      requests++;
+      if (requests === 1) return completionResponse([
+        { delta: { role: "assistant", tool_calls: [{ index: 0, id: "original-edit-call", type: "function", function: { name: "edit_apply_guarded", arguments: JSON.stringify(args) } }] } },
+        { finish: "tool_calls" },
+      ]);
+      const body = JSON.parse(await new Request(input, init).text());
+      assert.ok(body.messages.some((message) => message.role === "tool" && message.content === receipt), "the original model continuation receives the actual approval outcome");
+      return completionResponse([{ delta: { role: "assistant", content: `原会话处理完成：${outcome}` } }, { finish: "stop" }]);
+    }, {
+      async authorize(message, signal, invocation) {
+        assert.equal(message.id, undefined);
+        assert.equal(message.params.name, "edit_apply_guarded");
+        assert.deepEqual(JSON.parse(JSON.stringify(message.params.arguments)), args);
+        assert.equal(invocation.callId, "original-edit-call");
+        assert.equal(signal.aborted, false);
+        approvalStarted(); return decision;
+      },
+      async tool(message, _signal, invocation, ticket) {
+        writes++;
+        assert.equal(outcome, "allow", "a refused or expired approval never dispatches its edit");
+        assert.equal(ticket, "native-approved-ticket");
+        assert.equal(invocation.callId, "original-edit-call");
+        return nativeJsonReply({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: receipt }], isError: false } });
+      },
+    });
+    try {
+      const snapshot = await f.runtime.start();
+      await f.runtime.confirmRecovery({ snapshotId: snapshot.snapshotId, decision: "continue", approvalId: "native-recovery" });
+      const submitted = await f.runtime.dispatch("nativeSubmit", { taskId: `approval-${outcome}`, networkPermit: "native-permit", input: "新增文字并等待用户批准", mode: "edit" });
+      const completion = f.runtime.dispatch("nativeWait", { taskId: `approval-${outcome}` });
+      await waiting;
+      assert.equal(f.runtime.phase, "ready");
+      assert.equal(f.mcpCalls.filter((message) => message.method === "tools/call").length, 0);
+      assert.equal(requests, 1);
+      decide(outcome === "allow" ? { approved: true, ticket: "native-approved-ticket" } : { approved: false, message: receipt });
+      const completed = await completion;
+      assert.equal(completed.status, "done", durableFailure(resolve(directory, "session.sqlite3")));
+      assert.equal(completed.conversationId, submitted.conversationId);
+      assert.equal(completed.submissionId, submitted.submissionId);
+      assert.equal(completed.text, `原会话处理完成：${outcome}`);
+      assert.equal(writes, outcome === "allow" ? 1 : 0);
+      assert.equal(f.approvalCalls.length, 1);
+      assert.equal(requests, 2);
+      assert.equal(f.runtime.phase, "ready");
+    } finally {
+      decide({ approved: false, message: "test cleanup" });
+      await f.runtime.stop().catch(() => {});
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
 test("all three original adapters use the explicit service base and output ceiling with no implicit model retry", { timeout: 20000 }, async () => {
   for (const [protocol, suffix, outputField, override] of [
     ["openai-completions", "/chat/completions", "max_completion_tokens"],
@@ -710,6 +847,111 @@ test("all three original adapters use the explicit service base and output ceili
       assert.deepEqual(toolNames.sort(), ["concat_version", "effects_list", "project_get", "template_list", "timeline_read"]);
     } finally { await f.runtime.stop().catch(() => {}); rmSync(directory, { recursive: true, force: true }); }
   }
+});
+
+test("verified DeepSeek Flash context metadata is scoped to the exact official HTTPS origin and model", () => {
+  const official = {
+    ...nativeConfiguration(), endpoint: "https://api.deepseek.com/", model: "deepseek-flash",
+    maxOutputTokens: 4096, requestTimeoutMs: 60000,
+  };
+  const modelOf = (raw) => api.nativeModelConfiguration(raw).providers[0].getModels()[0];
+  for (const endpoint of ["https://api.deepseek.com/", "https://api.deepseek.com/v1", "https://api.deepseek.com:443/"]) {
+    const configuration = api.nativeModelConfiguration({ ...official, endpoint });
+    const model = configuration.providers[0].getModels()[0];
+    assert.equal(model.contextWindow, 1048576);
+    assert.equal(model.maxTokens, 4096, "service context capacity never raises the user output ceiling");
+    assert.equal(configuration.native.maxOutputTokens, 4096);
+    assert.equal(configuration.native.requestTimeoutMs, 60000);
+    assert.equal(model.reasoning, false, "this fix must not change thinking mode");
+    assert.equal(model.compat.thinkingFormat, "openai");
+  }
+  for (const override of [
+    { endpoint: "https://api.deepseek.com.attacker.invalid/" },
+    { endpoint: "https://proxy.invalid/api.deepseek.com/" },
+    { endpoint: "https://sub.api.deepseek.com/" },
+    { endpoint: "https://api.deepseek.com:8443/" },
+    { endpoint: "http://127.0.0.1/" },
+    { model: "deepseek-v4-flash" },
+    { model: "deepseek-chat" },
+    { model: "DEEPSEEK-FLASH" },
+    { protocol: "openai-responses" },
+    { protocol: "anthropic-messages" },
+  ]) assert.equal(modelOf({ ...official, ...override }).contextWindow, 32768, JSON.stringify(override));
+  assert.equal(modelOf({ ...official, endpoint: "https://proxy.invalid/", maxOutputTokens: 20000 }).contextWindow, 40000,
+    "unverified models retain their prior admission behavior");
+});
+
+test("original output budgeting no longer clips the verified official model to one token after 29k history", { timeout: 20000 }, async () => {
+  // Exercise the actual native model wrapper, original buildBaseOptions and
+  // original SDK request construction. The native fetch fixture records only
+  // safe request metadata and performs no network or credential access.
+  const { build } = await import(pathToFileURL(require.resolve("esbuild")).href);
+  const output = await build({
+    absWorkingDir: referenceRoot,
+    stdin: { contents: [
+      `export { nativeModels } from ${JSON.stringify(resolve(packageRoot, "src/models.ts"))};`,
+      `export { ExecutionGate } from ${JSON.stringify(resolve(packageRoot, "src/gate.ts"))};`,
+      `export { buildBaseOptions } from ${JSON.stringify(resolve(referenceRoot, "packages/ai/src/api/simple-options.ts"))};`,
+      `export { estimateContextTokens } from ${JSON.stringify(resolve(referenceRoot, "packages/ai/src/utils/estimate.ts"))};`,
+    ].join("\n"), loader: "ts", resolveDir: packageRoot },
+    tsconfigRaw: { compilerOptions: { paths: referencePaths() } },
+    nodePaths: [resolve(referenceRoot, "node_modules")],
+    bundle: true, platform: "browser", target: "es2022", format: "iife", globalName: "PiModelBudgetContract", write: false,
+  });
+  vm.runInContext(output.outputFiles[0].text, sandbox, { filename: "pinned-model-budget-contract.js" });
+  const { nativeModels, ExecutionGate, buildBaseOptions, estimateContextTokens } = sandbox.PiModelBudgetContract;
+  const configuration = api.nativeModelConfiguration({
+    ...nativeConfiguration(), endpoint: "https://api.deepseek.com/", model: "deepseek-flash",
+    maxOutputTokens: 4096, requestTimeoutMs: 60000,
+  });
+  const lease = { storageId: "model-budget", generation: "1", handle: "model-budget-owner" };
+  const gate = new ExecutionGate(); gate.acquiring(); gate.owned(lease);
+  gate.activating(lease, { generation: "1", snapshotId: "reviewed", allowInitializeEmptyStore: false }); gate.ready(lease);
+  gate.authorizeNetwork(lease, "explicit-model-budget-permit");
+  const captured = [];
+  const models = nativeModels(configuration, { network: {
+    async fetch(_lease, permit, input, init) {
+      assert.equal(permit, "explicit-model-budget-permit");
+      const request = new Request(input, init);
+      const body = JSON.parse(await request.text());
+      captured.push({
+        maxTokens: body.max_tokens, alternate: body.max_completion_tokens,
+        thinking: body.thinking, effort: body.reasoning_effort,
+      });
+      throw new Error("deterministic local request capture; no service request");
+    },
+  } }, gate, lease);
+  const registered = models.getAllModels().find((model) => model.id === "deepseek-flash");
+  assert.equal(registered.contextWindow, 1048576);
+  for (const [previousTotal, trailingTokens, contextWindow, expected] of [
+    [27560, 401, 32768, 711], [28800, 173, 32768, 1], [28800, 173, registered.contextWindow, 4096],
+  ]) {
+    const context = nativeJsonReply({ messages: [{
+      role: "assistant", content: [{ type: "text", text: "synthetic prior answer" }],
+      api: "openai-completions", provider: configuration.native.id, model: "deepseek-flash",
+      timestamp: 1, stopReason: "stop",
+      usage: { input: previousTotal, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: previousTotal,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    }, {
+      // Reproduce the observed budget totals without copying private text.
+      role: "user", content: "x".repeat(Math.floor(trailingTokens * 3.5)), timestamp: 2,
+    }] });
+    const model = { ...registered, contextWindow };
+    assert.equal(estimateContextTokens(context).tokens, previousTotal + trailingTokens);
+    assert.equal(buildBaseOptions(model, context, { maxTokens: 4096 }).maxTokens, expected);
+    // A caller-proposed larger output budget cannot bypass native settings.
+    const before = captured.length;
+    const result = await models.streamSimple(model, context, { maxTokens: 393216 }).result();
+    assert.equal(result.stopReason, "error", "the explicit capture fixture stops before any service call");
+    assert.equal(captured.length, before + 1, "no retry on capture refusal");
+    assert.deepEqual(captured.at(-1), { maxTokens: expected, alternate: undefined, thinking: undefined, effort: undefined });
+  }
+  gate.finishNetwork("explicit-model-budget-permit");
+  const denied = await models.streamSimple(registered, nativeJsonReply({ messages: [] }), {}).result();
+  assert.equal(denied.stopReason, "error");
+  assert.equal(captured.length, 3, "verified context metadata does not grant native network authority");
+  gate.stop();
+  assert.equal(forbiddenFetch, 0);
 });
 
 test("native configuration refuses secrets, unsafe addresses and lossy revisions before opening a provider", () => {

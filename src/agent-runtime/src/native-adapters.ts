@@ -7,7 +7,7 @@ import type {
   McpTransportMessageListener, McpTransportSendOptions,
 } from "@earendil-works/pi-mcp";
 import { combinedSignal, ExecutionGate, RuntimeRefused } from "./gate.ts";
-import type { InvocationContext, NativePorts, OwnerLease } from "./ports.ts";
+import type { InvocationContext, NativePorts, OwnerLease, ToolApproval } from "./ports.ts";
 
 export const EMBEDDED_TOOLS = Object.freeze([
   "concat_version", "project_get", "timeline_read", "effects_list", "template_list", "edit_apply_guarded",
@@ -108,6 +108,12 @@ export function guardedStorage(storage: Storage, gate: ExecutionGate, lease: Own
 }
 
 /** A transport for the original McpClient, not a second protocol client. */
+interface BoundInvocation {
+  readonly identity: InvocationContext;
+  approvalRequested: boolean;
+  approval?: { readonly ticket: string; readonly argumentsJson: string };
+}
+
 export class NativeMcpTransport implements McpTransport {
   readonly #ports: NativePorts;
   readonly #lease: OwnerLease;
@@ -115,7 +121,10 @@ export class NativeMcpTransport implements McpTransport {
   readonly #messages = new Set<McpTransportMessageListener>();
   readonly #errors = new Set<McpTransportErrorListener>();
   readonly #closedListeners = new Set<McpTransportCloseListener>();
-  readonly #invocations = new WeakMap<object, InvocationContext>();
+  readonly #invocations = new WeakMap<object, BoundInvocation>();
+  readonly #activeInvocations = new Set<string>();
+  readonly #editInvocations = new Set<string>();
+  readonly #approvalTickets = new Set<string>();
   #started = false;
   #closed = false;
 
@@ -146,9 +155,46 @@ export class NativeMcpTransport implements McpTransport {
       throw new RuntimeRefused("original Pi tool invocation identity is invalid");
     }
     if (this.#invocations.has(argumentsObject)) throw new RuntimeRefused("tool argument identity is already admitted");
-    this.#invocations.set(argumentsObject, Object.freeze({ ...invocation }));
+    const key = JSON.stringify([invocation.conversationId, invocation.taskId, invocation.callId]);
+    if (this.#activeInvocations.has(key)) throw new RuntimeRefused("original Pi invocation is already active");
+    this.#activeInvocations.add(key);
+    this.#invocations.set(argumentsObject, { identity: Object.freeze({ ...invocation }), approvalRequested: false });
     try { return await call(); }
-    finally { this.#invocations.delete(argumentsObject); }
+    finally { this.#invocations.delete(argumentsObject); this.#activeInvocations.delete(key); }
+  }
+
+  /** Human waiting is part of the original Pi tool execution, before its MCP
+   * request is created. Never change or disable the original client's timeout. */
+  async authorizeTool(argumentsObject: Record<string, unknown>, taskSignal?: AbortSignal): Promise<ToolApproval> {
+    this.#gate.assertReady(this.#lease);
+    if (!this.#started || this.#closed) throw new RuntimeRefused("MCP transport is closed");
+    const bound = this.#invocations.get(argumentsObject);
+    if (!bound) throw new RuntimeRefused("tool approval requires the original Pi invocation context");
+    const signal = combinedSignal(this.#gate.signal, taskSignal);
+    signal.throwIfAborted();
+    const key = JSON.stringify([bound.identity.conversationId, bound.identity.taskId, bound.identity.callId]);
+    if (bound.approvalRequested || this.#editInvocations.has(key)) throw new RuntimeRefused("tool approval invocation was already requested");
+    if (this.#editInvocations.size >= 65536) throw new RuntimeRefused("native tool approval limit reached");
+    bound.approvalRequested = true;
+    this.#editInvocations.add(key);
+    const argumentsJson = JSON.stringify(argumentsObject);
+    const decision = await this.#ports.mcp.authorize(this.#lease, {
+      jsonrpc: "2.0", method: "tools/call", params: { name: "edit_apply_guarded", arguments: argumentsObject },
+    }, signal, bound.identity);
+    this.#gate.assertReady(this.#lease);
+    signal.throwIfAborted();
+    if (this.#closed || this.#invocations.get(argumentsObject) !== bound) {
+      throw new RuntimeRefused("tool approval arrived after its invocation ended");
+    }
+    if (JSON.stringify(argumentsObject) !== argumentsJson) throw new RuntimeRefused("tool arguments changed while waiting for approval");
+    if (decision.approved === false) return decision;
+    if (decision.approved !== true || typeof decision.ticket !== "string" || !decision.ticket || decision.ticket.length > 256) {
+      throw new RuntimeRefused("native tool approval returned an invalid ticket");
+    }
+    if (this.#approvalTickets.has(decision.ticket)) throw new RuntimeRefused("native tool approval ticket was already issued");
+    this.#approvalTickets.add(decision.ticket);
+    bound.approval = { ticket: decision.ticket, argumentsJson };
+    return decision;
   }
 
   async send(message: JsonRpcMessage, options: McpTransportSendOptions = {}): Promise<void> {
@@ -156,7 +202,9 @@ export class NativeMcpTransport implements McpTransport {
     if (!this.#started || this.#closed) throw new RuntimeRefused("MCP transport is closed");
     const frame = message as { method?: string; params?: { name?: string; arguments?: unknown } };
     const argumentsObject = frame.params?.arguments;
-    const invocation = argumentsObject && typeof argumentsObject === "object" ? this.#invocations.get(argumentsObject) : undefined;
+    const binding = argumentsObject && typeof argumentsObject === "object" ? this.#invocations.get(argumentsObject) : undefined;
+    const invocation = binding?.identity;
+    let approvalTicket: string | undefined;
     if (frame.method === "tools/call") {
       if (!(EMBEDDED_TOOLS as readonly string[]).includes(frame.params?.name ?? "")) {
         throw new RuntimeRefused("unreviewed native MCP tool");
@@ -164,6 +212,12 @@ export class NativeMcpTransport implements McpTransport {
       if (frame.params?.name === "edit_apply_guarded") {
         this.#gate.assertReady(this.#lease);
         if (!invocation) throw new RuntimeRefused("guarded edits require the original Pi invocation context");
+        if (!binding?.approval) throw new RuntimeRefused("guarded edits require an unused native approval ticket");
+        if (JSON.stringify(argumentsObject) !== binding.approval.argumentsJson) throw new RuntimeRefused("approved tool arguments changed before dispatch");
+        approvalTicket = binding.approval.ticket;
+        // Consume before dispatch, including failed sends. Retrying a mutation
+        // requires native reconciliation, never reuse of this approval.
+        delete binding.approval;
       }
     } else if (!["initialize", "notifications/initialized", "notifications/cancelled", "tools/list", "ping"].includes(frame.method ?? "")) {
       throw new RuntimeRefused("unreviewed native MCP method");
@@ -171,7 +225,7 @@ export class NativeMcpTransport implements McpTransport {
     const signal = combinedSignal(this.#gate.signal, options.signal);
     signal.throwIfAborted();
     try {
-      const reply = await this.#ports.mcp.send(this.#lease, message, signal, invocation);
+      const reply = await this.#ports.mcp.send(this.#lease, message, signal, invocation, approvalTicket);
       this.#gate.assertOwned(this.#lease);
       signal.throwIfAborted();
       if (this.#closed) throw new RuntimeRefused("MCP reply arrived after transport close");
@@ -194,6 +248,9 @@ export class NativeMcpTransport implements McpTransport {
     this.#messages.clear();
     this.#errors.clear();
     this.#closedListeners.clear();
+    this.#activeInvocations.clear();
+    this.#editInvocations.clear();
+    this.#approvalTickets.clear();
     // Native ownership and native Session cleanup belong to the host's
     // revoke/drain path, not to a client reconnect or transport close.
   }

@@ -75,9 +75,21 @@ export function nativeModelConfiguration(raw: unknown): ModelConfiguration {
     id: configured.model, name: configured.model, api: configured.protocol,
     provider: configured.id, baseUrl: serviceBase, input: ["text"], reasoning: false,
     compat: compatibility[configured.protocol],
-    // Pi requires numerical metadata. This is an application admission limit,
-    // not a claim about a service's context window. Automatic compaction is off.
-    contextWindow: Math.max(32768, configured.maxOutputTokens * 2), maxTokens: configured.maxOutputTokens,
+    // Verified 2026-11-20 against https://api-docs.deepseek.com/api/list-models/
+    // and https://api-docs.deepseek.com/quick_start/pricing/: deepseek-flash on
+    // the official HTTPS origin has a 1,048,576-token context. Pi's original
+    // simple adapter budgets output against this metadata even with compaction
+    // disabled; the former synthetic 32k window reduced a 4096-token request
+    // to one token after ordinary tool history. This metadata is NOT a new
+    // output grant: maxTokens and native request validation retain the user's
+    // configured ceiling. Do not infer this capacity for other models, proxy
+    // hosts, ports or protocols. Their legacy conservative admission bound is
+    // retained, without claiming it is verified service context metadata.
+    contextWindow: configured.protocol === "openai-completions"
+      && new URL(serviceBase).origin === "https://api.deepseek.com"
+      && configured.model === "deepseek-flash"
+      ? 1048576 : Math.max(32768, configured.maxOutputTokens * 2),
+    maxTokens: configured.maxOutputTokens,
     // Unknown pricing is not a zero-cost promise. Native UI must not display
     // these structural Pi counters as a quote or use them to approve spending.
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

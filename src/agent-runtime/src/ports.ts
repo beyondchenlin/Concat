@@ -44,6 +44,11 @@ export interface InvocationContext {
   readonly callId: string;
 }
 
+/** A native human decision for one exact tool invocation. This is never model input. */
+export type ToolApproval =
+  | { readonly approved: true; readonly ticket: string }
+  | { readonly approved: false; readonly message: string };
+
 /**
  * Every native privileged operation must validate the same lease inside
  * its actual write/dispatch boundary, not merely when returning this port.
@@ -79,8 +84,11 @@ export interface NativePorts {
     }): Promise<SqliteDatabase>;
   };
   readonly mcp: {
+    /** Wait outside the MCP request lifetime. Native owns the approval deadline,
+     * exact command binding and cancellation; the protocol client has not sent. */
+    authorize(lease: OwnerLease, message: unknown, signal: AbortSignal, invocation: InvocationContext): Promise<ToolApproval>;
     /** One frame to the native concat_mcp::Session, with no retry/fallback. */
-    send(lease: OwnerLease, message: unknown, signal: AbortSignal, invocation?: InvocationContext): Promise<unknown | undefined>;
+    send(lease: OwnerLease, message: unknown, signal: AbortSignal, invocation?: InvocationContext, approvalTicket?: string): Promise<unknown | undefined>;
   };
   readonly network: {
     /** Native code validates ownership, channel, destination and budget. */

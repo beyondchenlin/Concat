@@ -199,8 +199,24 @@ export function messageNativePorts(wire: NativeWireClient): NativePorts {
     },
     sqlite: nativeSqlitePort({ send: (frame, signal) => wire.call({ ...frame }, signal) }),
     mcp: {
-      async send(lease, message, signal, invocation) {
-        const result = await bound(lease, "mcp.send", { message, ...(invocation ? { invocation } : {}) }, signal);
+      async authorize(lease, message, signal, invocation) {
+        const result = record(await bound(lease, "mcp.authorize", { message, invocation }, signal));
+        signal.throwIfAborted();
+        if (result.approved === true && Object.keys(result).length === 2
+          && typeof result.ticket === "string" && result.ticket.length > 0 && result.ticket.length <= 256) {
+          return { approved: true, ticket: result.ticket };
+        }
+        if (result.approved === false && Object.keys(result).length === 2
+          && typeof result.message === "string" && result.message.length > 0 && result.message.length <= 4096) {
+          return { approved: false, message: result.message };
+        }
+        throw new RuntimeRefused("native tool approval returned an invalid decision");
+      },
+      async send(lease, message, signal, invocation, approvalTicket) {
+        const result = await bound(lease, "mcp.send", {
+          message, ...(invocation ? { invocation } : {}),
+          ...(approvalTicket === undefined ? {} : { approvalTicket }),
+        }, signal);
         // JSON has no undefined; a native notification has a null reply.
         return result === null ? undefined : result;
       },

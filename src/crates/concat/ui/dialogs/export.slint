@@ -630,6 +630,11 @@ export component ExportDialog inherits Rectangle {
     // the way out is seen as well as the way in.
     visible: root.data.open || root.lowered < 1;
 
+    public pure function covers-point(x: float, y: float) -> bool {
+        return root.visible && x * 1px >= sheet.x && x * 1px < sheet.x + sheet.width
+            && y * 1px >= sheet.y && y * 1px < sheet.y + sheet.height;
+    }
+
     sheet := Rectangle {
         x: 0;
         y: root.height * root.lowered;
@@ -637,8 +642,11 @@ export component ExportDialog inherits Rectangle {
         height: root.height;
         background: Theme.panel;
 
-        // Nothing under the sheet takes a press while it is up.
-        TouchArea { }
+        // Child controls receive scrolling first. Nothing under the sheet
+        // takes an unhandled wheel or press while this page is visible.
+        TouchArea {
+            scroll-event(event) => { return EventResult.accept; }
+        }
 
         VerticalLayout {
             padding-top: root.inset-top;

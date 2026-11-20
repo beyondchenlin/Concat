@@ -1253,8 +1253,7 @@ export component PreviewPane inherits Rectangle {
                             // speed a hand expects, not fly a hundred at once.
                             px-per-step: 3px;
                             format(v) => {
-                                return Fmt.frames-timecode(v / root.frame-rate,
-                                    root.frame-rate);
+                                return Fmt.frame-count-timecode(Math.round(v), root.frame-rate);
                             }
                             parse(text) => {
                                 return Fmt.parse-frames(text, root.frame-rate);

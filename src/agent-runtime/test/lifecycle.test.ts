@@ -33,7 +33,10 @@ function fixture() {
       async discardVerified() { log.push("discard-verified"); },
     },
     sqlite: { async open() { throw new Error("SQLite was not expected in lifecycle-port tests"); } },
-    mcp: { async send() { log.push("mcp"); return undefined; } },
+    mcp: {
+      async authorize(_lease, _message, _signal, invocation) { return { approved: true, ticket: `native-test-ticket-${invocation.callId}` }; },
+      async send() { log.push("mcp"); return undefined; },
+    },
     network: { async fetch() { log.push("network"); throw new Error("network must not run in this test"); } },
   };
   const engine: PiEngine = {
@@ -385,7 +388,10 @@ test("guarded MCP edits take operation identity only from the original tool cont
   const message = { jsonrpc: "2.0" as const, id: 1, method: "tools/call", params: { name: "edit_apply_guarded", arguments: args } };
   await assert.rejects(transport.send(message), /original Pi invocation/);
   assert.equal(received.length, 0);
-  await transport.withInvocation(args, { taskId: 7, conversationId: 8, callId: "original" }, () => transport.send(message));
+  await transport.withInvocation(args, { taskId: 7, conversationId: 8, callId: "original" }, async () => {
+    await transport.authorizeTool(args, new AbortController().signal);
+    return transport.send(message);
+  });
   assert.deepEqual(received, [{ taskId: 7, conversationId: 8, callId: "original" }]);
   await assert.rejects(transport.send(message), /original Pi invocation/);
   assert.equal(received.length, 1);
@@ -396,14 +402,22 @@ test("concurrent MCP calls keep distinct trusted invocation identities", async (
   const f = openedGate();
   const received: unknown[] = [];
   const pending = deferred<void>();
-  f.ports.mcp.send = async (_lease, _message, _signal, invocation) => { received.push(invocation); await pending.promise; return undefined; };
+  const dispatched = deferred<void>();
+  f.ports.mcp.send = async (_lease, _message, _signal, invocation) => {
+    received.push(invocation); if (received.length === 2) dispatched.resolve();
+    await pending.promise; return undefined;
+  };
   const transport = new NativeMcpTransport(f.ports, f.lease, f.gate);
   await transport.start();
   const args1 = {}; const args2 = {};
   const call = (id: number, args: Record<string, unknown>) => transport.withInvocation(args,
     { taskId: id, conversationId: id + 10, callId: `call-${id}` },
-    () => transport.send({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "edit_apply_guarded", arguments: args } }));
+    async () => {
+      await transport.authorizeTool(args, new AbortController().signal);
+      return transport.send({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "edit_apply_guarded", arguments: args } });
+    });
   const first = call(1, args1); const second = call(2, args2);
+  await dispatched.promise;
   assert.deepEqual(received, [{ taskId: 1, conversationId: 11, callId: "call-1" }, { taskId: 2, conversationId: 12, callId: "call-2" }]);
   pending.resolve(); await Promise.all([first, second]);
   await transport.close();

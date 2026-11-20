@@ -55,8 +55,12 @@ export struct AgentStatusData {
 
 export global AgentUi {
     in-out property <AgentView> view: AgentView.chat;
+    changed view => { self.native-scroll-up-pending = false; }
     /// Desktop only: hiding the sidebar does not stop or reset a task.
     in-out property <bool> sidebar-open: true;
+    changed sidebar-open => {
+        if !self.sidebar-open { self.native-scroll-up-pending = false; }
+    }
     // Only the assistant rail is resizable; the original editor dock is unchanged.
     // Keep the editor dominant at startup; the user can widen the rail with its gutter.
     in-out property <length> sidebar-width: 420px;
@@ -84,6 +88,11 @@ export global AgentUi {
     callback attach-requested();
     callback cancel-attachments();
     in-out property <[AgentMessageData]> messages;
+    // A native wheel can start a smooth animation before content-y moves.
+    // Consume this input before any position/layout callback can mistake an
+    // older inertial movement for a new choice to return to the latest reply.
+    // It never grants model or edit authority.
+    in-out property <bool> native-scroll-up-pending;
     in-out property <AgentStatusData> status: {
         title: "聊天未就绪",
         detail: "请先完成模型配置和调用授权。",
@@ -115,8 +124,107 @@ export global AgentUi {
     in property <bool> tool-connected: false;
     in property <bool> tool-pending: false;
     in property <string> tool-summary;
+    in property <string> tool-request-id;
     callback tool-mode-requested(index: int);
-    callback tool-decision-requested(approve: bool);
+    callback tool-decision-requested(request-id: string, approve: bool);
+}
+
+/// Approval gestures are tied to the prompt shown at the start of the
+/// interaction. Replacing a prompt while the pointer/key is held cancels it.
+component ApprovalDecisionButton inherits Rectangle {
+    in property <string> label;
+    in property <string> request-id;
+    in property <bool> approve;
+    callback decided(request-id: string, approve: bool);
+
+    private property <string> pointer-request;
+    private property <string> keyboard-request;
+    private property <bool> keyboard-held;
+    private property <bool> ring;
+    private property <bool> active: root.request-id != "";
+
+    changed request-id => {
+        root.pointer-request = "";
+        root.keyboard-request = "";
+        // Keep keyboard-held until release: an auto-repeat for an older
+        // prompt must not arm a new decision after the ID changes.
+    }
+
+    accessible-role: button;
+    accessible-enabled: root.active;
+    accessible-label: root.label;
+    accessible-action-default => {
+        if root.active { root.decided(root.request-id, root.approve); }
+    }
+
+    min-height: 28px;
+    max-height: 28px;
+    min-width: caption.preferred-width + 24px;
+    horizontal-stretch: 0;
+    border-radius: Theme.r;
+    border-width: 1px;
+    border-color: root.ring ? Theme.accent : touch.has-hover ? Theme.line-strong : Theme.line;
+    background: touch.pressed ? Theme.field-active : touch.has-hover ? Theme.field-hover : Theme.field;
+    opacity: root.active ? 1 : 0.45;
+
+    focus := FocusScope {
+        enabled: root.active;
+        focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
+        focus-lost(reason) => {
+            root.ring = false;
+            root.keyboard-request = "";
+            root.keyboard-held = false;
+        }
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                if !root.keyboard-held {
+                    root.keyboard-held = true;
+                    root.keyboard-request = root.request-id;
+                }
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+        key-released(event) => {
+            if event.text == " " || event.text == "\n" {
+                let captured = root.keyboard-request;
+                root.keyboard-request = "";
+                root.keyboard-held = false;
+                if captured != "" && captured == root.request-id {
+                    root.decided(captured, root.approve);
+                }
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
+    caption := Text {
+        text: root.label;
+        color: Theme.fg;
+        font-size: Theme.fs;
+        font-weight: Theme.weight-title;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        enabled: root.active;
+        mouse-cursor: pointer;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.pointer-request = root.request-id;
+                focus.focus();
+            } else if event.kind == PointerEventKind.cancel {
+                root.pointer-request = "";
+            }
+        }
+        clicked => {
+            let captured = root.pointer-request;
+            root.pointer-request = "";
+            if captured != "" && captured == root.request-id {
+                root.decided(captured, root.approve);
+            }
+        }
+    }
 }
 
 /// The same three destinations on a desk and a phone. The full original
@@ -189,6 +297,7 @@ export component AgentNavigation inherits Rectangle {
 
 export component AgentChat inherits Rectangle {
     in property <bool> phone;
+    init => { AgentUi.native-scroll-up-pending = false; }
     background: Theme.panel;
     border-radius: Theme.r-lg;
     private property <bool> send-help;
@@ -209,7 +318,12 @@ export component AgentChat inherits Rectangle {
         } else {
             root.send-help = false;
             root.expanded-message-index = -1;
-            side-transcript.content-y = Math.min(0px, side-transcript.height - side-transcript.content-height);
+            // Sending explicitly returns to the live conversation. Keep that
+            // intent when the busy row or the new message changes the layout.
+            AgentUi.native-scroll-up-pending = false;
+            side-transcript.follow-end = true;
+            side-transcript.previous-content-y = side-transcript.end-y;
+            side-transcript.content-y = side-transcript.end-y;
             if AgentUi.composer-mode == 1 { AgentUi.edit-requested(AgentUi.draft); }
             else { AgentUi.send-requested(AgentUi.draft); }
         }
@@ -232,7 +346,7 @@ export component AgentChat inherits Rectangle {
             IconButton { glyph: Glyph.settings; label: "模型设置"; enabled: !AgentSettingsUi.busy; clicked => { AgentSettingsUi.open-requested(); } }
         }
         // Keep recovery, failures and explicit call authorization visible.
-        if AgentUi.status.busy: Text {
+        if AgentUi.status.busy || (AgentUi.status.can-send && AgentUi.status.title == "操作未执行"): Text {
             text: AgentUi.status.title + (AgentUi.status.detail == "" ? "" : " · " + AgentUi.status.detail);
             color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap;
         }
@@ -292,14 +406,54 @@ export component AgentChat inherits Rectangle {
         }
         side-transcript := Flickable {
             vertical-stretch: 1; min-height: 40px;
+            accessible-role: list;
+            accessible-label: "对话记录";
             content-width: self.width;
             content-height: Math.max(self.height, side-entries.preferred-height);
-            private property <length> last-height;
-            changed content-height => {
-                if self.last-height - self.height + self.content-y <= 12px {
-                    self.content-y = Math.min(0px, self.height - self.content-height);
+            private property <bool> follow-end: true;
+            private property <length> end-y: Math.min(0px, self.height - self.content-height);
+            private property <length> previous-content-y;
+            private property <bool> native-scroll-up-pending: AgentUi.native-scroll-up-pending;
+            function observe-native-scroll() {
+                if AgentUi.native-scroll-up-pending {
+                    self.follow-end = false;
+                    self.previous-content-y = self.content-y;
+                    AgentUi.native-scroll-up-pending = false;
                 }
-                self.last-height = self.content-height;
+            }
+            changed native-scroll-up-pending => { self.observe-native-scroll(); }
+            changed end-y => {
+                // Both content growth and viewport changes move the bottom.
+                // Record our own movement before assigning it: a queued
+                // position notification must not look like user scrolling.
+                self.observe-native-scroll();
+                if self.follow-end {
+                    self.previous-content-y = self.end-y;
+                    self.content-y = self.end-y;
+                }
+            }
+            flicked => {
+                // A release can emit flicked again at the same lower bound.
+                // Preserve intent for that event; native upward wheel input
+                // is observed separately before its smooth animation starts.
+                self.observe-native-scroll();
+                if self.content-y != self.previous-content-y {
+                    self.follow-end = self.content-y < self.previous-content-y
+                        && self.content-y <= self.end-y;
+                }
+                self.previous-content-y = self.content-y;
+            }
+            changed content-y => {
+                // Smooth scrolling reaches its destination after flicked.
+                // A layout clamp moves up, so it cannot re-enable following
+                // while the person is reading an older message.
+                self.observe-native-scroll();
+                if self.content-y < self.previous-content-y && self.content-y <= self.end-y {
+                    self.follow-end = true;
+                } else if self.content-y > self.previous-content-y && self.content-y > self.end-y {
+                    self.follow-end = false;
+                }
+                self.previous-content-y = self.content-y;
             }
             side-entries := VerticalLayout {
                 width: side-transcript.width; height: self.preferred-height; spacing: 8px; alignment: start;
@@ -324,7 +478,13 @@ export component AgentChat inherits Rectangle {
                         if message.collapsible: Button {
                             label: root.expanded-message-index == index ? "收起详情" : "展开完整内容";
                             ghost: true; align-left: true;
-                            clicked => { root.expanded-message-index = root.expanded-message-index == index ? -1 : index; }
+                            clicked => {
+                                // Opening or closing history is an explicit
+                                // reading action, not a request to jump ahead.
+                                side-transcript.follow-end = false;
+                                side-transcript.previous-content-y = side-transcript.content-y;
+                                root.expanded-message-index = root.expanded-message-index == index ? -1 : index;
+                            }
                         }
                     }
                 }
@@ -460,8 +620,14 @@ export component AgentChat inherits Rectangle {
                 }
                 HorizontalLayout {
                     spacing: 6px;
-                    Button { label: "拒绝"; ghost: true; clicked => { AgentUi.tool-decision-requested(false); } }
-                    Button { label: "批准本次"; clicked => { AgentUi.tool-decision-requested(true); } }
+                    ApprovalDecisionButton {
+                        label: "拒绝"; request-id: AgentUi.tool-request-id; approve: false;
+                        decided(request-id, approve) => { AgentUi.tool-decision-requested(request-id, approve); }
+                    }
+                    ApprovalDecisionButton {
+                        label: "批准本次"; request-id: AgentUi.tool-request-id; approve: true;
+                        decided(request-id, approve) => { AgentUi.tool-decision-requested(request-id, approve); }
+                    }
                 }
             }
         }

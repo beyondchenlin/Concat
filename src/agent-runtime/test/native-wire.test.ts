@@ -92,6 +92,55 @@ test("native ports bind the trusted invocation beside MCP JSON, and never fall b
   wire.close();
 });
 
+test("native approval has a separately correlated frame and its ticket stays outside model arguments", async () => {
+  const b = bridge(); const wire = new NativeWireClient(b.api); const ports = messageNativePorts(wire);
+  const lease = { storageId: "x", handle: "owner", generation: "4" };
+  const invocation = { taskId: 7, conversationId: 8, callId: "original-call" };
+  const message = { jsonrpc: "2.0", method: "tools/call", params: { name: "edit_apply_guarded", arguments: { command: { op: "addTextClip" } } } };
+  const signal = new AbortController().signal;
+  try {
+    const approval = ports.mcp.authorize(lease, message, signal, invocation);
+    const frame = b.sent.at(-1)!;
+    assert.equal(frame.payload.method, "mcp.authorize");
+    assert.deepEqual(frame.payload.invocation, invocation);
+    assert.equal(frame.payload.ownerHandle, lease.handle);
+    b.receive({ channel: NATIVE_CHANNEL, id: frame.id, result: { approved: true, ticket: "native-issued" } });
+    const decision = await approval; assert.equal(decision.approved, true);
+    const call = ports.mcp.send(lease, { ...message, id: 1 }, signal, invocation, "native-issued");
+    const sent = b.sent.at(-1)!;
+    assert.equal(sent.payload.approvalTicket, "native-issued");
+    assert.equal("approvalTicket" in sent.payload.message.params.arguments, false);
+    b.receive({ channel: NATIVE_CHANNEL, id: sent.id, result: null }); await call;
+    // Replaying the old decision cannot complete a new authorization.
+    const later = ports.mcp.authorize(lease, message, signal, { ...invocation, callId: "later" });
+    const laterFrame = b.sent.at(-1)!;
+    b.receive({ channel: NATIVE_CHANNEL, id: frame.id, result: { approved: true, ticket: "native-issued" } });
+    b.receive({ channel: NATIVE_CHANNEL, id: laterFrame.id, result: { approved: false, message: "用户拒绝" } });
+    assert.deepEqual(await later, { approved: false, message: "用户拒绝" });
+  } finally { wire.close(); }
+});
+
+test("malformed approval decisions and approvals arriving after cancellation are refused", async () => {
+  const b = bridge(); const wire = new NativeWireClient(b.api); const ports = messageNativePorts(wire);
+  const lease = { storageId: "x", handle: "owner", generation: "4" };
+  const invocation = { taskId: 7, conversationId: 8, callId: "original-call" };
+  try {
+    for (const result of [{ approved: true }, { approved: true, ticket: "" }, { approved: false, message: "" }, { approved: true, ticket: "x", message: "mixed" }]) {
+      const approval = ports.mcp.authorize(lease, {}, new AbortController().signal, invocation);
+      b.receive({ channel: NATIVE_CHANNEL, id: b.sent.at(-1)!.id, result });
+      await assert.rejects(approval, /invalid decision/);
+    }
+    const abort = new AbortController();
+    const approval = ports.mcp.authorize(lease, {}, abort.signal, invocation);
+    const frame = b.sent.at(-1)!;
+    abort.abort();
+    assert.equal(b.sent.at(-1)!.payload.method, "request.cancel");
+    assert.equal(b.sent.at(-1)!.payload.requestId, frame.id);
+    b.receive({ channel: NATIVE_CHANNEL, id: frame.id, result: { approved: true, ticket: "late" } });
+    await assert.rejects(approval);
+  } finally { wire.close(); }
+});
+
 
 test("only a live acquired owner acknowledges a genuinely received native save notification", async () => {
   const b = bridge(); const wire = new NativeWireClient(b.api); const ports = messageNativePorts(wire);
