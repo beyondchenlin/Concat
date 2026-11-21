@@ -815,6 +815,7 @@ pub(crate) mod tests {
         struct ControlGeometry {
             bounds: Bounds,
             visible: Bounds,
+            clip: Bounds,
         }
 
         #[cfg(not(target_os = "android"))]
@@ -899,6 +900,7 @@ pub(crate) mod tests {
             ControlGeometry {
                 bounds,
                 visible: intersection(bounds, clip),
+                clip,
             }
         }
 
@@ -1883,7 +1885,70 @@ pub(crate) mod tests {
                     let mut status = agent.get_status();
                     status.missing = "".into();
                     status.needs_model_setup = false;
+                    status.can_send = true;
+                    status.title = "就绪".into();
+                    status.detail = "".into();
+                    agent.set_status(status.clone());
+                    app.show().unwrap();
+
+                    // An empty conversation exposes an inherited transcript
+                    // height cap that a long approval summary would conceal.
+                    // Measure the production surface's clipping edge rather
+                    // than reproducing its half/full-height calculation.
+                    let assert_sheet_edges = |level, available_bottom: f32, action: &str| {
+                        render_window(app.window());
+                        let label = if level == 1 { "展开全屏智能助手" } else { "缩回半屏智能助手" };
+                        let header = control_geometry(app.window(), label, AccessibleRole::Button);
+                        fully_visible_control(app.window(), label, AccessibleRole::Button);
+                        assert!((header.bounds.y - header.clip.y).abs() < 1.,
+                            "the title bar must start at the actual sheet surface top: {header:?}");
+                        let close = fully_visible_control(app.window(), "收起智能助手", AccessibleRole::Button);
+                        let inside_header = intersection(close, header.bounds);
+                        assert!(close.width >= 43.9 && close.height >= 43.9
+                            && (inside_header.width - close.width).abs() < 1.
+                            && (inside_header.height - close.height).abs() < 1.,
+                            "the full collapse target must remain inside the top title bar: {close:?}, {header:?}");
+                        let content = fully_visible_control(app.window(), "对话记录", AccessibleRole::List);
+                        assert!(header.bounds.bottom() <= content.y + 1.,
+                            "the transcript must start below the title bar, never cover it: {header:?}, {content:?}");
+                        let input = fully_visible_control(app.window(), "对话输入区域", AccessibleRole::Groupbox);
+                        let action = fully_visible_control(app.window(), action, AccessibleRole::Button);
+                        let gap = available_bottom - action.bottom();
+                        assert!(action.height >= 43.9 && (-1.0..=16.0).contains(&gap),
+                            "the action row must stay at the available bottom with only its padding: bottom={available_bottom}, action={action:?}");
+                        assert!(input.bottom() <= action.y + 1. && action.y - input.bottom() <= 8.,
+                            "the input must remain directly above its reachable action row: input={input:?}, action={action:?}");
+                    };
+                    for height in [640., 800.] {
+                        app.window().set_size(slint::LogicalSize::new(320., height));
+                        for level in [1, 2] {
+                            for inset in [0., height - 320.] {
+                                agent.set_phone_sheet_state(level);
+                                app.set_keyboard_inset(inset);
+                                assert_sheet_edges(level, height - inset, "发送");
+                                // Real pointer dispatch also detects a header
+                                // whose bounds are correct but another item
+                                // intercepts its title or collapse button.
+                                click_visible_button(app.window(), if level == 1 {
+                                    "展开全屏智能助手"
+                                } else {
+                                    "缩回半屏智能助手"
+                                });
+                                assert_eq!(agent.get_phone_sheet_state(), 3 - level,
+                                    "clicking the actual title bar must change sheet height");
+                                click_visible_button(app.window(), "收起智能助手");
+                                assert_eq!(agent.get_phone_sheet_state(), 0,
+                                    "the actual header collapse button must close the sheet");
+                                assert_eq!(agent.get_draft(), "保留输入高度偏好和未发送草稿");
+                            }
+                        }
+                    }
+
+                    app.window().set_size(slint::LogicalSize::new(320., 640.));
+                    app.set_keyboard_inset(0.);
+                    agent.set_phone_sheet_state(2);
                     status.busy = true;
+                    status.can_send = false;
                     status.can_stop = true;
                     status.title = "等待批准".into();
                     agent.set_status(status);
@@ -1896,7 +1961,6 @@ pub(crate) mod tests {
                     agent.on_tool_decision_requested(move |id, approved| {
                         observed.borrow_mut().push((id.to_string(), approved));
                     });
-                    app.show().unwrap();
                     render_window(app.window());
                     drag_composer(app.window(), 100.);
                     let preferred = phone_approval_controls(app.window())[3].height;
@@ -1906,6 +1970,7 @@ pub(crate) mod tests {
                         for inset in [0., 320.] {
                             app.set_keyboard_inset(inset);
                             let controls = phone_approval_controls(app.window());
+                            assert_sheet_edges(level, 640. - inset, "停止");
                             assert!(controls[2].bottom() <= 640. - inset + 1.,
                                 "the real sheet header, clipping and keyboard inset must keep stop above the keyboard");
                             if inset == 320. {
