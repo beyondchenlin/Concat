@@ -61,6 +61,10 @@ pub struct AgentPane {
     pub can_review: bool,
     pub runtime_loading: bool,
     pub runtime_loaded: bool,
+    /// Distinct from a real running model task; holds no execution authority.
+    pub waiting_for_ready: bool,
+    runtime_seen: bool,
+    runtime_may_wait: bool,
     messages: Vec<AgentMessageData>,
     references: Vec<MediaReference>,
     pending_attachments: Vec<PendingAttachment>,
@@ -152,8 +156,11 @@ fn message_preview(author: &str, body: &str) -> (String, bool) {
 
 impl AgentPane {
     pub(crate) fn apply_runtime(&mut self, runtime: &crate::embedded::RuntimeView) {
+        self.runtime_seen = true;
+        self.runtime_may_wait = runtime.may_wait_for_readiness();
+        self.waiting_for_ready = runtime.waiting_for_ready;
         self.readiness.runtime_ready = runtime.phase == "ready" && !runtime.closed;
-        if !self.readiness.runtime_ready {
+        if !self.readiness.runtime_ready || self.waiting_for_ready {
             self.readiness.calls_authorized = false;
         }
         self.task.running = runtime.task_running;
@@ -234,6 +241,45 @@ impl AgentPane {
         }
     }
 
+    fn can_wait_for_startup(&self, owner: &OwnerStatus) -> bool {
+        matches!(owner.phase, Phase::RecoveryRequired | Phase::Ready)
+            && !self.readiness.runtime_ready
+            && (self.runtime_may_wait
+                || (!self.runtime_seen && owner.phase == Phase::RecoveryRequired))
+            && !self.waiting_for_ready
+            && !self.task.running
+            && self.error.is_empty()
+            && self.configuration_error.is_empty()
+            && !self.readiness.provider.trim().is_empty()
+            && !self.readiness.model.trim().is_empty()
+            && self.readiness.credentials_ready
+            && self.pending_attachments.is_empty()
+    }
+
+    pub(crate) fn validate_waiting_submission(
+        &self,
+        owner: Result<OwnerStatus, String>,
+        draft: &str,
+    ) -> Result<String, String> {
+        let text = draft.trim();
+        if text.is_empty() {
+            return Err("请输入剪辑要求。".into());
+        }
+        if self.waiting_for_ready {
+            return Err("已有消息正在等待连接，请等待完成或停止；草稿已保留。".into());
+        }
+        let owner = owner?;
+        if !self.can_wait_for_startup(&owner) {
+            let data = self.data(Ok(owner));
+            return Err(if !data.error.is_empty() {
+                data.error.to_string()
+            } else {
+                "当前会话或模型配置未就绪，请完成核对后发送。".into()
+            });
+        }
+        Ok(text.to_owned())
+    }
+
     fn missing(&self) -> String {
         let mut missing = Vec::new();
         if self.readiness.provider.trim().is_empty() {
@@ -302,7 +348,8 @@ impl AgentPane {
                 && !self.runtime_loaded
                 && !self.runtime_loading);
         data.can_stop = matches!(owner.phase, Phase::RecoveryRequired | Phase::Ready)
-            && (self.task.running
+            && (self.waiting_for_ready
+                || self.task.running
                 || self.readiness.runtime_ready
                 || self.runtime_loaded
                 || self.runtime_loading
@@ -317,10 +364,42 @@ impl AgentPane {
         if data.can_review {
             data.recovery_summary = self.recovery_summary.as_str().into();
         }
+        if self.waiting_for_ready && matches!(owner.phase, Phase::RecoveryRequired | Phase::Ready) {
+            data.busy = true;
+            data.can_connect = false;
+            data.can_send = false;
+            data.can_review = false;
+            data.can_continue = false;
+            data.can_discard = false;
+            data.missing = "".into();
+            data.recovery_summary = "".into();
+            data.title = "正在连接当前工程".into();
+            data.detail = "本次发送已暂存；连接核对完成后发送，草稿仍保留在输入框中。".into();
+            return data;
+        }
+        if self.can_wait_for_startup(&owner) {
+            data.can_send = true;
+            data.missing = "".into();
+            data.can_review = false;
+            data.can_continue = false;
+            data.can_discard = false;
+            data.title = if self.runtime_loading {
+                "正在连接当前工程"
+            } else {
+                "等待输入"
+            }
+            .into();
+            data.detail = "发送会等待当前工程和会话核对完成；不会自动继续旧任务。".into();
+            return data;
+        }
         match owner.phase {
             Phase::RecoveryRequired => {
                 data.title = "等待恢复核对".into();
-                data.detail = "核对当前工程和会话后，由你决定是否继续。".into();
+                data.detail = if self.task.title.is_empty() {
+                    "核对当前工程和会话后，由你决定是否继续。".into()
+                } else {
+                    self.task.title.as_str().into()
+                };
             }
             Phase::Draining => {
                 data.busy = self.task.running || owner.active_operations > 0;
@@ -393,7 +472,11 @@ impl AgentPane {
         if text.is_empty() {
             return Err("请输入剪辑要求。".to_owned());
         }
-        let data = self.data(owner);
+        let owner = owner?;
+        if owner.phase != Phase::Ready || !self.readiness.runtime_ready || self.waiting_for_ready {
+            return Err("请先连接会话并完成原生恢复核对。".into());
+        }
+        let data = self.data(Ok(owner));
         if !data.can_send {
             let reason = if !data.error.is_empty() {
                 data.error
@@ -1055,6 +1138,145 @@ mod tests {
                 calls_authorized: true,
             },
             ..AgentPane::default()
+        }
+    }
+
+    #[test]
+    fn clean_startup_accepts_only_explicit_waiting_intent_without_model_authority() {
+        let mut pane = configured();
+        pane.readiness.runtime_ready = false;
+        pane.readiness.calls_authorized = false;
+        assert!(pane.data(owner(Phase::RecoveryRequired)).can_send);
+        assert!(
+            pane.validate_waiting_submission(owner(Phase::RecoveryRequired), "首次发送")
+                .is_ok()
+        );
+        assert!(
+            pane.validate_submission(owner(Phase::RecoveryRequired), "首次发送")
+                .is_err()
+        );
+        assert!(!pane.readiness.calls_authorized);
+        for phase in ["new", "acquiring"] {
+            pane.apply_runtime(&crate::embedded::RuntimeView {
+                loaded: phase == "acquiring",
+                phase: phase.into(),
+                ..Default::default()
+            });
+            assert!(pane.data(owner(Phase::RecoveryRequired)).can_send);
+            assert!(
+                pane.validate_waiting_submission(owner(Phase::RecoveryRequired), "first send")
+                    .is_ok()
+            );
+            assert!(!pane.readiness.calls_authorized);
+        }
+        for phase in ["recovery", "activating"] {
+            pane.apply_runtime(&crate::embedded::RuntimeView {
+                loaded: true,
+                phase: phase.into(),
+                ..Default::default()
+            });
+            let status = pane.data(owner(Phase::RecoveryRequired));
+            assert!(!status.can_send, "{phase} without a snapshot");
+            assert_eq!(status.can_review, phase == "recovery");
+            assert!(!status.can_continue && !status.can_discard);
+            assert!(
+                pane.validate_waiting_submission(owner(Phase::RecoveryRequired), "first send")
+                    .is_err()
+            );
+            assert!(!pane.readiness.calls_authorized);
+            pane.apply_runtime(&crate::embedded::RuntimeView {
+                loaded: true,
+                phase: phase.into(),
+                snapshot: Some(serde_json::json!({
+                    "snapshotId": "clean-native-snapshot",
+                    "projectPath": "isolated-project",
+                    "hasInterruptedWork": false,
+                    "blockedReason": null
+                })),
+                ..Default::default()
+            });
+            assert!(pane.data(owner(Phase::RecoveryRequired)).can_send);
+            assert!(
+                pane.validate_waiting_submission(owner(Phase::RecoveryRequired), "first send")
+                    .is_ok()
+            );
+            assert!(
+                pane.validate_submission(owner(Phase::RecoveryRequired), "first send")
+                    .is_err()
+            );
+            assert!(!pane.readiness.calls_authorized);
+        }
+        pane.apply_runtime(&crate::embedded::RuntimeView {
+            phase: "loading".into(),
+            ..Default::default()
+        });
+        assert!(pane.data(owner(Phase::RecoveryRequired)).can_send);
+        pane.apply_runtime(&crate::embedded::RuntimeView {
+            phase: "loading".into(),
+            waiting_for_ready: true,
+            ..Default::default()
+        });
+        let status = pane.data(owner(Phase::RecoveryRequired));
+        assert!(status.busy && status.can_stop && !status.can_send);
+        assert!(!pane.task.running && !pane.readiness.calls_authorized);
+        assert!(!status.can_review && !status.can_continue && !status.can_discard);
+        assert!(
+            pane.validate_waiting_submission(owner(Phase::RecoveryRequired), "重复发送")
+                .is_err()
+        );
+        pane.apply_runtime(&crate::embedded::RuntimeView {
+            phase: "recovery".into(),
+            snapshot: Some(
+                serde_json::json!({"hasInterruptedWork":true,"blockedReason":"interrupted"}),
+            ),
+            ..Default::default()
+        });
+        assert!(!pane.data(owner(Phase::RecoveryRequired)).can_send);
+        assert!(
+            pane.validate_waiting_submission(owner(Phase::RecoveryRequired), "不得继续旧任务")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn startup_waiting_does_not_weaken_configuration_failure_or_retirement_gates() {
+        for fault in [
+            "native",
+            "configuration",
+            "credential",
+            "provider",
+            "model",
+            "task",
+        ] {
+            let mut pane = configured();
+            pane.readiness.runtime_ready = false;
+            match fault {
+                "native" => pane.error = "native failure".into(),
+                "configuration" => pane.configuration_error = "invalid settings".into(),
+                "credential" => pane.readiness.credentials_ready = false,
+                "provider" => pane.readiness.provider.clear(),
+                "model" => pane.readiness.model.clear(),
+                "task" => pane.task.running = true,
+                _ => unreachable!(),
+            }
+            assert!(
+                pane.validate_waiting_submission(owner(Phase::RecoveryRequired), "发送")
+                    .is_err(),
+                "{fault}"
+            );
+            assert!(
+                !pane.data(owner(Phase::RecoveryRequired)).can_send,
+                "{fault}"
+            );
+        }
+        let mut pane = configured();
+        pane.readiness.runtime_ready = false;
+        for phase in [Phase::Draining, Phase::Released] {
+            assert!(
+                pane.validate_waiting_submission(owner(phase), "停止后不得偷偷重连")
+                    .is_err()
+            );
+            assert!(!pane.data(owner(phase)).can_send);
         }
     }
 

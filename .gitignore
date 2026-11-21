@@ -64,3 +64,6 @@ audit/
 
 # Project-local build cache and isolated test data.
 /.build/
+
+# Local packaged applications and installer output.
+/stage/
