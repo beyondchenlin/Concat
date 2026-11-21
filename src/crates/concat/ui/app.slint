@@ -67,6 +67,7 @@ import {
 } from "start.slint";
 import { TitleBar } from "title-bar.slint";
 import { PhoneEditor, PhoneSheets } from "phone/editor.slint";
+import { PhoneAgentLauncher, PhoneAgentSheet } from "phone/agent-sheet.slint";
 import {
     AppliedEntryData,
     AppliedParamData,
@@ -85,9 +86,8 @@ import { Meters } from "timeline/vu-meter.slint";
 import { MotionPose, MotionTile, MotionTiles } from "inspector/motion-picker.slint";
 import { Workspace } from "workspace/workspace.slint";
 import { ColSplitter } from "workspace/splitter.slint";
-import { AgentUi, AgentView, AgentMessageData, AgentStatusData, AgentSuggestion, AgentNavigation, AgentSidebar } from "agent.slint";
+import { AgentUi, AgentView, AgentMessageData, AgentStatusData, AgentSuggestion, AgentSidebar } from "agent.slint";
 import { AgentCallUi } from "agent-call.slint";
-import { AgentWorkspace } from "workspace/agent-workspace.slint";
 import { ScriptUi, ScriptVersionData } from "script.slint";
 import { AgentSettingsDialog, AgentSettingsUi, ModelChannelDraftData } from "dialogs/model-settings.slint";
 import {
@@ -250,18 +250,24 @@ export component App inherits Window {
     // until a press lands on a pane's floor. Each of those teardowns hands
     // the focus back here on the way out.
     changed on-start => {
+        AgentUi.phone-sheet-state = 0;
+        AgentUi.phone-script = false;
+        AgentUi.phone-confirm-full-access = false;
+        if root.phone {
+            PhoneSheets.close-asked += 1;
+            PhoneSheets.open = false;
+        }
         if (!root.on-start) {
-            AgentUi.view = AgentView.chat;
+            AgentUi.view = root.phone ? AgentView.editor : AgentView.chat;
             if !root.phone && root.width < 1200px { AgentUi.sidebar-open = false; }
             keys.focus();
         }
     }
     property <AgentView> agent-view: AgentUi.view;
     changed agent-view => {
-        // A sheet belongs to the original phone editor, not to the chat
-        // screen which replaces it. Do not leave Android Back swallowing
-        // events for a sheet whose component has been destroyed.
-        if (root.agent-view != AgentView.editor) {
+        // The phone editor is always mounted. Desktop view changes keep
+        // the existing cleanup for phone-shell sheets left by a test host.
+        if (!root.phone && root.agent-view != AgentView.editor) {
             PhoneSheets.close-asked += 1;
             PhoneSheets.open = false;
         }
@@ -358,6 +364,13 @@ export component App inherits Window {
     /// area, on a phone and in any window too narrow for it to float as a
     /// card with room around it.
     property <bool> sheets-fill: root.phone || root.width < 600px;
+    /// Only the assistant is moved above a docked keyboard; the editor
+    /// beneath it keeps its timeline, playhead and layout unchanged.
+    private property <length> phone-keyboard-inset:
+        root.phone && root.virtual-keyboard-size.height > 0px
+            && root.virtual-keyboard-position.y > 0px
+        ? Math.max(0px, root.height - root.virtual-keyboard-position.y - root.safe-area-insets.bottom)
+        : 0px;
     /// Which floating tool card is in front: "captions" or "speech". The
     /// one opened or grabbed last; Escape closes it first.
     property <string> front-tool: "captions";
@@ -729,8 +742,23 @@ export component App inherits Window {
                     return accept;
                 }
                 // A look being shown over the picture, and nothing above it.
-                if (Editor.library-audition != "") {
+                if (Editor.library-audition != "" && (!root.phone || AgentUi.phone-sheet-state == 0)) {
                     Editor.library-audition-filter(Editor.library-audition);
+                    return accept;
+                }
+            }
+            if ((event.text == Key.Back || event.text == Key.Escape) && root.phone) {
+                if (AgentUi.phone-sheet-state > 0 && !AgentUi.phone-script
+                    && AgentUi.dismiss-phone-transient()) {
+                    return accept;
+                }
+                if (root.phone-keyboard-inset > 0px) {
+                    keys.focus();
+                    return accept;
+                }
+                if (AgentUi.phone-sheet-state > 0) {
+                    AgentUi.phone-sheet-state = AgentUi.phone-sheet-state == 2 ? 1 : 0;
+                    keys.focus();
                     return accept;
                 }
             }
@@ -746,7 +774,7 @@ export component App inherits Window {
             // leaves the app.
             if (event.text == Key.Back) {
                 if (!root.on-start) {
-                    if (AgentUi.view != AgentView.chat) {
+                    if (!root.phone && AgentUi.view != AgentView.chat) {
                         if (SourcePreview.open) { SourcePreview.closed(); }
                         AgentUi.view = AgentView.chat;
                         keys.focus();
@@ -773,11 +801,7 @@ export component App inherits Window {
             // title strip and everything under it start below it, and the
             // ground shows through behind the bars. Zero on a desktop.
             padding-top: root.safe-area-insets.top;
-            // Keep the phone chat input and send controls above a docked keyboard.
-            padding-bottom: root.phone && !root.on-start && AgentUi.view == AgentView.chat
-                    && root.virtual-keyboard-position.y > 0px
-                ? Math.max(root.safe-area-insets.bottom, root.virtual-keyboard-size.height)
-                : root.safe-area-insets.bottom;
+            padding-bottom: root.safe-area-insets.bottom;
             padding-left: root.safe-area-insets.left;
             padding-right: root.safe-area-insets.right;
 
@@ -839,25 +863,6 @@ export component App inherits Window {
                 link(name) => { root.start-link(name); }
             }
 
-            if !root.on-start && root.phone: AgentNavigation {
-                phone: root.phone;
-                project-name: root.project-name;
-                projects => { root.app-menu-selected("close-project"); }
-                save => { root.app-menu-selected("save"); }
-            }
-
-            if !root.on-start && root.phone && AgentUi.view != AgentView.editor: AgentWorkspace {
-                vertical-stretch: 1;
-                phone: root.phone;
-                project-name: root.project-name;
-                project-status: root.project-status;
-                recents: root.recents;
-                open => { root.start-open(); }
-                open-recent(path) => { root.start-open-recent(path); }
-                save => { root.app-menu-selected("save"); }
-                export-clicked => { root.export-clicked(); }
-            }
-
             // Everything the workspace shows now reads the Editor global, so
             // nothing is passed to it: it is a box with four seats in it, and
             // the views inside those seats reach the state directly. See
@@ -897,14 +902,33 @@ export component App inherits Window {
             // The phone's editor reads the same global; only the shell round
             // it differs. Its three verbs that are the window's - export,
             // settings, closing the project - go where the strip's went.
-            if !root.on-start && root.phone && AgentUi.view == AgentView.editor: PhoneEditor {
+            if !root.on-start && root.phone: Rectangle {
                 vertical-stretch: 1;
-                project-name: root.project-name;
-                status: root.project-status;
-
-                export-clicked => { root.export-clicked(); }
-                open-settings => { root.open-settings(); }
-                close-project => { root.app-menu-selected("close-project"); }
+                phone-editor := PhoneEditor {
+                    width: parent.width;
+                    height: parent.height;
+                    project-name: root.project-name;
+                    status: root.project-status;
+                    export-clicked => { root.export-clicked(); }
+                    open-settings => { root.open-settings(); }
+                    close-project => { root.app-menu-selected("close-project"); }
+                }
+                PhoneAgentLauncher {
+                    x: parent.width - self.width - 12px;
+                    y: phone-editor.assistant-anchor-y;
+                    visible: AgentUi.phone-sheet-state == 0 && !PhoneSheets.open
+                        && !SourcePreview.open && !root.content-overlay-open;
+                    clicked => {
+                        AgentUi.phone-sheet-state = 1;
+                        AgentUi.phone-open-requested();
+                        keys.focus();
+                    }
+                }
+                phone-assistant := PhoneAgentSheet {
+                    width: parent.width;
+                    height: parent.height;
+                    keyboard-inset: root.phone-keyboard-inset;
+                }
             }
         }
     }

@@ -471,6 +471,10 @@ export component PhoneEditor inherits Rectangle {
     property <length> bar-h: 74px;
     property <length> lanes-y: root.height - root.bar-h - root.lanes-h;
     property <length> transport-y: root.lanes-y - root.transport-h;
+    /// A floating assistant entry sits in the monitor, above transport and
+    /// away from the timeline/tool gestures. It does not change this layout.
+    out property <length> assistant-anchor-y: Math.max(root.top-h + 8px,
+        root.transport-y - 64px);
     /// How tall the sheet is when one is up. The bin's is lower: it is a
     /// grid to pick from, and the picture is what the picks are judged in.
     property <length> sheet-h: root.sheet == "media" ? root.height * 0.52 : root.height * 0.6;

@@ -66,6 +66,13 @@ pub(crate) fn install(app: &App) -> slint::Timer {
         embedded::show_ui_error(result);
     });
     agent_ui.on_connect_requested(|| embedded::show_ui_error(embedded::connect_from_ui()));
+    agent_ui.on_phone_open_requested(|| {
+        #[cfg(all(
+            any(target_os = "windows", target_os = "android"),
+            not(feature = "bk-cat-native-probe")
+        ))]
+        embedded::activate_from_user_intent();
+    });
     // Runtime messages, permission decisions and view switches are pushed to
     // the native event loop. Ordinary editing starts NO periodic agent timer.
     slint::Timer::default()
@@ -178,9 +185,9 @@ fn pause_transcript_follow_for_wheel(
     }
     let agent = app.global::<AgentUi>();
     if app.get_on_start()
-        || agent.get_view() == ui::AgentView::Script
-        || (app.get_phone() && agent.get_view() != ui::AgentView::Chat)
-        || (!app.get_phone() && !agent.get_sidebar_open())
+        || (app.get_phone() && (agent.get_phone_sheet_state() == 0 || agent.get_phone_script()))
+        || (!app.get_phone()
+            && (agent.get_view() == ui::AgentView::Script || !agent.get_sidebar_open()))
     {
         target.item = None;
         agent.set_native_scroll_up_pending(false);
@@ -243,7 +250,8 @@ fn pause_transcript_follow_for_wheel(
 }
 
 /// Dispatched by a real native tool-approval event, never by a frame timer.
-/// A pending request is always made visible even in manual editing.
+/// Each new pending request is revealed even in manual editing. Refreshing
+/// the same request preserves the person's subsequent presentation choice.
 pub(crate) fn refresh_tool_permission() {
     Shell::with(|shell, app| {
         let ui = app.global::<AgentUi>();
@@ -270,9 +278,15 @@ pub(crate) fn refresh_tool_permission() {
             return;
         };
         let pending = permission.pending_summary.is_some();
+        let request_id = permission.pending_id.unwrap_or_default();
+        let reveal_pending = pending
+            && ready
+            && (!ui.get_tool_pending()
+                || !ui.get_tool_connected()
+                || ui.get_tool_request_id().as_str() != request_id.as_str());
         ui.set_tool_mode(permission.mode);
         ui.set_tool_connected(ready);
-        ui.set_tool_request_id(permission.pending_id.unwrap_or_default().into());
+        ui.set_tool_request_id(request_id.into());
         ui.set_tool_pending(pending);
         let mut summary = permission.pending_summary.unwrap_or_default();
         if pending && !permission.pending_clip_ids.is_empty() {
@@ -304,8 +318,17 @@ pub(crate) fn refresh_tool_permission() {
         }
         ui.set_tool_summary(summary.into());
         if pending && ready {
-            ui.set_view(ui::AgentView::Chat);
-            ui.set_sidebar_open(true);
+            if app.get_phone() {
+                if reveal_pending {
+                    // A pending native decision reveals the assistant without
+                    // replacing the live timeline or changing operation authority.
+                    ui.set_phone_script(false);
+                    ui.set_phone_sheet_state(ui.get_phone_sheet_state().max(1));
+                }
+            } else {
+                ui.set_view(ui::AgentView::Chat);
+                ui.set_sidebar_open(true);
+            }
         }
     });
 }
@@ -412,6 +435,7 @@ pub(crate) mod tests {
                 app.window().set_size(slint::LogicalSize::new(600., 800.));
                 app.show().unwrap();
                 let agent = app.global::<AgentUi>();
+                agent.set_phone_sheet_state(2);
                 agent.set_tool_connected(true);
                 agent.set_tool_summary("审批手势回归".into());
                 agent.set_tool_request_id("request-a".into());
@@ -769,6 +793,24 @@ pub(crate) mod tests {
         }
 
         #[cfg(not(target_os = "android"))]
+        mod phone_approval {
+            slint::slint! {
+                import { PhoneAgentSheet } from "../../ui/phone/agent-sheet.slint";
+                import { AgentUi } from "../../ui/agent.slint";
+                export { AgentUi }
+                export component PhoneApprovalWindow inherits Window {
+                    in-out property <length> keyboard-inset;
+                    preferred-width: 320px; preferred-height: 640px;
+                    min-width: 0px; min-height: 0px;
+                    PhoneAgentSheet {
+                        width: root.width; height: root.height;
+                        keyboard-inset: root.keyboard-inset;
+                    }
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "android"))]
         #[derive(Clone, Copy, Debug)]
         struct ControlGeometry {
             bounds: Bounds,
@@ -956,6 +998,29 @@ pub(crate) mod tests {
             [reject, approve, stop, input, details, history]
         }
 
+        #[cfg(not(target_os = "android"))]
+        fn phone_approval_controls(window: &slint::Window) -> [Bounds; 5] {
+            render_window(window);
+            let reject = fully_visible_control(window, "拒绝", AccessibleRole::Button);
+            let approve = fully_visible_control(window, "批准本次", AccessibleRole::Button);
+            let stop = fully_visible_control(window, "停止", AccessibleRole::Button);
+            let input = fully_visible_control(window, "对话输入区域", AccessibleRole::Groupbox);
+            let content = fully_visible_control(window, "对话记录", AccessibleRole::List);
+            assert!(reject.height >= 43.9 && approve.height >= 43.9 && stop.height >= 43.9);
+            assert!((reject.y - approve.y).abs() < 1. && reject.x + reject.width <= approve.x + 1.);
+            assert!(
+                content.bottom() <= reject.y + 1.
+                    && reject.bottom() <= input.y + 1.
+                    && input.bottom() <= stop.y + 1.
+            );
+            assert!(input.height >= 55.9 && input.height <= 150.1);
+            assert!(
+                content.height >= 39.9,
+                "the actual phone approval text must retain a readable, draggable viewport: {content:?}"
+            );
+            [reject, approve, stop, input, content]
+        }
+
         #[derive(Clone, Copy, Debug)]
         struct ScrollView {
             bounds: Bounds,
@@ -989,10 +1054,17 @@ pub(crate) mod tests {
                 }))
                 .unwrap();
                 let app = App::new().unwrap();
+                let weak = app.as_weak();
+                app.global::<ui::Focus>().on_release(move || {
+                    if let Some(app) = weak.upgrade() {
+                        app.invoke_blur();
+                    }
+                });
                 app.set_phone(true);
                 app.set_on_start(false);
                 app.window().set_size(slint::LogicalSize::new(600., 900.));
                 let agent = app.global::<AgentUi>();
+                agent.set_phone_sheet_state(2);
                 let mut status = agent.get_status();
                 status.can_send = true;
                 status.needs_model_setup = false;
@@ -1417,6 +1489,10 @@ pub(crate) mod tests {
             }
 
             fn click(&self, label: &str) {
+                self.click_role(label, AccessibleRole::Button);
+            }
+
+            fn click_role(&self, label: &str, role: AccessibleRole) {
                 self.render();
                 let root = WindowInner::from_pub(self.app.window())
                     .window_item_rc()
@@ -1424,7 +1500,7 @@ pub(crate) mod tests {
                 let mut points = Vec::new();
                 root.visit_descendants::<()>(|item| {
                     if item.is_visible()
-                        && item.accessible_role() == AccessibleRole::Button
+                        && item.accessible_role() == role
                         && item
                             .accessible_string_property(AccessibleStringProperty::Label)
                             .is_some_and(|value| value == label)
@@ -1530,6 +1606,93 @@ pub(crate) mod tests {
                 .unwrap()
                 .join()
                 .unwrap();
+        }
+
+        #[test]
+        fn script_picker_opens_the_correct_native_workspace_and_preserves_the_draft() {
+            with_chat(|chat| {
+                let app = chat.app.clone_strong();
+                let agent = app.global::<AgentUi>();
+                let opened = Rc::new(Cell::new(0));
+                let observed = Rc::clone(&opened);
+                app.global::<ui::ScriptUi>()
+                    .on_open_requested(move || observed.set(observed.get() + 1));
+                agent.set_draft("保留尚未发送的剪辑要求".into());
+                agent.set_script_picker(true);
+                chat.click("打开文案页");
+                chat.render();
+                assert_eq!(opened.get(), 1);
+                assert!(!agent.get_script_picker());
+                assert!(agent.get_phone_script());
+                assert_eq!(agent.get_phone_sheet_state(), 2);
+                assert_eq!(agent.get_view(), ui::AgentView::Editor);
+                assert_eq!(agent.get_draft(), "保留尚未发送的剪辑要求");
+                chat.click("返回智能对话");
+                assert!(!agent.get_phone_script());
+                assert_eq!(agent.get_draft(), "保留尚未发送的剪辑要求");
+
+                app.set_phone(false);
+                app.window().set_size(slint::LogicalSize::new(1400., 900.));
+                agent.set_sidebar_open(true);
+                agent.set_view(ui::AgentView::Chat);
+                agent.set_script_picker(true);
+                chat.click("打开文案页");
+                assert_eq!(opened.get(), 2);
+                assert_eq!(agent.get_view(), ui::AgentView::Script);
+                assert!(!agent.get_phone_script());
+                assert_eq!(agent.get_draft(), "保留尚未发送的剪辑要求");
+            });
+        }
+
+        #[test]
+        fn phone_back_dismisses_transient_choices_after_the_header_restores_root_focus() {
+            with_chat(|chat| {
+                let app = chat.app.clone_strong();
+                let agent = app.global::<AgentUi>();
+                let modes = Rc::new(RefCell::new(Vec::new()));
+                let observed = Rc::clone(&modes);
+                agent.on_tool_mode_requested(move |mode| observed.borrow_mut().push(mode));
+                let key = |text: slint::SharedString| {
+                    app.window()
+                        .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+                    app.window()
+                        .dispatch_event(WindowEvent::KeyReleased { text });
+                };
+                let back = || key(char::from(slint::platform::Key::Back).to_string().into());
+                agent.set_phone_sheet_state(1);
+                agent.set_script_picker(true);
+                chat.click("展开全屏智能助手");
+                assert_eq!(agent.get_phone_sheet_state(), 2);
+                assert!(agent.get_script_picker());
+                back();
+                chat.render();
+                assert!(!agent.get_script_picker());
+                assert_eq!(agent.get_phone_sheet_state(), 2);
+
+                agent.set_phone_sheet_state(1);
+                chat.click_role("请求批准", AccessibleRole::Combobox);
+                key(char::from(slint::platform::Key::End).to_string().into());
+                key("\n".into());
+                chat.render();
+                assert!(agent.get_phone_confirm_full_access());
+                assert_eq!(agent.get_tool_mode(), 0);
+                assert!(modes.borrow().is_empty());
+                chat.click("展开全屏智能助手");
+                assert_eq!(agent.get_phone_sheet_state(), 2);
+                back();
+                chat.render();
+                assert!(!agent.get_phone_confirm_full_access());
+                assert_eq!(agent.get_phone_sheet_state(), 2);
+                assert_eq!(agent.get_tool_mode(), 0);
+                assert!(
+                    modes.borrow().is_empty(),
+                    "dismissing a permission explanation cannot grant authority"
+                );
+                back();
+                assert_eq!(agent.get_phone_sheet_state(), 1);
+                back();
+                assert_eq!(agent.get_phone_sheet_state(), 0);
+            });
         }
 
         #[test]
@@ -1702,6 +1865,71 @@ pub(crate) mod tests {
 
         #[cfg(not(target_os = "android"))]
         #[test]
+        fn phone_sheet_keyboard_keeps_native_approval_and_input_fully_reachable() {
+            std::thread::Builder::new()
+                .stack_size(32 << 20)
+                .spawn(|| {
+                    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+                    let clock = Rc::new(Cell::new(Duration::from_secs(1)));
+                    slint::platform::set_platform(Box::new(ChatPlatform { window, clock })).unwrap();
+                    let app = phone_approval::PhoneApprovalWindow::new().unwrap();
+                    app.window().set_size(slint::LogicalSize::new(320., 640.));
+                    let agent = app.global::<phone_approval::AgentUi>();
+                    agent.set_phone_sheet_state(2);
+                    agent.set_draft("保留输入高度偏好和未发送草稿".into());
+                    agent.set_models(slint::ModelRc::new(slint::VecModel::from(vec![
+                        slint::SharedString::from("真实模型选择控件"),
+                    ])));
+                    let mut status = agent.get_status();
+                    status.missing = "".into();
+                    status.needs_model_setup = false;
+                    status.busy = true;
+                    status.can_stop = true;
+                    status.title = "等待批准".into();
+                    agent.set_status(status);
+                    agent.set_tool_connected(true);
+                    agent.set_tool_request_id("phone-keyboard-request".into());
+                    agent.set_tool_summary("逐项核对当前工程的真实操作摘要。\n".repeat(40).into());
+                    agent.set_tool_pending(true);
+                    let decisions = Rc::new(RefCell::new(Vec::new()));
+                    let observed = Rc::clone(&decisions);
+                    agent.on_tool_decision_requested(move |id, approved| {
+                        observed.borrow_mut().push((id.to_string(), approved));
+                    });
+                    app.show().unwrap();
+                    render_window(app.window());
+                    drag_composer(app.window(), 100.);
+                    let preferred = phone_approval_controls(app.window())[3].height;
+                    assert!((preferred - 150.).abs() < 1.);
+                    for level in [1, 2] {
+                        agent.set_phone_sheet_state(level);
+                        for inset in [0., 320.] {
+                            app.set_keyboard_inset(inset);
+                            let controls = phone_approval_controls(app.window());
+                            assert!(controls[2].bottom() <= 640. - inset + 1.,
+                                "the real sheet header, clipping and keyboard inset must keep stop above the keyboard");
+                            if inset == 320. {
+                                assert!(controls[3].height < preferred - 1.,
+                                    "the input preference must yield before the real approval reading viewport disappears");
+                            }
+                            assert_eq!(agent.get_draft(), "保留输入高度偏好和未发送草稿");
+                            assert!(decisions.borrow().is_empty());
+                        }
+                    }
+                    click_visible_button(app.window(), "拒绝");
+                    assert_eq!(&*decisions.borrow(), &[("phone-keyboard-request".to_owned(), false)]);
+                    app.set_keyboard_inset(0.);
+                    assert!((phone_approval_controls(app.window())[3].height - preferred).abs() < 1.,
+                        "closing the keyboard restores the person's actual input height preference");
+                    app.hide().unwrap();
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
         fn chat_phone_approval_details_drag_without_deciding_or_moving_controls() {
             std::thread::Builder::new()
                 .stack_size(32 << 20)
@@ -1738,7 +1966,7 @@ pub(crate) mod tests {
                     let observed = Rc::clone(&stops);
                     agent.on_stop_requested(move || observed.set(observed.get() + 1));
                     app.show().unwrap();
-                    let controls = approval_controls(app.window());
+                    let controls = phone_approval_controls(app.window());
                     let title_y = || {
                         let root = WindowInner::from_pub(app.window())
                             .window_item_rc()
@@ -1769,12 +1997,20 @@ pub(crate) mod tests {
                         assert_eq!(positions.len(), 1, "one real approval title");
                         positions[0]
                     };
-                    let before = title_y();
                     let details = controls[4];
-                    let start = slint::LogicalPosition::new(
-                        details.x + details.width / 2.,
-                        details.bottom() - 12.,
-                    );
+                    // A new phone request follows the combined content to its
+                    // end. Read back to the real detail title before testing a
+                    // finger drag on the detail body, not on empty padding.
+                    app.window().dispatch_event(WindowEvent::PointerScrolled {
+                        position: details.center(),
+                        delta_x: 0.,
+                        delta_y: 100_000.,
+                    });
+                    render_window(app.window());
+                    let before = title_y();
+                    assert!(before >= details.y && before + 40. < details.bottom());
+                    let start =
+                        slint::LogicalPosition::new(details.x + details.width / 2., before + 40.);
                     app.window()
                         .dispatch_event(WindowEvent::PointerMoved { position: start });
                     app.window().dispatch_event(WindowEvent::PointerPressed {
@@ -1800,7 +2036,7 @@ pub(crate) mod tests {
                         decisions.borrow().is_empty() && stops.get() == 0,
                         "reading the details must not approve, reject or stop the task"
                     );
-                    let after = approval_controls(app.window());
+                    let after = phone_approval_controls(app.window());
                     for index in 0..3 {
                         assert!(
                             (after[index].x - controls[index].x).abs() < 1.

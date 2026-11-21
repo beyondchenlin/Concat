@@ -247,6 +247,9 @@ export component IconButton inherits Rectangle {
     /// widen past the square default; a worded button widens to its word
     in property <bool> wide;
     in property <length> icon-size: 14px;
+    /// Size the actual chip and its touch area, not just the surrounding
+    /// layout box. Phones opt into 44px targets; desktop remains compact.
+    in property <length> target-size: 26px;
     /// The mark's colour at rest. Muted, so a row of buttons reads as marks
     /// and not as a row of lights; a tray whose marks should stand out on
     /// their ground raises it.
@@ -272,7 +275,7 @@ export component IconButton inherits Rectangle {
         : root.accent ? (root.lit ? Theme.accent-hover : Theme.accent)
         : root.lit ? Theme.fg-hot
         : root.idle;
-    property <length> side: 26px;
+    property <length> side: root.target-size;
     property <bool> ring;
 
     // Fixed across, free along. A Slint layout start-aligns a fixed-size child

@@ -1223,7 +1223,10 @@ pub fn install(app: &App) {
     let ui = app.global::<ScriptUi>();
     ui.on_open_requested(|| {
         with_studio(|studio| studio.open_script_workspace(false));
-        #[cfg(all(target_os = "windows", not(feature = "bk-cat-native-probe")))]
+        #[cfg(all(
+            any(target_os = "windows", target_os = "android"),
+            not(feature = "bk-cat-native-probe")
+        ))]
         crate::embedded::activate_from_user_intent();
     });
     ui.on_reload_requested(|| with_studio(|studio| studio.open_script_workspace(true)));

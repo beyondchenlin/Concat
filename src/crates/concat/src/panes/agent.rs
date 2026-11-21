@@ -807,9 +807,12 @@ pub(crate) fn install_composer(app: &App) {
             ui.set_draft_cursor(cursor.min(i32::MAX as usize) as i32);
         });
         refresh_suggestions(text.as_str(), cursor);
-        // Start the desktop agent only after the user actually types a
-        // request. This has no idle polling and does not run on Android.
-        #[cfg(all(target_os = "windows", not(feature = "bk-cat-native-probe")))]
+        // An actual draft edit may activate the shared runtime on desktop or
+        // Android. Manual editing never reaches this callback or starts a poll.
+        #[cfg(all(
+            any(target_os = "windows", target_os = "android"),
+            not(feature = "bk-cat-native-probe")
+        ))]
         if !text.trim().is_empty() {
             crate::embedded::activate_from_user_intent();
         }

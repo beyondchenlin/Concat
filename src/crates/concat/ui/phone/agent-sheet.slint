@@ -1,0 +1,275 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+import { Theme } from "../theme/theme.slint";
+import { Glyph } from "../icons.slint";
+import { IconButton } from "../primitives/panel.slint";
+import { AgentChat, AgentScript, AgentUi } from "../agent.slint";
+import { AgentSettingsUi } from "../dialogs/model-settings.slint";
+import { ScriptUi } from "../script.slint";
+import { Focus } from "../util.slint";
+
+/// The phone's one extra entry. Its parent positions it using the native
+/// editor's monitor geometry, never over the timeline or bottom tool strip.
+export component PhoneAgentLauncher inherits Rectangle {
+    callback clicked();
+
+    width: 52px;
+    height: 52px;
+    border-radius: 26px;
+    background: Theme.panel;
+    border-width: 1px;
+    border-color: Theme.line-strong;
+
+    IconButton {
+        target-size: 52px;
+        width: 52px;
+        min-height: 52px;
+        max-height: 52px;
+        glyph: Glyph.sparkle;
+        icon-size: 22px;
+        accent: true;
+        label: "打开智能助手";
+        clicked => { root.clicked(); }
+    }
+    if AgentUi.tool-pending: Rectangle {
+        x: parent.width - 12px;
+        y: 2px;
+        width: 10px;
+        height: 10px;
+        border-radius: 5px;
+        background: Theme.accent;
+    }
+}
+
+/// A presentation layer over a permanently mounted PhoneEditor. Its
+/// content uses the existing native chat/approval callbacks; this component
+/// never creates a session or turns a dismissal into a permission decision.
+export component PhoneAgentSheet inherits Rectangle {
+    in property <length> keyboard-inset;
+
+    private property <int> level: AgentUi.phone-sheet-state;
+    private property <length> available-height: Math.max(0px, root.height - root.keyboard-inset);
+    private property <length> half-height: Math.min(root.available-height,
+        Math.max(340px, root.height * 0.58));
+    private property <length> settled-height: root.level == 2
+        ? root.available-height : root.half-height;
+    private property <length> drag;
+    private property <length> origin;
+    private property <int> origin-level;
+    private property <bool> dragging;
+    private property <bool> was-dragged;
+    private property <bool> handle-ring;
+    private property <bool> script-visible: AgentUi.phone-script;
+    changed script-visible => {
+        // Native approval can replace a focused script field as well as a
+        // header tap can. Restore a live focus owner on either route.
+        chat.clear-transient();
+        Focus.release();
+    }
+
+    changed level => {
+        root.drag = 0px;
+        root.dragging = false;
+        if root.level == 0 {
+            chat.clear-transient();
+            Focus.release();
+        }
+    }
+    changed available-height => {
+        // A keyboard/rotation resize cancels an in-flight presentation
+        // gesture. It cannot accidentally dismiss or expand the sheet.
+        root.drag = 0px;
+        root.dragging = false;
+        root.was-dragged = true;
+    }
+
+    function toggle-height() {
+        AgentUi.phone-sheet-state = root.level == 2 ? 1 : 2;
+        Focus.release();
+    }
+
+    function collapse() {
+        AgentUi.phone-sheet-state = 0;
+        Focus.release();
+    }
+
+    function finish-drag(cancelled: bool) {
+        if root.dragging && !cancelled {
+            if root.drag < -64px {
+                AgentUi.phone-sheet-state = 2;
+            } else if root.origin-level == 2 && root.drag > 64px {
+                AgentUi.phone-sheet-state = 1;
+            } else if root.origin-level == 1 && root.drag > 80px {
+                AgentUi.phone-sheet-state = 0;
+            }
+        }
+        if cancelled { root.was-dragged = true; }
+        root.drag = 0px;
+        root.dragging = false;
+    }
+
+    visible: root.level > 0;
+    clip: true;
+    background: transparent;
+
+    // TouchArea rejects scale/rotation, so a pinch can otherwise reach the
+    // still-mounted timeline. Consume that gesture on this modal layer.
+    // A second finger also cancels a header drag without changing its level.
+    ScaleRotateGestureHandler {
+        width: root.width;
+        height: root.available-height;
+        enabled: root.level > 0;
+        started => { root.finish-drag(true); }
+    }
+
+    // Dismissal outside the sheet is consumed here, so the same press
+    // cannot select or scrub a clip underneath. Keyboard space is excluded.
+    Rectangle {
+        width: parent.width;
+        height: root.available-height;
+        background: #00000026;
+        TouchArea {
+            scroll-event(event) => { return EventResult.accept; }
+            clicked => { root.collapse(); }
+        }
+    }
+
+    surface := Rectangle {
+        x: 0;
+        y: Math.clamp(root.available-height - root.settled-height + root.drag,
+            0px, root.available-height);
+        width: root.width;
+        height: Math.max(0px, root.available-height - self.y);
+        background: Theme.panel;
+        border-top-left-radius: root.level == 2 ? 0px : Theme.r-xl;
+        border-top-right-radius: root.level == 2 ? 0px : Theme.r-xl;
+        border-width: 1px;
+        border-color: Theme.line-strong;
+        clip: true;
+
+        TouchArea { scroll-event(event) => { return EventResult.accept; } }
+
+        header := Rectangle {
+            width: parent.width;
+            height: 64px;
+            accessible-role: button;
+            accessible-label: root.level == 2 ? "缩回半屏智能助手" : "展开全屏智能助手";
+            accessible-action-default => { root.toggle-height(); }
+
+            handle-focus := FocusScope {
+                focus-gained(reason) => { root.handle-ring = reason == FocusReason.tab-navigation; }
+                focus-lost(reason) => { root.handle-ring = false; }
+                key-pressed(event) => {
+                    if event.text == " " || event.text == "\n" {
+                        root.toggle-height();
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
+            grab := TouchArea {
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                        root.origin = self.absolute-position.y + self.mouse-y;
+                        root.origin-level = root.level;
+                        root.drag = 0px;
+                        root.dragging = true;
+                        root.was-dragged = false;
+                    } else if event.kind == PointerEventKind.up {
+                        root.finish-drag(false);
+                    } else if event.kind == PointerEventKind.cancel {
+                        root.finish-drag(true);
+                    }
+                }
+                moved => {
+                    if root.dragging {
+                        let delta = self.absolute-position.y + self.mouse-y - root.origin;
+                        if Math.abs(delta) > 6px { root.was-dragged = true; }
+                        root.drag = delta;
+                    }
+                }
+                clicked => { if !root.was-dragged { root.toggle-height(); } }
+            }
+            Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: 7px;
+                width: 36px;
+                height: 4px;
+                border-radius: 2px;
+                background: root.handle-ring ? Theme.accent : Theme.line-strong;
+            }
+            HorizontalLayout {
+                x: 12px;
+                y: 16px;
+                width: parent.width - 18px;
+                height: 44px;
+                spacing: 2px;
+                Text {
+                    text: AgentUi.phone-script ? "文案" : "智能助手";
+                    color: Theme.fg;
+                    font-size: Theme.fs-lg;
+                    font-weight: Theme.weight-title;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+                IconButton {
+                    target-size: 44px;
+                    width: 44px;
+                    min-height: 44px;
+                    max-height: 44px;
+                    text: AgentUi.phone-script ? "对话" : "文案";
+                    label: AgentUi.phone-script ? "返回智能对话" : "打开文案工作区";
+                    clicked => {
+                        AgentUi.phone-script = !AgentUi.phone-script;
+                        if AgentUi.phone-script { ScriptUi.open-requested(); }
+                    }
+                }
+                IconButton {
+                    target-size: 44px;
+                    width: 44px;
+                    min-height: 44px;
+                    max-height: 44px;
+                    glyph: Glyph.settings;
+                    label: "模型设置";
+                    enabled: !AgentSettingsUi.busy;
+                    clicked => { AgentSettingsUi.open-requested(); }
+                }
+                IconButton {
+                    target-size: 44px;
+                    width: 44px;
+                    min-height: 44px;
+                    max-height: 44px;
+                    glyph: Glyph.chevron-down;
+                    label: "收起智能助手";
+                    clicked => { root.collapse(); }
+                }
+            }
+            Rectangle {
+                y: parent.height - 1px;
+                width: parent.width;
+                height: 1px;
+                background: Theme.line;
+            }
+        }
+
+        // Chat owns its transcript, activity and composer scrollers. There
+        // is deliberately no enclosing PhoneScroll to steal their gestures.
+        // Keep it mounted while hidden so cursor and reading position survive.
+        chat := AgentChat {
+            x: 0;
+            y: header.height;
+            width: parent.width;
+            height: Math.max(0px, parent.height - header.height);
+            phone: true;
+            visible: !AgentUi.phone-script;
+        }
+        if AgentUi.phone-script: AgentScript {
+            x: 0;
+            y: header.height;
+            width: parent.width;
+            height: Math.max(0px, parent.height - header.height);
+            compact-sidebar: true;
+        }
+    }
+}

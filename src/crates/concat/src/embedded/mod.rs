@@ -143,6 +143,13 @@ type Factory = dyn Fn(Arc<RuntimeResources>, RuntimeCallbacks) -> Result<Box<dyn
 static FACTORY: OnceLock<Box<Factory>> = OnceLock::new();
 // Set only during a real native project switch. No idle reconnect polling.
 static REOPEN_AFTER_PROJECT_SWITCH: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    // A phone may explicitly activate a newly selected project after the old
+    // platform has actually closed. A stopped session alone is never enough.
+    static PHONE_PROJECT_ACTIVATION: std::cell::RefCell<Option<u64>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
 
 // A private construction seam: failure must happen before a native component
 // claims this generation. Production always uses the real OS thread builder.
@@ -2212,6 +2219,7 @@ pub(crate) fn stop_from_ui() {
 
 // The same fail-closed stop is used when a user revokes an active model grant.
 fn stop_current_task(shell: &Shell, app: &crate::ui::App) {
+    PHONE_PROJECT_ACTIVATION.with(|pending| *pending.borrow_mut() = None);
     shell.agent_pane.borrow_mut().readiness.calls_authorized = false;
     shell.studio.borrow_mut().script.cancel_generation();
     if let Some(runtime) = shell.embedded.borrow().as_ref() {
@@ -2297,21 +2305,29 @@ fn stop_project_runtime(bridge: &Arc<AgentBridge>, runtime: Option<&EmbeddedRunt
     }
 }
 
-/// Desktop project opening stays silent until an explicit agent action.
+/// First use stays silent on desktop and Android. Phone project switches also
+/// wait for new user intent; desktop keeps its existing handoff-and-reopen flow.
 /// The existing native owner is never replaced until actual platform close.
 pub(crate) fn project_opened() {
     let mut previous = None;
     let mut connect_now = false;
-    Shell::with(|shell, _| {
-        let path = match shell.studio.borrow().session.as_ref() {
-            Some(session) => session.path().to_owned(),
+    Shell::with(|shell, app| {
+        let (path, session_id) = match shell.studio.borrow().session.as_ref() {
+            Some(session) => (session.path().to_owned(), session.session_id()),
             None => return,
         };
+        let manual_phone = app.get_phone() && !cfg!(feature = "bk-cat-native-probe");
         let runtime = shell.embedded.borrow().clone();
         match runtime {
             None => {
+                PHONE_PROJECT_ACTIVATION.with(|pending| *pending.borrow_mut() = None);
+                if app.get_phone() {
+                    let ui = app.global::<crate::ui::AgentUi>();
+                    ui.set_phone_sheet_state(0);
+                    ui.set_phone_script(false);
+                }
                 connect_now = !cfg!(all(
-                    target_os = "windows",
+                    any(target_os = "windows", target_os = "android"),
                     not(feature = "bk-cat-native-probe")
                 ))
             }
@@ -2331,6 +2347,25 @@ pub(crate) fn project_opened() {
                     && (bound == Some(path.as_str())
                         || (bound.is_none() && view.snapshot.is_none()))
                 {
+                    return;
+                }
+                if app.get_phone() {
+                    // A new project starts with its native editor visible. This
+                    // changes presentation only; the existing owner still retires
+                    // through the confirmed platform-close path below.
+                    let ui = app.global::<crate::ui::AgentUi>();
+                    ui.set_phone_sheet_state(0);
+                    ui.set_phone_script(false);
+                }
+                if manual_phone {
+                    PHONE_PROJECT_ACTIVATION
+                        .with(|pending| *pending.borrow_mut() = Some(session_id));
+                    REOPEN_AFTER_PROJECT_SWITCH.store(false, Ordering::Release);
+                    if !view.closed {
+                        previous = Some(runtime);
+                    }
+                    // Merely opening this project must not create a replacement
+                    // component, including when the old owner finishes later.
                     return;
                 }
                 if !view.closed {
@@ -2393,6 +2428,7 @@ pub(crate) fn connect_from_ui() -> Result<(), String> {
             };
             let dirs = shell.studio.borrow().host.dirs.clone();
             let runtime = EmbeddedRuntime::start(&dirs, Arc::clone(&bridge))?;
+            PHONE_PROJECT_ACTIVATION.with(|pending| *pending.borrow_mut() = None);
             *shell.agent.borrow_mut() = Some(Arc::clone(&bridge));
             shell.studio.borrow_mut().host.agent = Some(bridge);
             *shell.embedded.borrow_mut() = Some(runtime);
@@ -2412,21 +2448,52 @@ pub(crate) fn connect_from_ui() -> Result<(), String> {
     result
 }
 
-/// A desktop editor must not start Pi until the user actually starts using
+/// The editor must not start Pi until the user actually starts using
 /// it. Manual cutting and playback allocate no agent runtime or model thread.
-/// Native probes and Android keep their existing initialization semantics.
-#[cfg(all(target_os = "windows", not(feature = "bk-cat-native-probe")))]
+/// Native probes retain their explicit test initialization semantics.
+#[cfg(all(
+    any(target_os = "windows", target_os = "android"),
+    not(feature = "bk-cat-native-probe")
+))]
 pub(crate) fn start_for_window() {}
 
-/// An explicit draft edit or script-workspace visit is user intent to use AI.
+/// Opening the phone assistant, editing a draft or visiting the script workspace
+/// is explicit user intent to use AI. It never grants model or edit authority.
 /// Do not silently retry after a stop, closed session, or failed connection.
-#[cfg(all(target_os = "windows", not(feature = "bk-cat-native-probe")))]
+#[cfg(all(
+    any(target_os = "windows", target_os = "android"),
+    not(feature = "bk-cat-native-probe")
+))]
 pub(crate) fn activate_from_user_intent() {
     let mut should_connect = false;
-    Shell::with(|shell, _| {
-        should_connect = shell.studio.borrow().session.is_some()
-            && shell.embedded.borrow().is_none()
-            && shell.agent_pane.borrow().error.is_empty();
+    Shell::with(|shell, app| {
+        let Some(session_id) = shell
+            .studio
+            .borrow()
+            .session
+            .as_ref()
+            .map(|s| s.session_id())
+        else {
+            return;
+        };
+        let new_phone_project = app.get_phone()
+            && PHONE_PROJECT_ACTIVATION.with(|pending| *pending.borrow() == Some(session_id));
+        let runtime = shell.embedded.borrow();
+        if new_phone_project {
+            // A tap while the old component is still closing cannot create
+            // another one. This intent is never queued or retried in background;
+            // the native connection control remains the explicit next action.
+            should_connect = runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.view().closed)
+                && shell.agent.borrow().as_ref().is_some_and(|bridge| {
+                    bridge
+                        .status()
+                        .is_ok_and(|status| status.phase == concat_agent::Phase::Released)
+                });
+        } else {
+            should_connect = runtime.is_none() && shell.agent_pane.borrow().error.is_empty();
+        }
     });
     if should_connect {
         show_ui_error(connect_from_ui());
@@ -2434,7 +2501,7 @@ pub(crate) fn activate_from_user_intent() {
 }
 
 /// No API key, model provider or fee authorization is inferred by startup.
-#[cfg(any(target_os = "android", feature = "bk-cat-native-probe"))]
+#[cfg(feature = "bk-cat-native-probe")]
 pub(crate) fn start_for_window() {
     // The welcome screen has no current project. Start the agent only after
     // the editor opens one; manual cutting never needs an idle AI component.
@@ -3437,11 +3504,28 @@ mod tests {
     }
 
     fn click_accessible_control(app: &crate::ui::App, label: &str) {
+        click_accessible_control_at(app, label, 0.5);
+    }
+
+    fn click_accessible_control_at(app: &crate::ui::App, label: &str, vertical_fraction: f32) {
+        click_accessible_item_at(
+            app,
+            label,
+            slint::private_unstable_api::re_exports::AccessibleRole::Button,
+            vertical_fraction,
+        );
+    }
+
+    fn click_accessible_item_at(
+        app: &crate::ui::App,
+        label: &str,
+        role: slint::private_unstable_api::re_exports::AccessibleRole,
+        vertical_fraction: f32,
+    ) {
         use slint::ComponentHandle;
         use slint::platform::{PointerEventButton, WindowEvent};
-        use slint::private_unstable_api::re_exports::{
-            AccessibleRole, AccessibleStringProperty, WindowInner,
-        };
+        use slint::private_unstable_api::re_exports::{AccessibleStringProperty, WindowInner};
+        assert!(vertical_fraction > 0. && vertical_fraction < 1.);
         let agent = app.global::<crate::ui::AgentUi>();
         let composer = (
             agent.get_draft(),
@@ -3466,14 +3550,18 @@ mod tests {
         let mut points = Vec::new();
         root.visit_descendants::<()>(|item| {
             if item.is_visible()
-                && item.accessible_role() == AccessibleRole::Button
+                && item.accessible_role() == role
                 && item
                     .accessible_string_property(AccessibleStringProperty::Label)
                     .is_some_and(|value| value == label)
             {
-                // map_to_window maps the parent's coordinate space; include
-                // this item's own origin before converting the real center.
-                let point = item.map_to_window(item.geometry().center());
+                // Probe the actual hit area, including its top/bottom edge.
+                // map_to_window maps the parent's coordinate space, so the
+                // local point includes this item's own origin.
+                let geometry = item.geometry();
+                let mut point = geometry.center();
+                point.y = geometry.origin.y + geometry.size.height * vertical_fraction;
+                let point = item.map_to_window(point);
                 points.push(slint::LogicalPosition::new(point.x, point.y));
             }
             std::ops::ControlFlow::Continue(())
@@ -3503,55 +3591,58 @@ mod tests {
 
     #[test]
     #[cfg(all(target_os = "windows", not(feature = "bk-cat-native-probe")))]
-    fn desktop_first_send_runs_the_real_project_and_button_paths() {
+    fn manual_project_activation_and_first_send_use_native_window_paths() {
         const CHILD: &str = "BK_CAT_STARTUP_UI_TEST_CHILD";
         if std::env::var_os(CHILD).is_none() {
             // Slint's event proxy is process-global. Keep this actual Shell
-            // test isolated even under cargo test's shared-process runner.
-            let output_dir = std::env::temp_dir().join(format!(
-                "bk-cat-startup-ui-output-{}",
-                random_capability().unwrap()
-            ));
-            std::fs::create_dir(&output_dir).unwrap();
-            let stdout_path = output_dir.join("stdout.log");
-            let stderr_path = output_dir.join("stderr.log");
-            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "embedded::tests::desktop_first_send_runs_the_real_project_and_button_paths",
-                    "--nocapture",
-                    "--test-threads=1",
-                ])
-                .env(CHILD, "1")
-                .stdout(std::fs::File::create(&stdout_path).unwrap())
-                .stderr(std::fs::File::create(&stderr_path).unwrap())
-                .spawn()
-                .unwrap();
-            let deadline = Instant::now() + Duration::from_secs(30);
-            let status = loop {
-                if let Some(status) = child.try_wait().unwrap() {
-                    break status;
-                }
-                if Instant::now() >= deadline {
-                    child.kill().unwrap();
-                    let _ = child.wait();
-                    panic!(
-                        "isolated startup UI exceeded 30 seconds; retained diagnostics at {}\n{}\n{}",
-                        output_dir.display(),
-                        std::fs::read_to_string(&stdout_path).unwrap_or_default(),
-                        std::fs::read_to_string(&stderr_path).unwrap_or_default()
-                    );
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            };
-            let stdout = std::fs::read_to_string(&stdout_path).unwrap();
-            let stderr = std::fs::read_to_string(&stderr_path).unwrap();
-            assert!(
-                status.success() && stdout.contains("test result: ok. 1 passed"),
-                "isolated startup UI failed; retained diagnostics at {}\n{stdout}\n{stderr}",
-                output_dir.display()
-            );
-            std::fs::remove_dir_all(output_dir).unwrap();
+            // test isolated even under cargo test's shared-process runner. Both
+            // production window surfaces exercise the same owner and send path.
+            for surface in ["desktop", "phone"] {
+                let output_dir = std::env::temp_dir().join(format!(
+                    "bk-cat-startup-{surface}-ui-output-{}",
+                    random_capability().unwrap()
+                ));
+                std::fs::create_dir(&output_dir).unwrap();
+                let stdout_path = output_dir.join("stdout.log");
+                let stderr_path = output_dir.join("stderr.log");
+                let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "embedded::tests::manual_project_activation_and_first_send_use_native_window_paths",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ])
+                    .env(CHILD, surface)
+                    .stdout(std::fs::File::create(&stdout_path).unwrap())
+                    .stderr(std::fs::File::create(&stderr_path).unwrap())
+                    .spawn()
+                    .unwrap();
+                let deadline = Instant::now() + Duration::from_secs(30);
+                let status = loop {
+                    if let Some(status) = child.try_wait().unwrap() {
+                        break status;
+                    }
+                    if Instant::now() >= deadline {
+                        child.kill().unwrap();
+                        let _ = child.wait();
+                        panic!(
+                            "isolated {surface} startup UI exceeded 30 seconds; retained diagnostics at {}\n{}\n{}",
+                            output_dir.display(),
+                            std::fs::read_to_string(&stdout_path).unwrap_or_default(),
+                            std::fs::read_to_string(&stderr_path).unwrap_or_default()
+                        );
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                };
+                let stdout = std::fs::read_to_string(&stdout_path).unwrap();
+                let stderr = std::fs::read_to_string(&stderr_path).unwrap();
+                assert!(
+                    status.success() && stdout.contains("test result: ok. 1 passed"),
+                    "isolated {surface} startup UI failed; retained diagnostics at {}\n{stdout}\n{stderr}",
+                    output_dir.display()
+                );
+                std::fs::remove_dir_all(output_dir).unwrap();
+            }
             return;
         }
 
@@ -3564,7 +3655,7 @@ mod tests {
                 use slint::platform::software_renderer::{
                     MinimalSoftwareWindow, RepaintBufferType,
                 };
-                use slint::platform::{EventLoopProxy, Platform, WindowAdapter};
+                use slint::platform::{EventLoopProxy, Key, Platform, WindowAdapter, WindowEvent};
                 use std::cell::RefCell;
                 use std::collections::VecDeque;
                 use std::rc::Rc;
@@ -3735,10 +3826,14 @@ mod tests {
                     proxy: Proxy(Arc::clone(&jobs)),
                 }))
                 .unwrap();
+                let phone = std::env::var(CHILD).unwrap() == "phone";
                 let app = crate::ui::App::new().unwrap();
-                app.set_phone(true);
+                app.set_phone(phone);
+                app.window().set_size(slint::LogicalSize::new(
+                    if phone { 600. } else { 1400. },
+                    800.,
+                ));
                 app.set_on_start(false);
-                app.window().set_size(slint::LogicalSize::new(600., 800.));
                 app.show().unwrap();
                 let root = std::env::temp_dir().join(format!(
                     "bk-cat-startup-real-project-{}",
@@ -3795,6 +3890,27 @@ mod tests {
                     models: crate::studio::Models::new(),
                 });
                 Shell::install(Rc::clone(&shell));
+                app.global::<crate::ui::Editor>()
+                    .on_key_chord(crate::editor_key_chord);
+                app.global::<crate::ui::Focus>()
+                    .on_release(|| Shell::with(|_, app| app.invoke_blur()));
+                // Keep the production key dispatcher and native edit/save
+                // operations; unrelated menus and OS pickers are outside this
+                // isolated window fixture.
+                let menu_actions = Rc::new(RefCell::new(Vec::new()));
+                let observed_menu_actions = Rc::clone(&menu_actions);
+                app.on_app_menu_selected(move |action| {
+                    observed_menu_actions.borrow_mut().push(action.to_string());
+                    Shell::with(|shell, app| {
+                        let mut studio = shell.studio.borrow_mut();
+                        match action.as_str() {
+                            "delete" => studio.delete_selected(),
+                            "save" => studio.save(false),
+                            _ => panic!("unexpected menu in isolated keyboard fixture: {action}"),
+                        }
+                        studio.publish(&app, &shell.models);
+                    });
+                });
                 let posted = Arc::new(Mutex::new(Vec::new()));
                 let callbacks: Arc<Mutex<Vec<RuntimeCallbacks>>> = Arc::new(Mutex::new(Vec::new()));
                 let closes = Arc::new(AtomicU64::new(0));
@@ -3831,9 +3947,10 @@ mod tests {
                 .unwrap();
                 shell.studio.borrow_mut().open_project(first).unwrap();
                 pump(&jobs, || true);
+                start_for_window();
                 assert!(
                     shell.embedded.borrow().is_none(),
-                    "actual project-open callback must not start a desktop component"
+                    "actual project-open and startup callbacks must keep manual editing silent"
                 );
                 assert!(callbacks.lock().unwrap().is_empty());
                 assert!(!shell.agent_pane.borrow().readiness.calls_authorized);
@@ -3855,8 +3972,80 @@ mod tests {
                 }
                 let agent = app.global::<crate::ui::AgentUi>();
                 agent.set_composer_mode(0);
+                if phone {
+                    let clip = {
+                        let mut studio = shell.studio.borrow_mut();
+                        let clip = studio.apply(concat_project::Command::AddTextClip {
+                            track_id: None,
+                            start: 0.,
+                            style: None,
+                            duration: Some(2.),
+                            offset_y: None,
+                            above: true,
+                        }).unwrap();
+                        studio.selection = vec![clip.clone()];
+                        studio.publish(&app, &shell.models);
+                        clip
+                    };
+                    let revision = shell.studio.borrow().session.as_ref().unwrap().revision();
+                    let key = |text: slint::SharedString| {
+                        app.window().dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+                        app.window().dispatch_event(WindowEvent::KeyReleased { text });
+                    };
+                    let delete: slint::SharedString = char::from(Key::Delete).to_string().into();
+                    assert_eq!(agent.get_view(), crate::ui::AgentView::Editor);
+                    assert_eq!(agent.get_phone_sheet_state(), 0);
+                    click_accessible_control_at(&app, "打开智能助手", 0.1);
+                    assert_eq!(agent.get_phone_sheet_state(), 1);
+                    let opened = shell.embedded.borrow().clone().unwrap();
+                    assert_eq!(callbacks.lock().unwrap().len(), 1);
+                    assert!(!opened.view().task_running);
+                    assert!(opened.submission.lock().unwrap().is_none());
+                    assert!(posted.lock().unwrap().is_empty());
+                    assert!(!shell.agent_pane.borrow().readiness.calls_authorized);
+                    assert_eq!(opened.tool_permission_view().unwrap().mode, 0);
+                    assert!(!crate::typing(&app), "the launcher leaves focus on the native root");
+                    for level in [1, 2] {
+                        agent.set_phone_sheet_state(level);
+                        key(delete.clone());
+                        key(" ".into());
+                        let studio = shell.studio.borrow();
+                        assert!(studio.clip(&clip).is_some());
+                        assert!(!studio.playing);
+                        assert_eq!(studio.session.as_ref().unwrap().revision(), revision);
+                        assert!(menu_actions.borrow().is_empty());
+                    }
+                    // The existing save exception still reaches the real
+                    // project while the assistant owns foreground input.
+                    app.window().dispatch_event(WindowEvent::KeyPressed {
+                        text: char::from(Key::Control).to_string().into(),
+                    });
+                    key("s".into());
+                    app.window().dispatch_event(WindowEvent::KeyReleased {
+                        text: char::from(Key::Control).to_string().into(),
+                    });
+                    assert_eq!(&*menu_actions.borrow(), &["save"]);
+                    click_accessible_control_at(&app, "收起智能助手", 0.9);
+                    assert_eq!(agent.get_phone_sheet_state(), 0);
+                    assert!(!opened.revoked.load(Ordering::Acquire));
+                    assert_eq!(closes.load(Ordering::Acquire), 0);
+                    key(" ".into());
+                    assert!(shell.studio.borrow().playing, "manual playback resumes after collapse");
+                    key(" ".into());
+                    assert!(!shell.studio.borrow().playing);
+                    key(delete);
+                    assert!(shell.studio.borrow().clip(&clip).is_none());
+                    assert_eq!(&*menu_actions.borrow(), &["save", "delete"]);
+                    click_accessible_control_at(&app, "打开智能助手", 0.9);
+                    assert_eq!(callbacks.lock().unwrap().len(), 1);
+                    assert_eq!(
+                        shell.embedded.borrow().as_ref().unwrap().component(),
+                        opened.component(),
+                        "reopening a panel must reuse its current native component"
+                    );
+                }
                 agent.set_draft("明确首次发送并等待".into());
-                click_accessible_control(&app, "发送");
+                click_accessible_control_at(&app, "发送", if phone { 0.1 } else { 0.5 });
                 let first_runtime = shell.embedded.borrow().clone().unwrap();
                 pump(&jobs, || agent.get_status().busy);
                 assert!(first_runtime.waiting.lock().unwrap().is_some());
@@ -3869,7 +4058,7 @@ mod tests {
                         .contains("等待连接")
                 );
                 assert!(agent.get_draft() == "明确首次发送并等待");
-                click_accessible_control(&app, "停止");
+                click_accessible_control_at(&app, "停止", if phone { 0.9 } else { 0.5 });
                 assert!(first_runtime.waiting.lock().unwrap().is_none());
                 assert!(!shell.agent_pane.borrow().readiness.calls_authorized);
                 frame(
@@ -3879,6 +4068,16 @@ mod tests {
                 assert!(posted.lock().unwrap().is_empty());
                 (callbacks.lock().unwrap()[0].closed)("Windows runtime closed".into());
                 pump(&jobs, || first_runtime.view().closed);
+                if phone {
+                    agent.set_phone_sheet_state(0);
+                    click_accessible_control(&app, "打开智能助手");
+                    assert_eq!(
+                        callbacks.lock().unwrap().len(),
+                        1,
+                        "opening the panel after stop must not silently reconnect"
+                    );
+                    agent.set_phone_sheet_state(2);
+                }
                 assert!(submit_chat_from_ui("停止后不能偷偷重连".into(), false).is_err());
                 assert_eq!(callbacks.lock().unwrap().len(), 1);
 
@@ -3938,6 +4137,139 @@ mod tests {
                 frame(&runtime, json!({"event":"runtime.phase","phase":"ready"}));
                 pump(&jobs, || true);
                 assert_eq!(runtime.next.load(Ordering::Acquire), command_sequence + 1);
+                agent.set_draft("审批期间保留的未发送消息".into());
+
+                // Exercise an actual native approval notification while the
+                // assistant is hidden. The isolated task fixture provides no
+                // model socket or credential-store access; the real task guard,
+                // approval worker, window callback and refusal remain in use.
+                let project = {
+                    let studio = shell.studio.borrow();
+                    let session = studio.session.as_ref().unwrap();
+                    crate::live::CurrentProject {
+                        project_id: session.project_identity().into(),
+                        path: session.path().into(),
+                        session_id: session.session_id(),
+                        revision: session.revision(),
+                    }
+                };
+                let manifest = std::path::Path::new(&project.path).join("concat.json");
+                let project_before = std::fs::read(&manifest).unwrap();
+                crate::agent::tasks::tests::install_bound_edit_task(
+                    &runtime.native.tasks,
+                    project.clone(),
+                    "native-window-approval",
+                    9,
+                );
+                runtime.native.tool_approval.begin_task().unwrap();
+                let authorized_before = shell.agent_pane.borrow().readiness.calls_authorized;
+                let mut previous_request = String::new();
+                for response_id in [
+                    "native-window-approval-first",
+                    "native-window-approval-next",
+                    "native-window-approval-focused-script",
+                ] {
+                    let focused_script = phone && response_id.ends_with("focused-script");
+                    if phone {
+                        agent.set_phone_sheet_state(if focused_script { 2 } else { 0 });
+                        agent.set_phone_script(true);
+                        if focused_script {
+                            app.global::<crate::ui::ScriptUi>().set_ready(true);
+                            click_accessible_item_at(
+                                &app,
+                                "当前工程的文案，可保存为独立版本",
+                                slint::private_unstable_api::re_exports::AccessibleRole::TextInput,
+                                0.2,
+                            );
+                            assert!(crate::typing(&app), "the production script field must really own focus");
+                        }
+                    } else {
+                        agent.set_sidebar_open(false);
+                        agent.set_view(crate::ui::AgentView::Script);
+                    }
+                    let mut approval_frame = json!({
+                        "jsonrpc":"2.0","method":"tools/call","params":{
+                            "name":"edit_apply_guarded","arguments":{
+                                "path":project.path,
+                                "expectedSession":project.session_id,
+                                "expectedRevision":project.revision,
+                                "command":{"op":"addTextClip","trackId":"fixture-track",
+                                    "start":0.0,"duration":1.0,
+                                    "style":{"content":"等待用户决定的隔离验收标题"}}
+                            }
+                        }
+                    });
+                    runtime.start_approval_operation(response_id.into(), move |native| {
+                        let invocation = concat_agent::operations::Invocation {
+                            conversation_id: 9,
+                            task_id: 7,
+                            call_id: format!("{response_id}-call"),
+                        };
+                        native.tasks.authorize_tool(&mut approval_frame, Some(&invocation))?;
+                        match native.tool_approval.authorize(&approval_frame, Some(&invocation)) {
+                            Err(reason) => Ok(json!({"approved":false,"reason":reason})),
+                            Ok(_) => Err("window refusal test unexpectedly granted an operation".into()),
+                        }
+                    });
+                    pump(&jobs, || agent.get_tool_pending());
+                    let request_id = agent.get_tool_request_id().to_string();
+                    assert!(!request_id.is_empty() && request_id != previous_request);
+                    previous_request = request_id.clone();
+                    if phone {
+                        assert_eq!(agent.get_phone_sheet_state(), if focused_script { 2 } else { 1 });
+                        assert!(!agent.get_phone_script());
+                        assert_eq!(agent.get_view(), crate::ui::AgentView::Editor);
+                        if focused_script {
+                            app.window().take_snapshot().unwrap();
+                            assert!(!crate::typing(&app), "a real native approval must release the replaced script field");
+                            let back: slint::SharedString = char::from(Key::Back).to_string().into();
+                            app.window().dispatch_event(WindowEvent::KeyPressed { text: back.clone() });
+                            app.window().dispatch_event(WindowEvent::KeyReleased { text: back });
+                            assert_eq!(agent.get_phone_sheet_state(), 1);
+                            assert!(agent.get_tool_pending(), "Back only changes presentation of a real pending operation");
+                        }
+                        // Once this exact request has appeared, a native
+                        // refresh must respect both reading the script and
+                        // collapsing the drawer. Only a new request reveals it.
+                        agent.set_phone_script(true);
+                        crate::agent::window::refresh_tool_permission();
+                        assert!(agent.get_phone_script());
+                        assert_eq!(agent.get_phone_sheet_state(), 1);
+                        click_accessible_control_at(&app, "收起智能助手", 0.1);
+                        crate::agent::window::refresh_tool_permission();
+                        assert_eq!(agent.get_phone_sheet_state(), 0);
+                        assert!(agent.get_phone_script());
+                        assert!(agent.get_tool_pending());
+                        assert_eq!(agent.get_tool_request_id().as_str(), request_id.as_str());
+                        click_accessible_control_at(&app, "打开智能助手", 0.9);
+                        assert!(agent.get_phone_script());
+                        click_accessible_control_at(&app, "返回智能对话", 0.1);
+                        assert!(!agent.get_phone_script());
+                    } else {
+                        assert!(agent.get_sidebar_open());
+                        assert_eq!(agent.get_view(), crate::ui::AgentView::Chat);
+                        agent.set_sidebar_open(false);
+                        agent.set_view(crate::ui::AgentView::Script);
+                        crate::agent::window::refresh_tool_permission();
+                        assert!(agent.get_sidebar_open());
+                        assert_eq!(agent.get_view(), crate::ui::AgentView::Chat);
+                    }
+                    assert_eq!(shell.agent_pane.borrow().readiness.calls_authorized, authorized_before);
+                    assert_eq!(runtime.tool_permission_view().unwrap().mode, 0);
+                    assert_eq!(std::fs::read(&manifest).unwrap(), project_before);
+                    click_accessible_control(&app, "拒绝");
+                    pump(&jobs, || {
+                        !agent.get_tool_pending() && posted.lock().unwrap().iter().any(|raw| {
+                            let value: Value = serde_json::from_str(raw).unwrap();
+                            value["id"] == response_id && value["result"]["approved"] == false
+                        })
+                    });
+                }
+                assert_eq!(std::fs::read(&manifest).unwrap(), project_before);
+                assert_eq!(
+                    shell.studio.borrow().session.as_ref().unwrap().revision(),
+                    project.revision
+                );
                 stop_from_ui();
                 assert!(!shell.agent_pane.borrow().readiness.calls_authorized);
                 (callbacks.lock().unwrap()[1].closed)("Windows runtime closed".into());
@@ -4015,9 +4347,29 @@ mod tests {
                 submit_chat_from_ui(agent.get_draft().to_string(), false).unwrap();
                 shell.studio.borrow_mut().open_project(second).unwrap();
                 pump(&jobs, || switching.revoked.load(Ordering::Acquire));
+                if phone {
+                    assert_eq!(agent.get_phone_sheet_state(), 0);
+                    assert!(!agent.get_phone_script());
+                }
                 assert!(switching.waiting.lock().unwrap().is_none());
+                let components_before_close = callbacks.lock().unwrap().len();
+                if phone {
+                    click_accessible_control(&app, "打开智能助手");
+                    assert_eq!(callbacks.lock().unwrap().len(), components_before_close);
+                    assert_eq!(shell.embedded.borrow().as_ref().unwrap().component(), switching.component());
+                    click_accessible_control(&app, "收起智能助手");
+                }
                 frame(&switching, json!({"event":"runtime.phase","phase":"ready"}));
                 (callbacks.lock().unwrap().last().unwrap().closed)("Windows runtime closed".into());
+                if phone {
+                    pump(&jobs, || switching.view().closed);
+                    assert_eq!(callbacks.lock().unwrap().len(), components_before_close,
+                        "finishing the old component must not silently activate the new phone project");
+                    assert_eq!(agent.get_phone_sheet_state(), 0);
+                    assert!(!shell.agent_pane.borrow().readiness.calls_authorized);
+                    click_accessible_control(&app, "打开智能助手");
+                    assert_eq!(callbacks.lock().unwrap().len(), components_before_close + 1);
+                }
                 pump(&jobs, || {
                     shell
                         .embedded
@@ -4068,6 +4420,7 @@ mod tests {
                 app.set_on_start(false);
                 app.window().set_size(slint::LogicalSize::new(600., 800.));
                 app.show().unwrap();
+                app.global::<crate::ui::AgentUi>().set_phone_sheet_state(2);
                 let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
                 let received = std::rc::Rc::clone(&sent);
                 app.global::<crate::ui::AgentUi>()
@@ -4213,6 +4566,7 @@ mod tests {
                 app.set_on_start(false);
                 app.window().set_size(slint::LogicalSize::new(600., 800.));
                 app.show().unwrap();
+                app.global::<crate::ui::AgentUi>().set_phone_sheet_state(2);
                 let connects = std::rc::Rc::new(std::cell::Cell::new(0));
                 let reviews = std::rc::Rc::new(std::cell::Cell::new(0));
                 let received = std::rc::Rc::clone(&connects);
