@@ -166,3 +166,8 @@ i-slint-renderer-skia = { path = "patches/i-slint-renderer-skia" }
 # (see patches/README.md, and GGML_BACKEND_DL in build-app.yml). 0.15.0
 # exactly; bump it with whisper-rs, re-applying the change.
 whisper-rs-sys = { path = "patches/whisper-rs-sys" }
+# Preserve JNI's unsigned-byte return ABI on 64-bit Android. The published
+# binding otherwise interprets nonzero upper register bits as an exception.
+# See patches/README.md for the native reproduction and patch scope.
+jni = { path = "patches/jni" }
+jni-macros = { path = "patches/jni-macros" }

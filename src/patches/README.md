@@ -94,3 +94,63 @@ existing shared-library build and CPU backend selection are unchanged.
 Apart from the changes documented here, the copy matches the published
 crate. When refreshing it, check whether the new whisper.cpp already
 includes this fix before reapplying it.
+
+## jni and jni-macros 0.22.4
+
+The published JNI binding declares scalar Java boolean returns as Rust
+`bool`. JNI specifies an unsigned 8-bit value. On 64-bit Android the
+callee can leave the upper return-register bits nonzero; a Rust boolean
+call can then treat a false result as true before any conversion in the
+caller can repair it.
+
+This was reproduced while starting the real Android application, before
+the editor entry point: `ExceptionCheck` returned a zero low byte and
+`ExceptionOccurred` returned null, while the complete return register was
+`0x00007b8978663500`. The generated caller tested the complete 32-bit
+register and incorrectly reported `JavaException`. The temporary startup
+diagnostic was removed after recording this evidence.
+
+The patch receives scalar boolean results as `u8` at the native call
+boundary and converts them to Rust booleans with `!= 0`. It applies only
+to `target_os = "android"` with `target_arch = "aarch64"`; other targets
+retain the published call path. It covers `ExceptionCheck`,
+`IsAssignableFrom`, `IsInstanceOf`, `IsSameObject`, the three boolean
+method-call variants, and the instance/static boolean field getters.
+Exception pre-checks, post-checks and catch/clear handling remain in place.
+This is not a change to the application's tool approval or model settings.
+
+`jni-macros` also generates direct native calls that bypass the library's
+internal macros. Three generator sites apply the same conversion to type
+compatibility checks, instance/static boolean methods and instance/static
+boolean field reads. The platform condition is emitted into the target code,
+not evaluated on the procedural macro's build host. Constructors and field
+setters retain their original paths.
+
+The original crate archives have SHA-256 values:
+
+- `jni`: `5efd9a482cf3a427f00d6b35f14332adc7902ce91efb778580e180ff90fa3498`.
+- `jni-macros`: `a00109accc170f0bdb141fed3e393c565b6f5e072365c3bd58f5b062591560a3`.
+
+The copies retain their published source/doc files and licence declarations;
+nested lock files and registry metadata are omitted. Both licence texts are
+included from the exact upstream commits recorded in the published archives:
+`jni` commit `5ae9458a4ec44c5318f37ddc7569c1d4ae8a69e7` and `jni-macros`
+commit `33045a124105c939d1e2cbdcb5a39e5d868ffa03`. The MIT text has SHA-256
+`fea1d5bf3dd71605ce5d7d2ff695c1837e914c77195e523a86b5391716477960`, and
+the Apache text has SHA-256
+`a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2`.
+
+This scoped adaptation does not change the public raw `jni-sys` function
+table, boolean arrays, or output pointers. A new direct call through a raw
+boolean-returning slot must receive the same boundary review. The currently
+used library and generated scalar return paths are covered together.
+
+References:
+
+- [JNI primitive types](https://docs.oracle.com/en/java/javase/17/docs/specs/jni/types.html#primitive-types).
+- [JNI boolean ABI reproduction](https://github.com/AlexanderSchuetz97/jni-simple#abi-for-bool-jboolean-etc).
+
+When updating JNI, check the actual native return signatures before
+removing or reapplying this patch. The regression must exercise false
+values with nonzero upper register bits and real pending Java exceptions;
+successful installation alone is not a native startup test.
