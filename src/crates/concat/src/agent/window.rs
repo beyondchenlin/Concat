@@ -716,6 +716,8 @@ pub(crate) mod tests {
 
     mod chat_transcript {
         use super::*;
+        #[cfg(not(target_os = "android"))]
+        use slint::private_unstable_api::re_exports::ItemRc;
         use slint::private_unstable_api::re_exports::{
             AccessibleRole, AccessibleStringProperty, Flickable,
         };
@@ -1402,7 +1404,11 @@ pub(crate) mod tests {
             }
 
             #[cfg(not(target_os = "android"))]
-            fn matching_overlay_text(&self, body: &str, visible_only: bool) -> Vec<Bounds> {
+            fn matching_overlay_text_items(
+                &self,
+                body: &str,
+                visible_only: bool,
+            ) -> Vec<(ItemRc, Bounds)> {
                 let root = WindowInner::from_pub(self.app.window())
                     .window_item_rc()
                     .unwrap();
@@ -1424,16 +1430,27 @@ pub(crate) mod tests {
                     if matches && (!visible_only || item.is_visible()) {
                         let geometry = item.geometry();
                         let origin = item.map_to_window(geometry.origin);
-                        found.push(Bounds {
-                            x: origin.x,
-                            y: origin.y,
-                            width: geometry.size.width,
-                            height: geometry.size.height,
-                        });
+                        found.push((
+                            item.clone(),
+                            Bounds {
+                                x: origin.x,
+                                y: origin.y,
+                                width: geometry.size.width,
+                                height: geometry.size.height,
+                            },
+                        ));
                     }
                     ControlFlow::Continue(())
                 });
                 found
+            }
+
+            #[cfg(not(target_os = "android"))]
+            fn matching_overlay_text(&self, body: &str, visible_only: bool) -> Vec<Bounds> {
+                self.matching_overlay_text_items(body, visible_only)
+                    .into_iter()
+                    .map(|(_, bounds)| bounds)
+                    .collect()
             }
 
             #[cfg(not(target_os = "android"))]
@@ -2575,6 +2592,26 @@ pub(crate) mod tests {
                     .set_size(slint::LogicalSize::new(600., 900.));
                 chat.assert_latest_visible();
                 assert_eq!(chat.app.window().scale_factor(), 1.5);
+                let assert_pending_wheel_position = |chat: &Chat, before: ScrollView| {
+                    chat.render();
+                    let after = chat.scroll_view();
+                    assert!(
+                        (after.content_y - before.content_y).abs() < 1.,
+                        "reflow must preserve the offset before the user's wheel animation: before={before:?}, after={after:?}"
+                    );
+                    assert!(
+                        after.content_height > before.content_height + 20.,
+                        "the new content must actually extend the scroll range: before={before:?}, after={after:?}"
+                    );
+                    // Phone activity follows the messages in this same
+                    // viewport. A short new message can remain visible even
+                    // when its activity tail is below the preserved offset.
+                    let end = (after.bounds.height - after.content_height).min(0.);
+                    assert!(
+                        after.content_y > end + 20.,
+                        "pending upward intent must not follow the new actual scroll end: end={end}, after={after:?}"
+                    );
+                };
                 let mut target = TranscriptScrollTarget::default();
                 let mut native_wheel =
                     |chat: &Chat, position: slint::LogicalPosition, delta, shift| {
@@ -2621,7 +2658,7 @@ pub(crate) mod tests {
                 chat.assert_latest_visible();
 
                 let position = chat.scroll_view().bounds.center();
-                let before = chat.scroll_view().content_y;
+                let before = chat.scroll_view();
                 // Exercise the exact production pre-dispatch observer at the
                 // same clock tick, before any content position has moved.
                 // Public PointerScrolled uses the immediate core path, so it
@@ -2635,12 +2672,7 @@ pub(crate) mod tests {
                 status.detail = "布局改变不能覆盖刚开始的上翻输入。".repeat(6).into();
                 agent.set_status(status);
                 chat.append("原生上翻输入之后同批到达的新内容");
-                chat.render();
-                assert!(
-                    (chat.scroll_view().content_y - before).abs() < 1.,
-                    "reflow must not move content before the user's animation"
-                );
-                chat.assert_latest_below_view();
+                assert_pending_wheel_position(chat, before);
                 chat.wheel(80.);
                 chat.render();
                 chat.wheel(-100_000.);
@@ -2673,11 +2705,12 @@ pub(crate) mod tests {
                     false,
                 );
                 chat.append("旧惯性到末尾的通知不能覆盖新上翻意图");
-                chat.assert_latest_below_view();
+                assert_pending_wheel_position(chat, view);
                 chat.wheel(-100_000.);
                 chat.assert_latest_visible();
 
-                let position = chat.scroll_view().bounds.center();
+                let before = chat.scroll_view();
+                let position = before.bounds.center();
                 native_wheel(
                     chat,
                     position,
@@ -2692,7 +2725,7 @@ pub(crate) mod tests {
                     .window()
                     .set_size(slint::LogicalSize::new(600., 820.));
                 chat.append("触控板上翻输入与窗口缩小时也保留历史");
-                chat.assert_latest_below_view();
+                assert_pending_wheel_position(chat, before);
 
                 let app = chat.app.clone_strong();
                 let agent = app.global::<AgentUi>();
@@ -2841,11 +2874,25 @@ pub(crate) mod tests {
                     (1, "common.settings"),
                     (2, "common.export"),
                 ] {
+                    chat.render();
+                    // The original editor stays mounted behind the sheet.
+                    // Exclude its already-visible labels by item identity,
+                    // never by duplicate text order or guessed coordinates.
+                    let background = chat.matching_overlay_text_items(title, true);
+                    let overlay_title = |chat: &Chat| {
+                        let mut found: Vec<_> = chat
+                            .matching_overlay_text_items(title, true)
+                            .into_iter()
+                            .filter(|(item, _)| !background.iter().any(|(old, _)| old == item))
+                            .collect();
+                        assert_eq!(found.len(), 1, "one foreground title item: {title}");
+                        found.pop().unwrap()
+                    };
                     set_sheet_open(chat, kind, true);
                     chat.render();
                     chat.advance(400);
                     chat.render();
-                    let header = chat.overlay_text_bounds(title, true);
+                    let (title_item, header) = overlay_title(chat);
                     assert!(
                         header.y >= 0. && header.bottom() <= 52.,
                         "the real 380ms opening animation must finish: {title}, header={header:?}"
@@ -2886,7 +2933,11 @@ pub(crate) mod tests {
                     chat.render();
                     // The moving header now covers the transcript. A wheel
                     // here exercises the page's fallback, not PaneScroll.
-                    let header = chat.overlay_text_bounds(title, true);
+                    let (closing_item, header) = overlay_title(chat);
+                    assert!(
+                        closing_item == title_item,
+                        "the same title must animate closed"
+                    );
                     let position = header.center();
                     assert!(
                         header.y > 0. && chat.scroll_view().bounds.contains(position),
