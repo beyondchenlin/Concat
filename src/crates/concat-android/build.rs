@@ -18,6 +18,11 @@ fn main() {
         return;
     }
 
+    // Missing native dependencies must fail the build, before an APK can be
+    // signed. In particular, ort-sys emits an unresolved diagnostic symbol
+    // when an offline build has no configured ONNX Runtime library.
+    println!("cargo:rustc-link-arg=-Wl,--no-undefined");
+
     let release = std::env::var("PROFILE").as_deref() == Ok("release");
     let out_dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
     let classes = out_dir.join("java");
