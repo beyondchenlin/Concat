@@ -13,4 +13,4 @@ bash scripts/ci/test-agent-android.sh run --artifact agent-ownership-x86_64 \
 python3 scripts/ci/prepare-android-emulator.py \
   --out smoke-android/environment apk/Concat-*.apk
 exec bash scripts/ci/smoke-android.sh --out smoke-android --wait 60 \
-  --require-agent apk/Concat-*.apk
+  --require-agent --activate-agent-ui apk/Concat-*.apk

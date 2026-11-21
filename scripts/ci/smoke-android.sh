@@ -4,7 +4,7 @@
 # the phone build ever runs what it packages.
 #
 #   smoke-android.sh [--out DIR] [--wait SECS] [--ready REGEX] [--no-install]
-#                    [--package NAME] [--require-agent] APK
+#                    [--package NAME] [--require-agent] [--activate-agent-ui] APK
 #
 # On whatever device adb talks to (ANDROID_SERIAL picks one of several):
 # waits for it to finish booting; checks the device can run one of the
@@ -25,6 +25,10 @@
 # the production embedded runtime in native recovery state. Any ownership,
 # host startup or retirement failure during this foreground observation fails;
 # the full wait is retained even when --ready is also supplied.
+# --activate-agent-ui explicitly creates a uniquely named empty project and
+# opens the real floating assistant using keyboard input. It requires an
+# emulator, --require-agent, an installation and at least 60 seconds of final
+# observation. Ordinary smoke runs and --no-install never create a project.
 #
 # and passes if none of that has happened by the end of the wait, with the
 # app's own first line ("Concat <version> starting") in the log, so a pass
@@ -61,11 +65,12 @@ out=smoke-android
 wait_secs=45
 ready=""
 require_agent=0
+activate_agent_ui=0
 install=1
 package=app.concat.editor
 
 usage() {
-  echo "usage: $0 [--out DIR] [--wait SECS] [--ready REGEX] [--no-install] [--package NAME] [--require-agent] APK" >&2
+  echo "usage: $0 [--out DIR] [--wait SECS] [--ready REGEX] [--no-install] [--package NAME] [--require-agent] [--activate-agent-ui] APK" >&2
   exit 2
 }
 
@@ -76,6 +81,7 @@ while [ $# -gt 0 ]; do
     --ready) ready=${2:?}; shift 2 ;;
     --no-install) install=0; shift ;;
     --require-agent) require_agent=1; shift ;;
+    --activate-agent-ui) activate_agent_ui=1; shift ;;
     --package) package=${2:?}; shift 2 ;;
     -h|--help) usage ;;
     --*) usage ;;
@@ -85,6 +91,17 @@ done
 [ $# -eq 1 ] || usage
 apk=$1
 [ -f "$apk" ] || { echo "smoke: no APK at $apk" >&2; exit 2; }
+if [ "$activate_agent_ui" = 1 ]; then
+  if [ "$require_agent" != 1 ] || [ "$install" != 1 ] || [ "$package" != app.concat.editor ]; then
+    echo "smoke: --activate-agent-ui requires --require-agent, installation and the production package; --no-install never creates a project" >&2
+    exit 2
+  fi
+  [[ "$wait_secs" =~ ^[0-9]+$ ]] && [ "$wait_secs" -ge 60 ] \
+    || { echo "smoke: UI activation requires at least 60 seconds of final observation" >&2; exit 2; }
+  command -v python3 > /dev/null || { echo "smoke: UI activation requires Python 3" >&2; exit 2; }
+  [ ! -e "$out/ui-activation" ] \
+    || { echo "smoke: use a fresh UI activation evidence directory" >&2; exit 2; }
+fi
 
 say() { printf '\n== %s\n' "$*"; }
 note() {
@@ -95,6 +112,8 @@ mkdir -p "$out"
 logcat_file=$out/logcat.txt
 logcat_pid=""
 collected=""
+activation_pid=""
+startup_pid=""
 
 # Everything the folder should hold, gathered on the way out whatever the
 # outcome: a failure is exactly when the screenshot and the log are wanted.
@@ -156,6 +175,13 @@ release=$(adb shell getprop ro.build.version.release | tr -d '\r')
 abilist=$(adb shell getprop ro.product.cpu.abilist | tr -d '\r')
 model=$(adb shell getprop ro.product.model | tr -d '\r')
 echo "$model, Android $release (API $sdk), ABIs $abilist"
+if [ "$activate_agent_ui" = 1 ]; then
+  serial=$(adb get-serialno | tr -d '\r')
+  qemu=$(adb shell getprop ro.kernel.qemu | tr -d '\r')
+  boot_qemu=$(adb shell getprop ro.boot.qemu | tr -d '\r')
+  [[ "$serial" =~ ^emulator-[0-9]+$ ]] && { [ "$qemu" = 1 ] || [ "$boot_qemu" = 1 ]; } \
+    || fail "explicit UI activation is limited to an emulator; no project was created"
+fi
 
 # The ABIs the APK carries native code for, from its lib/ folders. One the
 # device lists is one it can load, natively or through its translation.
@@ -189,7 +215,7 @@ case "$activity" in
   *) fail "no launcher activity for $package (resolve-activity said: $activity)" ;;
 esac
 
-# Strict agent evidence must come from a new process and a fresh device log.
+# Startup evidence must come from a new process and a fresh device log.
 # An empty pidof response cannot distinguish "absent" from an adb failure,
 # so require a successful process listing with the expected header instead.
 prepare_agent_start() {
@@ -213,18 +239,12 @@ say "start $activity"
 # the app's first line cannot have scrolled out of the device's buffer by
 # the time it is looked for.
 adb logcat -G 16M > /dev/null 2>&1 || true
-if [ "$require_agent" = 1 ]; then
-  prepare_agent_start
-else
-  adb shell am force-stop "$package" || true
-  adb logcat -c || true
-fi
+prepare_agent_start
 adb logcat -v threadtime > "$logcat_file" 2>&1 &
 logcat_pid=$!
 started=$(limit 180 adb shell am start -W -n "$activity" 2>&1 | tr -d '\r') \
   || fail "am start did not return within 180s"
 printf '%s\n' "$started"
-grep -q '^Status: ok' <<< "$started" || fail "am start did not report the launch as ok"
 
 # The lines that mean the start-up failed, wherever they come from: the
 # runtime's crash report, the C library's on a fatal signal, Rust's on a
@@ -249,7 +269,9 @@ fi
 pids=""
 running=""
 app_pids() {
-  running=$(adb shell pidof "$package" 2>/dev/null | tr -d '\r' || true)
+  # A caller can bound this query with the same deadline as its other queries.
+  local adb_command=${1:-adb}
+  running=$("$adb_command" shell pidof "$package" 2>/dev/null | tr -d '\r' || true)
   pids=$(
     {
       sed -n "s/.*Start proc \([0-9][0-9]*\):$package\/.*/\1/p" "$logcat_file"
@@ -320,6 +342,93 @@ untestable_here() {
   exit 0
 }
 
+# `am start -W` has its own shorter activity-launch timeout. That is not
+# readiness: allow at most 30 additional seconds for this same cold process
+# to enter native code and own the foreground. Every query shares one deadline.
+startup_adb() {
+  local remaining=$((startup_deadline - SECONDS))
+  [ "$remaining" -gt 0 ] || return 142
+  limit "$remaining" adb "$@"
+}
+
+check_startup_process() {
+  app_pids startup_adb
+  found=$(fatal_lines)
+  [ -z "$found" ] || fail "the app failed during native startup: $(head -n 1 <<< "$found")"
+  [[ "$running" =~ ^[1-9][0-9]*$ ]] \
+    || fail "native startup requires exactly one live app process"
+  [ -n "$startup_pid" ] || startup_pid=$running
+  [ "$running" = "$startup_pid" ] && [ "$pids" = "$startup_pid " ] \
+    || fail "the app process changed during native startup"
+}
+
+wait_native_start() {
+  local startup_deadline=$((SECONDS + 30))
+  say "launch timed out; verify native foreground readiness within 30s"
+  while [ "$SECONDS" -lt "$startup_deadline" ]; do
+    check_startup_process
+    awk -v pid="$startup_pid" '
+      $3 == pid && / concat +: ([A-Za-z0-9_:]+: )?Concat .+ starting[[:space:]]*$/ { print }
+    ' "$logcat_file" > "$out/startup-native.txt"
+    if [ -s "$out/startup-native.txt" ]; then
+      startup_adb shell dumpsys window displays | tr -d '\r' > "$out/startup-window.txt" \
+        || fail "could not query the foreground window within the native startup deadline"
+      startup_adb shell dumpsys activity activities | tr -d '\r' > "$out/startup-activity.txt" \
+        || fail "could not query the resumed activity within the native startup deadline"
+      if awk -v pkg="$package" '
+          /^[[:space:]]*mCurrentFocus=/ {
+            n++
+            if ($0 ~ /^[[:space:]]*mCurrentFocus=Window\{[^{}[:space:]]+ u[0-9]+ [^{}[:space:]]+\}$/ &&
+                index($0, " " pkg "/")) own++
+          }
+          END { exit !(n == 1 && own == 1) }
+        ' "$out/startup-window.txt" && awk -v pkg="$package" '
+          /ResumedActivity/ { n++; if (!index($0, " " pkg "/")) other++ }
+          END { exit !(n > 0 && other == 0) }
+        ' "$out/startup-activity.txt"; then
+        # Queries can race a crash/restart. Recheck without renewing the deadline.
+        check_startup_process
+        [ "$SECONDS" -lt "$startup_deadline" ] \
+          || fail "native foreground readiness was not established within 30s"
+        printf '%s\n' "$startup_pid" > "$out/startup-pid.txt"
+        echo "the same new process entered native code and owns the resumed foreground window"
+        return
+      fi
+    fi
+    sleep 1
+  done
+  fail "native foreground readiness was not established within 30s"
+}
+
+# Reject missing/duplicate statuses and explicit launch errors. Only the exact
+# timeout status receives extra observation; it never counts as success alone.
+if grep -E -q '^Error([[:space:]:]|$)|^Exception' <<< "$started"; then
+  fail "am start reported a launch error"
+fi
+launch_status=$(grep '^Status:' <<< "$started" || true)
+case "$launch_status" in
+  'Status: ok') ;;
+  'Status: timeout') wait_native_start ;;
+  *) fail "am start did not report exactly one supported launch status" ;;
+esac
+
+if [ "$activate_agent_ui" = 1 ]; then
+  say "create a new project and open the production assistant"
+  app_pids
+  found=$(fatal_lines)
+  [ -z "$found" ] || fail "the app failed before UI activation: $(head -n 1 <<< "$found")"
+  [[ "$running" =~ ^[1-9][0-9]*$ ]] \
+    || fail "UI activation requires exactly one current app process"
+  if [ -n "$startup_pid" ] && [ "$running" != "$startup_pid" ]; then
+    fail "the app process changed before production UI activation"
+  fi
+  activation_pid=$running
+  python3 "$(dirname "${BASH_SOURCE[0]}")/activate-agent-android.py" \
+    --out "$out/ui-activation" --package "$package" --pid "$activation_pid" \
+    || fail "production UI activation did not establish a real project and native recovery"
+fi
+
+# The full observation starts after explicit activation, never before it.
 say "watch for ${wait_secs}s"
 seen_ready=""
 deadline=$((SECONDS + wait_secs))
@@ -340,6 +449,12 @@ while [ "$SECONDS" -lt "$deadline" ]; do
     [ -z "$found" ] || printf '%s\n' "$found"
     untestable_here
     fail "the app's process is gone ${gone}s after the launch${found:+: $(head -n 1 <<< "$found")}"
+  fi
+  if [ -n "$activation_pid" ] && [ "$running" != "$activation_pid" ]; then
+    fail "the app process changed after production UI activation"
+  fi
+  if [ -n "$startup_pid" ] && [ "$running" != "$startup_pid" ]; then
+    fail "the app process changed after native foreground readiness"
   fi
   if [ -n "$ready" ] && [ -z "$seen_ready" ] && grep -E -q -- "$ready" "$logcat_file"; then
     seen_ready=1
@@ -365,6 +480,12 @@ if [ "$require_agent" = 1 ]; then
   # failures and the live PID against that complete foreground log.
   app_pids
   [ -n "$running" ] || fail "the app has no current process at the agent startup check"
+  if [ -n "$startup_pid" ] && [ "$running" != "$startup_pid" ]; then
+    fail "the app process changed before the final native recovery check"
+  fi
+  if [ -n "$activation_pid" ] && [ "$running" != "$activation_pid" ]; then
+    fail "the app process changed before the final native recovery check"
+  fi
   found=$(fatal_lines)
   [ -z "$found" ] || fail "native agent startup failed: $(head -n 1 <<< "$found")"
   agent_ready=$(agent_ready_lines)

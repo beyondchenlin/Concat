@@ -1,0 +1,61 @@
+{
+  "source_device_id": "641667de-073d-4b8e-9f4a-7c4cb1e39d85",
+  "source_root": "D:\\BK-CAT-build\\mobile-sheet-20261121\\native-ui-evidence-2",
+  "apk_sha256": "D3B67955B8548BA65C1B7C3BBE1A7D52C5BDBBDFE1958B64A70FB4C743729C53",
+  "production_source_commit": "8fe27a20326afac88a5fd5859ac5c5b3a3177b6d",
+  "schema_version": 1,
+  "capture": "第五版真实安卓原生界面截图",
+  "copy_method": "原始图片字节直接复制；无重绘、裁切、缩放或合成。",
+  "files": [
+    {
+      "source_path": "D:\\BK-CAT-build\\mobile-sheet-20261121\\native-ui-evidence-2\\07-back-closes-sheet\\after.png",
+      "bytes": 99029,
+      "width": 1080,
+      "height": 2340,
+      "filename": "manual-editor.png",
+      "pid": 3036,
+      "source_sha256": "32f45ce655fa926859dc8eeb1b7129b21240936aac815c34a750c0b62f349db6",
+      "local_sha256": "32f45ce655fa926859dc8eeb1b7129b21240936aac815c34a750c0b62f349db6"
+    },
+    {
+      "source_path": "D:\\BK-CAT-build\\mobile-sheet-20261121\\native-ui-evidence-2\\02-open-fixed-sheet\\after.png",
+      "bytes": 111376,
+      "width": 1080,
+      "height": 2340,
+      "filename": "assistant-half.png",
+      "pid": 3036,
+      "source_sha256": "b1be1be6b0fc7cb34e7a504185f317d495532e521375aa37943d0a34aded732c",
+      "local_sha256": "b1be1be6b0fc7cb34e7a504185f317d495532e521375aa37943d0a34aded732c"
+    },
+    {
+      "source_path": "D:\\BK-CAT-build\\mobile-sheet-20261121\\native-ui-evidence-2\\03-drag-fullscreen\\after.png",
+      "bytes": 83270,
+      "width": 1080,
+      "height": 2340,
+      "filename": "assistant-full.png",
+      "pid": 3036,
+      "source_sha256": "342395108ab6f291e4b5f629f49c28ffcd80c9bbfde40c5cfb890e10d4c12793",
+      "local_sha256": "342395108ab6f291e4b5f629f49c28ffcd80c9bbfde40c5cfb890e10d4c12793"
+    },
+    {
+      "source_path": "D:\\BK-CAT-build\\mobile-sheet-20261121\\native-ui-evidence-2\\31-pending-approval-half-screen-with-keyboard\\after.png",
+      "bytes": 351228,
+      "width": 1080,
+      "height": 2340,
+      "filename": "approval-keyboard.png",
+      "pid": 4321,
+      "source_sha256": "cfda2afcf81f0690939513c896e80bc91bf84c320212da0dfd6da5f169cf4688",
+      "local_sha256": "cfda2afcf81f0690939513c896e80bc91bf84c320212da0dfd6da5f169cf4688"
+    },
+    {
+      "source_path": "D:\\BK-CAT-build\\mobile-sheet-20261121\\native-ui-evidence-2\\42-reopen-saved-modified-project\\after.png",
+      "bytes": 229155,
+      "width": 1080,
+      "height": 2340,
+      "filename": "saved-project.png",
+      "pid": 4321,
+      "source_sha256": "f48457a67a0d1cc405ce007e2034d8ebc6a53901ce5aad5306d9ad1883d2dc81",
+      "local_sha256": "f48457a67a0d1cc405ce007e2034d8ebc6a53901ce5aad5306d9ad1883d2dc81"
+    }
+  ]
+}
