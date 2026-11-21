@@ -116,6 +116,8 @@ export component PhoneAgentSheet inherits Rectangle {
     // still-mounted timeline. Consume that gesture on this modal layer.
     // A second finger also cancels a header drag without changing its level.
     ScaleRotateGestureHandler {
+        x: 0;
+        y: 0;
         width: root.width;
         height: root.available-height;
         enabled: root.level > 0;
@@ -125,6 +127,8 @@ export component PhoneAgentSheet inherits Rectangle {
     // Dismissal outside the sheet is consumed here, so the same press
     // cannot select or scrub a clip underneath. Keyboard space is excluded.
     Rectangle {
+        x: 0;
+        y: 0;
         width: parent.width;
         height: root.available-height;
         background: #00000026;
@@ -150,6 +154,8 @@ export component PhoneAgentSheet inherits Rectangle {
         TouchArea { scroll-event(event) => { return EventResult.accept; } }
 
         header := Rectangle {
+            x: 0;
+            y: 0;
             width: parent.width;
             height: 64px;
             accessible-role: button;

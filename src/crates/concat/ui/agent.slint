@@ -553,6 +553,10 @@ export component AgentChat inherits Rectangle {
             // height. A fixed reading target makes the resized composer
             // yield first without feeding layout allocation back into it.
             min-height: root.phone ? 40px : content-column.min-height;
+            // Flickable forwards its child's maximum by default. On phones
+            // the transcript must fill the space above the fixed composer,
+            // even when an empty conversation has only a short content row.
+            max-height: root.phone ? 100000px : content-column.max-height;
             accessible-role: list;
             accessible-label: root.phone ? "对话记录" : "";
             content-width: self.width;
