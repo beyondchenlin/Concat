@@ -16,7 +16,7 @@ use slint::ComponentHandle;
 
 use crate::agent::AgentBridge;
 use crate::agent::native::{NativeSession, STORAGE_ID};
-use crate::agent::tasks::{SubmissionIntent, TaskMode};
+use crate::agent::tasks::{SubmissionError, SubmissionIntent, TaskMode};
 use crate::host::Shell;
 
 mod resources;
@@ -31,6 +31,53 @@ pub const RUNTIME_ORIGIN: &str = "https://bk-cat.invalid";
 pub const RUNTIME_URL: &str = "https://bk-cat.invalid/index.html";
 const CHANNEL: &str = "bk-cat-runtime-v1";
 const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
+
+#[derive(Debug)]
+pub(crate) enum FrameEncodingError {
+    TooLarge,
+    Serialization(serde_json::Error),
+}
+
+impl std::fmt::Display for FrameEncodingError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLarge => formatter.write_str("native response exceeds frame limit"),
+            Self::Serialization(error) => std::fmt::Display::fmt(error, formatter),
+        }
+    }
+}
+
+impl From<FrameEncodingError> for SubmissionError {
+    fn from(error: FrameEncodingError) -> Self {
+        match error {
+            FrameEncodingError::TooLarge => Self::RejectedInput(
+                "请求及显示原文编码后超过聊天通道上限，请缩短输入或所选文案后重试。",
+            ),
+            FrameEncodingError::Serialization(error) => Self::Failed(error.to_string()),
+        }
+    }
+}
+
+/// Use the real envelope for every bound check, including JSON escapes and
+/// the component/command identifiers. Admitted commands send these same bytes.
+pub(crate) fn encode_frame(
+    component: &str,
+    mut envelope: Value,
+) -> Result<String, FrameEncodingError> {
+    envelope["channel"] = json!(CHANNEL);
+    envelope["component"] = json!(component);
+    let serialized = serde_json::to_string(&envelope).map_err(FrameEncodingError::Serialization)?;
+    if serialized.len() > MAX_FRAME_BYTES {
+        return Err(FrameEncodingError::TooLarge);
+    }
+    Ok(serialized)
+}
+
+struct EncodedCommand {
+    id: String,
+    serialized: String,
+}
+
 // Covers queued platform creation/focus and loading the controlled scripts. This is
 // independent of the device smoke's unchanged 60-second production observation.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
@@ -942,19 +989,19 @@ impl EmbeddedRuntime {
         }
     }
 
-    fn post(&self, mut envelope: Value) -> Result<(), String> {
-        envelope["channel"] = json!(CHANNEL);
-        envelope["component"] = json!(self.component);
-        let serialized = serde_json::to_string(&envelope).map_err(|error| error.to_string())?;
-        if serialized.len() > MAX_FRAME_BYTES {
-            return Err("native response exceeds frame limit".into());
-        }
+    fn post(&self, envelope: Value) -> Result<(), String> {
+        let serialized =
+            encode_frame(&self.component, envelope).map_err(|error| error.to_string())?;
+        self.post_encoded(&serialized)
+    }
+
+    fn post_encoded(&self, serialized: &str) -> Result<(), String> {
         self.platform
             .lock()
             .map_err(|_| "runtime platform poisoned")?
             .as_ref()
             .ok_or("native platform is not ready")?
-            .post_message(&serialized)
+            .post_message(serialized)
     }
 
     fn queue_submission(&self, intent: SubmissionIntent) -> Result<(), String> {
@@ -1017,18 +1064,66 @@ impl EmbeddedRuntime {
         };
         let result = self
             .native
-            .prepare_submission(&intent)
-            .and_then(|payload| self.command(payload, CommandKind::Submit));
-        if let Err(error) = result {
-            self.native.tasks.abandon();
-            if let Ok(mut submission) = self.submission.lock() {
-                submission.take();
+            .prepare_submission(&intent, |payload| self.encode_command(payload))
+            .and_then(|command| {
+                self.send_command(command, CommandKind::Submit)
+                    .map_err(SubmissionError::Failed)
+            });
+        self.finish_submission_preparation(intent, result);
+    }
+
+    fn finish_submission_preparation(
+        &self,
+        intent: SubmissionIntent,
+        result: Result<(), SubmissionError>,
+    ) {
+        match result {
+            Ok(()) => {}
+            Err(SubmissionError::RejectedInput(message)) => {
+                if let Err(error) = self.reject_submission(&intent.id, message) {
+                    self.fail_live_work(&error);
+                }
             }
-            if let Some(generation) = intent.generation {
-                deliver_generation(generation, Err(error.clone()));
+            Err(SubmissionError::Failed(error)) => {
+                self.native.tasks.abandon();
+                if let Ok(mut submission) = self.submission.lock() {
+                    submission.take();
+                }
+                if let Some(generation) = intent.generation {
+                    deliver_generation(generation, Err(error.clone()));
+                }
+                self.fail_live_work(&error);
             }
-            self.fail_live_work(&error);
         }
+    }
+
+    fn reject_submission(&self, task: &str, message: &str) -> Result<(), String> {
+        let rejected = {
+            // Stop marks revoked before taking this view lock. Never restore a
+            // phase or permission, and never clear a different task's state.
+            let mut view = self.view.lock().map_err(|_| "本次任务状态不可用。")?;
+            if self.revoked.load(Ordering::Acquire) || view.closed {
+                return Ok(());
+            }
+            if view.phase != "ready" || !view.error.is_empty() {
+                return Err("输入拒绝时会话已不在有效就绪状态。".into());
+            }
+            let mut submission = self.submission.lock().map_err(|_| "本次任务状态不可用。")?;
+            if submission.as_ref().is_none_or(|intent| intent.id != task) {
+                return Err("输入拒绝与当前原生任务不匹配。".into());
+            }
+            let rejected = submission.take().ok_or("本次输入拒绝缺少原生任务。")?;
+            view.task_running = false;
+            view.task_title = message.to_owned();
+            rejected
+        };
+        // No accepted receipt was received, so the editor draft and reference
+        // selection stay untouched. A script candidate likewise stays failed.
+        if let Some(generation) = rejected.generation {
+            deliver_generation(generation, Err(message.to_owned()));
+        }
+        self.publish();
+        Ok(())
     }
 
     fn accept_submission(&self, result: &Value) -> Result<(), String> {
@@ -1232,6 +1327,13 @@ impl EmbeddedRuntime {
     }
 
     fn command(&self, payload: Value, kind: CommandKind) -> Result<(), String> {
+        let command = self
+            .encode_command(payload)
+            .map_err(|error| error.to_string())?;
+        self.send_command(command, kind)
+    }
+
+    fn encode_command(&self, payload: Value) -> Result<EncodedCommand, SubmissionError> {
         if self.revoked.load(Ordering::Acquire) {
             return Err("聊天运行组件已停止。".into());
         }
@@ -1240,6 +1342,15 @@ impl EmbeddedRuntime {
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .map_err(|_| "native command sequence exhausted")?;
         let id = format!("native:{sequence}");
+        let serialized = encode_frame(&self.component, json!({"id":id,"payload":payload}))?;
+        Ok(EncodedCommand { id, serialized })
+    }
+
+    fn send_command(&self, command: EncodedCommand, kind: CommandKind) -> Result<(), String> {
+        if self.revoked.load(Ordering::Acquire) {
+            return Err("聊天运行组件已停止。".into());
+        }
+        let EncodedCommand { id, serialized } = command;
         {
             let mut pending = self
                 .pending
@@ -1250,7 +1361,7 @@ impl EmbeddedRuntime {
             }
             pending.insert(id.clone(), kind);
         }
-        if let Err(error) = self.post(json!({"id":id,"payload":payload})) {
+        if let Err(error) = self.post_encoded(&serialized) {
             if let Ok(mut pending) = self.pending.lock() {
                 pending.remove(&id);
             }
@@ -2437,6 +2548,161 @@ mod tests {
             drop(self.runtime);
             drop(self.bridge);
             std::fs::remove_dir_all(self.root).unwrap();
+        }
+    }
+
+    fn queued_size_fixture(fixture: &StartupFixture, id: &str) -> SubmissionIntent {
+        let intent = SubmissionIntent {
+            id: id.into(),
+            project: crate::live::CurrentProject {
+                project_id: "isolated-size-project".into(),
+                path: fixture.root.to_string_lossy().into_owned(),
+                session_id: 1,
+                revision: 1,
+            },
+            mode: TaskMode::Chat,
+            input: "原稿仍保留在原生编辑器".into(),
+            ui_draft: "原稿仍保留在原生编辑器".into(),
+            reference_keys: vec!["retained-reference".into()],
+            selected: None,
+            generation: None,
+        };
+        *fixture.runtime.view.lock().unwrap() = RuntimeView {
+            loaded: true,
+            phase: "ready".into(),
+            ..Default::default()
+        };
+        fixture
+            .runtime
+            .queue_submission_with(intent.clone(), || Ok(()))
+            .unwrap();
+        intent
+    }
+
+    fn oversized_submission_payload() -> Value {
+        let input = "\u{1}".repeat(200_000);
+        json!({
+            "method":"runtime.submit", "taskId":"size-fixture",
+            "networkPermit":"isolated-placeholder", "mode":"chat",
+            "input":input, "displayText":input,
+        })
+    }
+
+    #[test]
+    fn oversized_frame_refuses_only_the_queued_input_and_exact_encoded_retry_is_sent() {
+        let fixture = StartupFixture::new(Duration::from_secs(60));
+        let intent = queued_size_fixture(&fixture, "size-fixture");
+        let posted_before = fixture.posted.lock().unwrap().len();
+        let result = fixture
+            .runtime
+            .encode_command(oversized_submission_payload())
+            .map(|_| ());
+        assert!(matches!(&result, Err(SubmissionError::RejectedInput(_))));
+        fixture
+            .runtime
+            .finish_submission_preparation(intent.clone(), result);
+        assert_eq!(fixture.runtime.view().phase, "ready");
+        assert!(!fixture.runtime.view().task_running);
+        assert!(fixture.runtime.view().task_title.contains("请缩短"));
+        assert!(fixture.runtime.view().error.is_empty());
+        assert!(!fixture.runtime.revoked.load(Ordering::Acquire));
+        assert!(fixture.runtime.submission.lock().unwrap().is_none());
+        assert!(
+            fixture
+                .runtime
+                .accepted_submission
+                .lock()
+                .unwrap()
+                .is_none()
+        );
+        assert!(fixture.runtime.pending.lock().unwrap().is_empty());
+        assert_eq!(fixture.posted.lock().unwrap().len(), posted_before);
+        assert_eq!(fixture.closes.load(Ordering::Acquire), 0);
+
+        // The unchanged draft/reference snapshot can be queued again. The only
+        // production path which clears the editor still requires acceptance.
+        fixture
+            .runtime
+            .queue_submission_with(intent.clone(), || Ok(()))
+            .unwrap();
+        let retained = fixture.runtime.submission.lock().unwrap().clone().unwrap();
+        assert_eq!(retained.ui_draft, intent.ui_draft);
+        assert_eq!(retained.reference_keys, intent.reference_keys);
+        let command = fixture
+            .runtime
+            .encode_command(json!({
+                "method":"runtime.submit", "taskId":intent.id,
+                "networkPermit":"isolated-placeholder", "mode":"chat",
+                "input":"原生完整工程上下文\n合法中文请求", "displayText":"合法中文请求",
+            }))
+            .unwrap();
+        let admitted_bytes = command.serialized.clone();
+        let admitted_id = command.id.clone();
+        fixture
+            .runtime
+            .send_command(command, CommandKind::Submit)
+            .unwrap();
+        assert_eq!(
+            fixture.posted.lock().unwrap().last().unwrap(),
+            &admitted_bytes
+        );
+        let frame: Value = serde_json::from_str(&admitted_bytes).unwrap();
+        assert_eq!(frame["component"], fixture.runtime.component());
+        assert_eq!(frame["channel"], CHANNEL);
+        assert_eq!(frame["id"], admitted_id);
+        assert!(
+            fixture
+                .runtime
+                .pending
+                .lock()
+                .unwrap()
+                .contains_key(&admitted_id)
+        );
+        fixture.finish();
+    }
+
+    #[test]
+    fn stop_between_frame_encoding_and_input_refusal_never_restores_readiness() {
+        let fixture = StartupFixture::new(Duration::from_secs(60));
+        let intent = queued_size_fixture(&fixture, "size-stop-race");
+        let result = fixture
+            .runtime
+            .encode_command(oversized_submission_payload())
+            .map(|_| ());
+        assert!(matches!(&result, Err(SubmissionError::RejectedInput(_))));
+        fixture.runtime.stop();
+        fixture
+            .runtime
+            .finish_submission_preparation(intent, result);
+        assert!(fixture.runtime.revoked.load(Ordering::Acquire));
+        assert_eq!(fixture.runtime.view().phase, "stopping");
+        assert!(!fixture.runtime.view().task_running);
+        assert!(fixture.runtime.view().error.is_empty());
+        assert!(!fixture.runtime.view().task_title.contains("请缩短"));
+        assert!(fixture.runtime.submission.lock().unwrap().is_none());
+        assert_eq!(fixture.closes.load(Ordering::Acquire), 1);
+        fixture.finish();
+    }
+
+    #[test]
+    fn input_refusal_cannot_hide_a_security_failure_or_clear_another_task() {
+        for wrong_identity in [false, true] {
+            let fixture = StartupFixture::new(Duration::from_secs(60));
+            let mut intent = queued_size_fixture(&fixture, "current-native-task");
+            let error = if wrong_identity {
+                intent.id = "unrelated-native-task".into();
+                SubmissionError::RejectedInput("输入过长。")
+            } else {
+                SubmissionError::Failed("原生工程身份不匹配。".into())
+            };
+            fixture
+                .runtime
+                .finish_submission_preparation(intent, Err(error));
+            assert!(fixture.runtime.revoked.load(Ordering::Acquire));
+            assert_eq!(fixture.runtime.view().phase, "stopping");
+            assert!(!fixture.runtime.view().error.is_empty());
+            assert_eq!(fixture.closes.load(Ordering::Acquire), 1);
+            fixture.finish();
         }
     }
 

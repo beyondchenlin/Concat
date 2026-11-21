@@ -1009,7 +1009,10 @@ fn prepare_probe_task(
         selected: Some(selected),
         generation: None,
     };
-    native.prepare_submission(&intent)?;
+    // This isolated probe binds a native task without posting a runtime frame.
+    native
+        .prepare_submission(&intent, Ok)
+        .map_err(|error| error.to_string())?;
     native.handle(bound(
         lease,
         "task.bind",
