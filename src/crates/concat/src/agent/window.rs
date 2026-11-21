@@ -1066,7 +1066,6 @@ pub(crate) mod tests {
                 app.set_on_start(false);
                 app.window().set_size(slint::LogicalSize::new(600., 900.));
                 let agent = app.global::<AgentUi>();
-                agent.set_phone_sheet_state(2);
                 let mut status = agent.get_status();
                 status.can_send = true;
                 status.needs_model_setup = false;
@@ -1088,6 +1087,11 @@ pub(crate) mod tests {
                 chat.messages.push(message("初始最新消息"));
                 chat.publish();
                 chat.app.show().unwrap();
+                // Entering a project resets the phone to manual editing in
+                // a deferred on-start handler. Drain that transition before
+                // explicitly opening the assistant, just as a user does.
+                chat.render();
+                chat.app.global::<AgentUi>().set_phone_sheet_state(2);
                 chat.render();
                 chat
             }
