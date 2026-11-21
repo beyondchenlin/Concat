@@ -385,7 +385,12 @@ export component App inherits Window {
     /// restore rather than maximise - whichever route maximised it.
     in-out property <bool> window-maximized;
     callback window-resized();
-    changed width => { root.window-resized(); }
+    changed width => {
+        if !root.phone && root.width > 0px {
+            AgentUi.sidebar-width = AgentUi.bounded-sidebar-width(AgentUi.sidebar-width, root.width);
+        }
+        root.window-resized();
+    }
     // The height goes to the Panes global as well: the menus hung under the
     // pane buttons measure the room beneath them against it, and nothing
     // below the Window can read the Window.
@@ -874,11 +879,8 @@ export component App inherits Window {
                         // 600px floor and an 840px cap for the assistant.
                         // Calculate this on drag, not as a layout-bound max:
                         // a root-width-dependent max-width forms a layout cycle.
-                        AgentUi.sidebar-width = Math.clamp(
-                            root.sidebar-drag-start - delta, 320px,
-                            Math.max(320px,
-                                Math.min(840px,
-                                    Math.min(root.width * 0.46, root.width - 600px))));
+                        AgentUi.sidebar-width = AgentUi.bounded-sidebar-width(
+                            root.sidebar-drag-start - delta, root.width);
                     }
                 }
                 sidebar := AgentSidebar {

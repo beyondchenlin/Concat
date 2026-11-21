@@ -29,6 +29,9 @@ export component ResizeBox inherits Rectangle {
     in-out property <length> box-height: 104px;
     in property <length> min-box: 56px;
     in property <length> max-box: 520px;
+    /// A constrained composer may display less than the requested height.
+    /// Other editors keep the original fixed-height behavior.
+    in property <bool> allow-layout-shrink: false;
     /// The words' own height.
     in property <length> content-height;
     /// The words have the keyboard: the edge goes the accent.
@@ -53,7 +56,9 @@ export component ResizeBox inherits Rectangle {
         }
     }
 
-    height: root.box-height;
+    min-height: root.allow-layout-shrink ? root.min-box : root.box-height;
+    preferred-height: root.box-height;
+    max-height: root.box-height;
     border-radius: Theme.r;
     background: root.flat ? transparent : root.ground;
     border-width: root.flat ? 0px : 1px;
@@ -111,7 +116,8 @@ export component ResizeBox inherits Rectangle {
             // The area rides the corner it moves, so each move is the
             // distance from where the press was within it.
             moved => {
-                root.box-height = Math.clamp(root.box-height + (self.mouse-y - self.pressed-y),
+                root.box-height = Math.clamp(
+                    (root.allow-layout-shrink ? root.height : root.box-height) + (self.mouse-y - self.pressed-y),
                     root.min-box, root.max-box);
             }
             double-clicked => {

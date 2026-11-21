@@ -2351,10 +2351,14 @@ mod tests {
     /// control: below 6 Mb/s Media Foundation and OpenH264 sat on noise's
     /// floor, and Kvazaar starts from its estimate for ordinary pictures
     /// and takes three or four seconds to come down from it (17, 15, 13,
-    /// then 12 Mb/s a second asked for 12). On this picture at 1 Mb/s, in
-    /// two seconds, Kvazaar comes out at 91%, OpenH264 at 100% and Media
-    /// Foundation's H.264 at 103% in CBR, 83% in its VBR - measured with
-    /// the vendored FFmpeg, as each is configured here.
+    /// then 12 Mb/s a second asked for 12).
+    ///
+    /// The rate tests measure ten seconds, across multiple rate-control
+    /// windows. The first two seconds alone can overshoot for NVENC HEVC
+    /// CBR and undershoot for Media Foundation H.264 average bitrate,
+    /// before both settle near the target. Keep the same target and
+    /// tolerances over the full interval, including startup, and measure
+    /// calm footage over that same interval to check it is not padded.
     fn paint_footage(frame: &mut Frame, index: u32, grain: &mut u64) {
         fn mix(mut z: u64) -> u64 {
             z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -2390,7 +2394,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch dir");
         const KBPS: u32 = 1_000;
-        const FRAMES: u32 = 60;
+        const FRAMES: u32 = 300;
         for codec in [VideoCodec::H264, VideoCodec::Hevc] {
             if !codec.encodable() {
                 eprintln!("no {} encoder here; skipped", codec.label());
@@ -2439,7 +2443,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch dir");
         const KBPS: u32 = 1_000;
-        const FRAMES: u32 = 60;
+        const FRAMES: u32 = 300;
         let seconds = f64::from(FRAMES) / 30.0;
         for codec in [VideoCodec::H264, VideoCodec::Hevc] {
             let options = EncodeOptions {

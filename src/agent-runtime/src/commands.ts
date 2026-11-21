@@ -72,15 +72,19 @@ export interface NativeTaskInput {
   readonly networkPermit: string;
   readonly conversationId?: number;
   readonly input: string;
+  /** Native-captured editor text for display only; never model or tool authority. */
+  readonly displayText?: string;
   readonly mode: "chat" | "script" | "edit";
 }
 
 export function nativeTaskInput(value: unknown): NativeTaskInput {
   const input = argumentObject(value);
-  allowKeys(input, ["taskId", "networkPermit", "conversationId", "input", "mode"]);
+  allowKeys(input, ["taskId", "networkPermit", "conversationId", "input", "displayText", "mode"]);
   if (typeof input.taskId !== "string" || !input.taskId || input.taskId.length > 256
     || typeof input.networkPermit !== "string" || !input.networkPermit || input.networkPermit.length > 256
     || typeof input.input !== "string" || !input.input.trim() || new TextEncoder().encode(input.input).byteLength > 512 * 1024
+    || (input.displayText !== undefined && (typeof input.displayText !== "string" || !input.displayText.trim()
+      || new TextEncoder().encode(input.displayText).byteLength > 256 * 1024))
     || !["chat", "script", "edit"].includes(String(input.mode))
     || (input.conversationId !== undefined && (typeof input.conversationId !== "number" || !Number.isSafeInteger(input.conversationId) || input.conversationId < 0))) {
     throw new RuntimeRefused("native task input is invalid");

@@ -739,6 +739,223 @@ pub(crate) mod tests {
             }
         }
 
+        #[cfg(not(target_os = "android"))]
+        mod tight_approval {
+            slint::slint! {
+                import { AgentChat, AgentUi } from "../../ui/agent.slint";
+                import { ResizeBox } from "../../ui/primitives/resize-box.slint";
+                export { AgentUi }
+                export component TightApprovalWindow inherits Window {
+                    in-out property <bool> phone;
+                    in-out property <bool> fixed-only;
+                    in-out property <length> fixed-request: 104px;
+                    preferred-width: 320px; preferred-height: 600px;
+                    min-width: 0px; min-height: 0px;
+                    if !root.fixed-only: AgentChat {
+                        width: root.width; height: root.height; phone: root.phone;
+                    }
+                    if root.fixed-only: Rectangle {
+                        width: root.width; height: 60px;
+                        VerticalLayout {
+                            ResizeBox {
+                                box-height: root.fixed-request;
+                                accessible-role: groupbox;
+                                accessible-label: "固定高度输入区域";
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[derive(Clone, Copy, Debug)]
+        struct ControlGeometry {
+            bounds: Bounds,
+            visible: Bounds,
+        }
+
+        #[cfg(not(target_os = "android"))]
+        fn intersection(left: Bounds, right: Bounds) -> Bounds {
+            let x = left.x.max(right.x);
+            let y = left.y.max(right.y);
+            Bounds {
+                x,
+                y,
+                width: ((left.x + left.width).min(right.x + right.width) - x).max(0.),
+                height: (left.bottom().min(right.bottom()) - y).max(0.),
+            }
+        }
+
+        #[cfg(not(target_os = "android"))]
+        fn control_geometry(
+            window: &slint::Window,
+            label: &str,
+            role: AccessibleRole,
+        ) -> ControlGeometry {
+            let root = WindowInner::from_pub(window).window_item_rc().unwrap();
+            let mut matches = Vec::new();
+            root.visit_descendants::<()>(|item| {
+                if item.accessible_role() == role
+                    && item
+                        .accessible_string_property(AccessibleStringProperty::Label)
+                        .is_some_and(|value| value == label)
+                {
+                    matches.push(item.clone());
+                }
+                ControlFlow::Continue(())
+            });
+            assert_eq!(matches.len(), 1, "one actual control: {label}");
+            let item = &matches[0];
+            let rect = item.geometry();
+            let origin = item.map_to_window(rect.origin);
+            let bounds = Bounds {
+                x: origin.x,
+                y: origin.y,
+                width: rect.size.width,
+                height: rect.size.height,
+            };
+            let size = window.size().to_logical(window.scale_factor());
+            let mut clip = Bounds {
+                x: 0.,
+                y: 0.,
+                width: size.width,
+                height: size.height,
+            };
+            // Query the real clipping ancestors by their descendants, without
+            // assuming any component nesting or treating partial visibility as full.
+            root.visit_descendants::<()>(|ancestor| {
+                if ancestor.borrow().as_ref().clips_children()
+                    && ancestor
+                        .visit_descendants(|child| {
+                            if child.accessible_role() == role
+                                && child
+                                    .accessible_string_property(AccessibleStringProperty::Label)
+                                    .is_some_and(|value| value == label)
+                            {
+                                ControlFlow::Break(())
+                            } else {
+                                ControlFlow::Continue(())
+                            }
+                        })
+                        .is_some()
+                {
+                    let rect = ancestor.geometry();
+                    let origin = ancestor.map_to_window(rect.origin);
+                    clip = intersection(
+                        clip,
+                        Bounds {
+                            x: origin.x,
+                            y: origin.y,
+                            width: rect.size.width,
+                            height: rect.size.height,
+                        },
+                    );
+                }
+                ControlFlow::Continue(())
+            });
+            ControlGeometry {
+                bounds,
+                visible: intersection(bounds, clip),
+            }
+        }
+
+        #[cfg(not(target_os = "android"))]
+        fn fully_visible_control(
+            window: &slint::Window,
+            label: &str,
+            role: AccessibleRole,
+        ) -> Bounds {
+            let geometry = control_geometry(window, label, role);
+            eprintln!("approval control {label}: {geometry:?}");
+            assert!(
+                geometry.bounds.width > 0.
+                    && geometry.bounds.height > 0.
+                    && (geometry.visible.width - geometry.bounds.width).abs() < 1.
+                    && (geometry.visible.height - geometry.bounds.height).abs() < 1.,
+                "the entire control must be inside all real clips and the window: {label}: {geometry:?}"
+            );
+            geometry.bounds
+        }
+
+        #[cfg(not(target_os = "android"))]
+        fn render_window(window: &slint::Window) {
+            for _ in 0..3 {
+                slint::platform::update_timers_and_animations();
+                window.take_snapshot().unwrap();
+            }
+        }
+
+        #[cfg(not(target_os = "android"))]
+        fn drag_composer(window: &slint::Window, delta_y: f32) {
+            let box_bounds =
+                fully_visible_control(window, "对话输入区域", AccessibleRole::Groupbox);
+            // The production ResizeBox has a 16px corner grip. Its absolute
+            // position follows the measured allocated box, never its preference.
+            let position = slint::LogicalPosition::new(
+                box_bounds.x + box_bounds.width - 8.,
+                box_bounds.bottom() - 8.,
+            );
+            window.dispatch_event(WindowEvent::PointerMoved { position });
+            window.dispatch_event(WindowEvent::PointerPressed {
+                position,
+                button: PointerEventButton::Left,
+            });
+            let position = slint::LogicalPosition::new(position.x, position.y + delta_y);
+            window.dispatch_event(WindowEvent::PointerMoved { position });
+            window.dispatch_event(WindowEvent::PointerReleased {
+                position,
+                button: PointerEventButton::Left,
+            });
+            render_window(window);
+        }
+
+        #[cfg(not(target_os = "android"))]
+        fn click_visible_button(window: &slint::Window, label: &str) {
+            let position = fully_visible_control(window, label, AccessibleRole::Button).center();
+            window.dispatch_event(WindowEvent::PointerMoved { position });
+            window.dispatch_event(WindowEvent::PointerPressed {
+                position,
+                button: PointerEventButton::Left,
+            });
+            window.dispatch_event(WindowEvent::PointerReleased {
+                position,
+                button: PointerEventButton::Left,
+            });
+            render_window(window);
+        }
+
+        #[cfg(not(target_os = "android"))]
+        fn approval_controls(window: &slint::Window) -> [Bounds; 6] {
+            render_window(window);
+            let reject = fully_visible_control(window, "拒绝", AccessibleRole::Button);
+            let approve = fully_visible_control(window, "批准本次", AccessibleRole::Button);
+            let stop = fully_visible_control(window, "停止", AccessibleRole::Button);
+            let input = fully_visible_control(window, "对话输入区域", AccessibleRole::Groupbox);
+            let details = fully_visible_control(window, "剪辑操作详情", AccessibleRole::List);
+            let history = fully_visible_control(window, "对话记录", AccessibleRole::List);
+            assert!(
+                (reject.y - approve.y).abs() < 1. && reject.x + reject.width <= approve.x + 1.,
+                "both decisions must occupy one non-overlapping row"
+            );
+            assert!(
+                details.bottom() <= reject.y + 1.
+                    && reject.bottom() <= input.y + 1.
+                    && input.bottom() <= stop.y + 1.
+                    && history.bottom() <= details.y + 1.,
+                "details, decisions, input and stop must keep their separate usable areas"
+            );
+            assert!(
+                input.height >= 55.9 && input.height <= 150.1,
+                "allocated input respects the native minimum and user maximum: {input:?}"
+            );
+            assert!(
+                history.height >= 39.9 && details.height > 0.,
+                "history and scrollable details must both remain usable"
+            );
+            [reject, approve, stop, input, details, history]
+        }
+
         #[derive(Clone, Copy, Debug)]
         struct ScrollView {
             bounds: Bounds,
@@ -866,7 +1083,7 @@ pub(crate) mod tests {
                 assert_eq!(views.len(), 1, "one visible production transcript");
                 let view = views[0];
                 assert!(
-                    view.bounds.height > 40.,
+                    view.bounds.height >= 39.9,
                     "real transcript viewport: {view:?}"
                 );
                 view
@@ -918,6 +1135,167 @@ pub(crate) mod tests {
                 });
                 assert_eq!(found.len(), 1, "one real message body: {body}");
                 found[0]
+            }
+
+            #[cfg(not(target_os = "android"))]
+            fn prepare_pending_layout(&mut self, request_id: &str) {
+                self.desktop_layout();
+                self.app
+                    .window()
+                    .set_size(slint::LogicalSize::new(1250., 850.));
+                self.app.global::<AgentUi>().set_sidebar_width(320.);
+                self.messages = (0..40)
+                    .map(|index| message(&format!("历史单行 {index:02}")))
+                    .collect();
+                self.messages.push(message("审批之前的最新消息"));
+                self.publish();
+                let agent = self.app.global::<AgentUi>();
+                agent.set_draft("保留最大输入偏好".into());
+                let mut status = agent.get_status();
+                status.missing = "".into();
+                agent.set_status(status.clone());
+                self.render();
+                drag_composer(self.app.window(), 100.);
+                let input = fully_visible_control(
+                    self.app.window(),
+                    "对话输入区域",
+                    AccessibleRole::Groupbox,
+                );
+                assert!(
+                    (input.height - 150.).abs() < 1.,
+                    "the real corner drag must establish the maximum preference: {input:?}"
+                );
+                status.busy = true;
+                status.can_send = false;
+                status.can_stop = true;
+                status.title = "等待你批准当前工程的剪辑操作".into();
+                status.detail = "先核对完整的修改说明，当前模型任务仍在等待。"
+                    .repeat(8)
+                    .into();
+                status.has_progress = true;
+                status.progress = 0.5;
+                agent.set_status(status);
+                agent.set_tool_request_id(request_id.into());
+                agent.set_tool_summary(
+                    "逐项核对字幕、轨道和时间范围，保留原工程素材。\n"
+                        .repeat(40)
+                        .into(),
+                );
+                agent.set_tool_pending(true);
+                let call = self.app.global::<ui::AgentCallUi>();
+                call.set_allowed(true);
+                call.set_usage_policy(
+                    "当前调用保持既有授权规则，服务商按实际使用计费。"
+                        .repeat(8)
+                        .into(),
+                );
+                self.render();
+            }
+
+            #[cfg(not(target_os = "android"))]
+            fn read_single_line_history(&self) -> (String, Bounds) {
+                self.wheel(450.);
+                self.render();
+                let view = self.scroll_view().bounds;
+                // A 40px viewport can stop between whole text lines. Choose
+                // the nearest real single-line body, then bring it fully into
+                // view with user input before taking the reading measurement.
+                let (body, bounds) = self
+                    .messages
+                    .iter()
+                    .take(self.messages.len().saturating_sub(1))
+                    .filter(|message| !message.collapsible)
+                    .map(|message| {
+                        (
+                            message.body.to_string(),
+                            self.text_bounds(message.body.as_str()),
+                        )
+                    })
+                    .filter(|(_, bounds)| {
+                        bounds.height > 0. && bounds.height < (view.height - 12.).min(30.)
+                    })
+                    .min_by(|(_, left), (_, right)| {
+                        (left.y - view.y).abs().total_cmp(&(right.y - view.y).abs())
+                    })
+                    .expect("a real earlier single-line message must exist");
+                self.wheel(view.y + 6. - bounds.y);
+                self.render();
+                let anchor = self.text_bounds(&body);
+                assert!(
+                    anchor.height < 30.
+                        && (anchor.y - (view.y + 6.)).abs() < 1.
+                        && anchor.bottom() <= view.bottom(),
+                    "the real wheel must place a complete single-line anchor inside the viewport: anchor={anchor:?}, view={view:?}"
+                );
+                self.assert_latest_below_view();
+                (body, anchor)
+            }
+
+            #[cfg(not(target_os = "android"))]
+            fn wheel_details(&self, delta_y: f32) {
+                use slint::winit_030::winit::dpi::PhysicalPosition;
+                use slint::winit_030::winit::event::MouseScrollDelta;
+                let position =
+                    fully_visible_control(self.app.window(), "剪辑操作详情", AccessibleRole::List)
+                        .center();
+                let scale = f64::from(self.app.window().scale_factor());
+                let before = self.app.global::<AgentUi>().get_native_scroll_up_pending();
+                pause_transcript_follow_for_native_wheel(
+                    &self.app,
+                    self.app.window(),
+                    &mut TranscriptScrollTarget::default(),
+                    PhysicalPosition::new(
+                        f64::from(position.x) * scale,
+                        f64::from(position.y) * scale,
+                    ),
+                    &MouseScrollDelta::PixelDelta(PhysicalPosition::new(0., f64::from(delta_y))),
+                    false,
+                );
+                assert_eq!(
+                    self.app.global::<AgentUi>().get_native_scroll_up_pending(),
+                    before,
+                    "the native observer must not interpret detail scrolling as chat intent"
+                );
+                self.wheel_at(position, delta_y);
+                self.render();
+            }
+
+            fn desktop_layout(&self) {
+                self.app.set_phone(false);
+                self.app
+                    .window()
+                    .set_size(slint::LogicalSize::new(1600., 900.));
+                self.app.global::<AgentUi>().set_sidebar_open(true);
+                self.render();
+            }
+
+            fn visible_history_anchor(&self) -> (String, Bounds) {
+                self.render();
+                let view = self.scroll_view();
+                self.messages
+                    .iter()
+                    .take(self.messages.len().saturating_sub(1))
+                    .filter(|message| !message.collapsible)
+                    .find_map(|message| {
+                        let bounds = self.text_bounds(message.body.as_str());
+                        (bounds.y >= view.bounds.y && bounds.bottom() <= view.bounds.bottom())
+                            .then(|| (message.body.to_string(), bounds))
+                    })
+                    .expect("a complete earlier message must be visible for the reading assertion")
+            }
+
+            fn assert_history_anchor(&self, body: &str, before: Bounds, transition: &str) {
+                self.render();
+                let after = self.text_bounds(body);
+                let view = self.scroll_view();
+                assert!(
+                    (after.y - before.y).abs() < 1.,
+                    "history text must retain its absolute screen position during {transition}: before={before:?}, after={after:?}, view={view:?}"
+                );
+                assert!(
+                    after.y >= view.bounds.y - 1. && after.bottom() <= view.bounds.bottom() + 1.,
+                    "the chosen history text must remain visible during {transition}: text={after:?}, view={view:?}"
+                );
             }
 
             fn assert_latest_visible(&self) {
@@ -1220,6 +1598,525 @@ pub(crate) mod tests {
             });
         }
 
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn chat_pending_approval_stays_reachable_when_space_shrinks_and_restores() {
+            with_chat(|chat| {
+                chat.prepare_pending_layout("pending-resize-identity");
+                let large = approval_controls(chat.app.window());
+                let (anchor, before) = chat.read_single_line_history();
+                for (width, height) in [(900., 560.), (1250., 850.)] {
+                    chat.app
+                        .window()
+                        .set_size(slint::LogicalSize::new(width, height));
+                    let controls = approval_controls(chat.app.window());
+                    let actual = chat
+                        .app
+                        .window()
+                        .size()
+                        .to_logical(chat.app.window().scale_factor());
+                    assert!(
+                        (actual.width - width).abs() < 1. && (actual.height - height).abs() < 1.,
+                        "layout must fit the requested real window, not enlarge it: {actual:?}"
+                    );
+                    assert!(
+                        (controls[5].width - large[5].width).abs() < 1.,
+                        "fixed sidebar width must exclude normal wrapping from the anchor check"
+                    );
+                    chat.assert_history_anchor(&anchor, before, "pending approval window resize");
+                }
+                let restored = approval_controls(chat.app.window());
+                assert!(
+                    (restored[3].height - large[3].height).abs() < 1.,
+                    "restoring available space must restore the user's input preference"
+                );
+                chat.append("缩放后到达的消息不能覆盖历史阅读意图");
+                chat.assert_history_anchor(&anchor, before, "new message after resizing");
+                chat.assert_latest_below_view();
+            });
+
+            // Directly allocate the production AgentChat less space than the
+            // desktop shell. This proves the input really yields, even when
+            // the 900px desktop can satisfy its whole 150px preference.
+            std::thread::Builder::new().stack_size(32 << 20).spawn(|| {
+                let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+                let clock = Rc::new(Cell::new(Duration::from_secs(1)));
+                slint::platform::set_platform(Box::new(ChatPlatform { window, clock })).unwrap();
+                let app = tight_approval::TightApprovalWindow::new().unwrap();
+                app.window().set_size(slint::LogicalSize::new(320., 600.));
+                let agent = app.global::<tight_approval::AgentUi>();
+                agent.set_draft("收缩后继续拖动".into());
+                let mut status = agent.get_status();
+                status.can_send = true;
+                status.needs_model_setup = false;
+                status.missing = "".into();
+                agent.set_status(status.clone());
+                app.show().unwrap();
+                render_window(app.window());
+                drag_composer(app.window(), 100.);
+                let requested = fully_visible_control(app.window(), "对话输入区域", AccessibleRole::Groupbox);
+                assert!((requested.height - 150.).abs() < 1.);
+                status.busy = true;
+                status.can_send = false;
+                status.can_stop = true;
+                status.title = "等待批准".into();
+                status.detail = "空间不足时完整说明通过详情滚动阅读。".repeat(20).into();
+                agent.set_status(status);
+                agent.set_tool_request_id("tight-pending-identity".into());
+                agent.set_tool_summary("完整剪辑摘要不能挤走必要操作。\n".repeat(40).into());
+                agent.set_tool_pending(true);
+                app.window().set_size(slint::LogicalSize::new(320., 300.));
+                let compressed = approval_controls(app.window())[3];
+                assert!(compressed.height < requested.height - 1.,
+                    "the real input must shrink below its untouched preference: {compressed:?}");
+                let actual = app.window().size().to_logical(app.window().scale_factor());
+                assert!((actual.height - 300.).abs() < 1.);
+                app.window().set_size(slint::LogicalSize::new(320., 600.));
+                assert!((approval_controls(app.window())[3].height - requested.height).abs() < 1.);
+
+                // A fresh drag starts at the allocated height, so shrinking
+                // the grip does not first consume invisible preferred space.
+                app.window().set_size(slint::LogicalSize::new(320., 300.));
+                let allocated = approval_controls(app.window())[3].height;
+                drag_composer(app.window(), -10.);
+                app.window().set_size(slint::LogicalSize::new(320., 600.));
+                let after_drag = approval_controls(app.window())[3].height;
+                assert!((after_drag - (allocated - 10.).max(56.)).abs() < 1.,
+                    "a new gesture must start at the actual visible height: allocated={allocated}, restored={after_drag}");
+
+                // The same shared production component, without opting into
+                // shrink, must retain native fixed-height behavior in a tight parent.
+                app.set_fixed_only(true);
+                for requested in [104., 220.] {
+                    app.set_fixed_request(requested);
+                    render_window(app.window());
+                    let fixed = fully_visible_control(
+                        app.window(), "固定高度输入区域", AccessibleRole::Groupbox,
+                    );
+                    assert!((fixed.height - requested).abs() < 1.,
+                        "default native input remains fixed despite its 60px parent: requested={requested}, actual={fixed:?}");
+                }
+                app.hide().unwrap();
+            }).unwrap().join().unwrap();
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn chat_phone_approval_details_drag_without_deciding_or_moving_controls() {
+            std::thread::Builder::new()
+                .stack_size(32 << 20)
+                .spawn(|| {
+                    let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+                    let clock = Rc::new(Cell::new(Duration::from_secs(1)));
+                    slint::platform::set_platform(Box::new(ChatPlatform { window, clock }))
+                        .unwrap();
+                    let app = tight_approval::TightApprovalWindow::new().unwrap();
+                    app.set_phone(true);
+                    app.window().set_size(slint::LogicalSize::new(320., 480.));
+                    let agent = app.global::<tight_approval::AgentUi>();
+                    let mut status = agent.get_status();
+                    status.missing = "".into();
+                    status.needs_model_setup = false;
+                    status.busy = true;
+                    status.can_send = false;
+                    status.can_stop = true;
+                    status.title = "等待批准".into();
+                    agent.set_status(status);
+                    agent.set_tool_request_id("phone-drag-approval".into());
+                    agent.set_tool_summary(
+                        "完整剪辑摘要必须允许在手机上逐项滑动阅读。\n"
+                            .repeat(40)
+                            .into(),
+                    );
+                    agent.set_tool_pending(true);
+                    let decisions = Rc::new(RefCell::new(Vec::new()));
+                    let observed = Rc::clone(&decisions);
+                    agent.on_tool_decision_requested(move |id, approved| {
+                        observed.borrow_mut().push((id.to_string(), approved));
+                    });
+                    let stops = Rc::new(Cell::new(0));
+                    let observed = Rc::clone(&stops);
+                    agent.on_stop_requested(move || observed.set(observed.get() + 1));
+                    app.show().unwrap();
+                    let controls = approval_controls(app.window());
+                    let title_y = || {
+                        let root = WindowInner::from_pub(app.window())
+                            .window_item_rc()
+                            .unwrap();
+                        let mut positions = Vec::new();
+                        root.visit_descendants::<()>(|item| {
+                            // Include clipped text: its real position proves that
+                            // the production detail body moved under the viewport.
+                            let matches =
+                                item.downcast::<SimpleText>().is_some_and(|text| {
+                                    SimpleText::FIELD_OFFSETS
+                                        .text()
+                                        .apply_pin(text.as_pin_ref())
+                                        .get()
+                                        == "批准当前工程的剪辑操作？"
+                                }) || item.downcast::<ComplexText>().is_some_and(|text| {
+                                    ComplexText::FIELD_OFFSETS
+                                        .text()
+                                        .apply_pin(text.as_pin_ref())
+                                        .get()
+                                        == "批准当前工程的剪辑操作？"
+                                });
+                            if matches {
+                                positions.push(item.map_to_window(item.geometry().origin).y);
+                            }
+                            ControlFlow::Continue(())
+                        });
+                        assert_eq!(positions.len(), 1, "one real approval title");
+                        positions[0]
+                    };
+                    let before = title_y();
+                    let details = controls[4];
+                    let start = slint::LogicalPosition::new(
+                        details.x + details.width / 2.,
+                        details.bottom() - 12.,
+                    );
+                    app.window()
+                        .dispatch_event(WindowEvent::PointerMoved { position: start });
+                    app.window().dispatch_event(WindowEvent::PointerPressed {
+                        position: start,
+                        button: PointerEventButton::Left,
+                    });
+                    for delta in [25., 50., 75.] {
+                        app.window().dispatch_event(WindowEvent::PointerMoved {
+                            position: slint::LogicalPosition::new(start.x, start.y - delta),
+                        });
+                        render_window(app.window());
+                    }
+                    app.window().dispatch_event(WindowEvent::PointerReleased {
+                        position: slint::LogicalPosition::new(start.x, start.y - 75.),
+                        button: PointerEventButton::Left,
+                    });
+                    render_window(app.window());
+                    assert!(
+                        title_y() < before - 50.,
+                        "phone pointer dragging must scroll the actual long approval details"
+                    );
+                    assert!(
+                        decisions.borrow().is_empty() && stops.get() == 0,
+                        "reading the details must not approve, reject or stop the task"
+                    );
+                    let after = approval_controls(app.window());
+                    for index in 0..3 {
+                        assert!(
+                            (after[index].x - controls[index].x).abs() < 1.
+                                && (after[index].y - controls[index].y).abs() < 1.,
+                            "reading must leave the visible decisions and stop in place"
+                        );
+                    }
+                    click_visible_button(app.window(), "拒绝");
+                    click_visible_button(app.window(), "批准本次");
+                    click_visible_button(app.window(), "停止");
+                    assert_eq!(
+                        *decisions.borrow(),
+                        vec![
+                            ("phone-drag-approval".to_owned(), false),
+                            ("phone-drag-approval".to_owned(), true),
+                        ],
+                        "visible decision controls must retain the displayed request identity"
+                    );
+                    assert_eq!(
+                        stops.get(),
+                        1,
+                        "the visible stop must still fire exactly once"
+                    );
+                    app.hide().unwrap();
+                })
+                .unwrap()
+                .join()
+                .unwrap();
+        }
+
+        #[cfg(not(target_os = "android"))]
+        #[test]
+        fn chat_pending_details_scroll_without_moving_history_and_pointer_actions_fire_once() {
+            for decision in [Some(true), Some(false), None] {
+                with_chat(move |chat| {
+                    chat.prepare_pending_layout("pending-details-initial");
+                    chat.app
+                        .window()
+                        .set_size(slint::LogicalSize::new(900., 560.));
+                    approval_controls(chat.app.window());
+                    // Upward input inside details must not pause an otherwise
+                    // following transcript, including the raw native observer.
+                    chat.wheel_details(60.);
+                    chat.append("详情滚轮不暂停底部跟随");
+                    chat.assert_latest_visible();
+
+                    let (anchor, before) = chat.read_single_line_history();
+                    let controls = approval_controls(chat.app.window());
+                    let title = chat.overlay_text_bounds("批准当前工程的剪辑操作？", false);
+                    let reading_y = chat.scroll_view().content_y;
+                    chat.wheel_details(-180.);
+                    let scrolled_title =
+                        chat.overlay_text_bounds("批准当前工程的剪辑操作？", false);
+                    assert!(
+                        scrolled_title.y < title.y - 20.,
+                        "the actual detail content must scroll: before={title:?}, after={scrolled_title:?}"
+                    );
+                    chat.wheel_details(60.);
+                    chat.assert_history_anchor(&anchor, before, "scrolling long approval details");
+                    assert!((chat.scroll_view().content_y - reading_y).abs() < 1.);
+                    let after_scroll = approval_controls(chat.app.window());
+                    for index in 0..3 {
+                        assert!(
+                            (after_scroll[index].x - controls[index].x).abs() < 1.
+                                && (after_scroll[index].y - controls[index].y).abs() < 1.,
+                            "decision and stop controls must stay fixed outside scrolled details"
+                        );
+                    }
+                    chat.append("详情滚动后继续更新也不能恢复自动跟随");
+                    chat.assert_history_anchor(&anchor, before, "streaming after detail scrolling");
+                    chat.assert_latest_below_view();
+
+                    let app = chat.app.clone_strong();
+                    let agent = app.global::<AgentUi>();
+                    let request_id = match decision {
+                        Some(true) => "pending-details-approve",
+                        Some(false) => "pending-details-reject",
+                        None => "pending-details-stop",
+                    };
+                    agent.set_tool_request_id(request_id.into());
+                    chat.render();
+                    let reset_title = chat.overlay_text_bounds("批准当前工程的剪辑操作？", false);
+                    assert!(
+                        (reset_title.y - title.y).abs() < 1.,
+                        "a new request identity must reset only the detail scroller"
+                    );
+                    chat.assert_history_anchor(&anchor, before, "new approval identity");
+                    approval_controls(chat.app.window());
+
+                    let decisions = Rc::new(RefCell::new(Vec::new()));
+                    let observed = Rc::clone(&decisions);
+                    agent.on_tool_decision_requested(move |id, approved| {
+                        observed.borrow_mut().push((id.to_string(), approved));
+                    });
+                    let stops = Rc::new(Cell::new(0));
+                    let observed = Rc::clone(&stops);
+                    agent.on_stop_requested(move || observed.set(observed.get() + 1));
+                    let label = match decision {
+                        Some(true) => "批准本次",
+                        Some(false) => "拒绝",
+                        None => "停止",
+                    };
+                    click_visible_button(chat.app.window(), label);
+                    chat.advance(32);
+                    chat.render();
+                    if let Some(approved) = decision {
+                        assert_eq!(*decisions.borrow(), vec![(request_id.to_owned(), approved)]);
+                        assert_eq!(stops.get(), 0, "a decision must not invoke stop");
+                    } else {
+                        assert_eq!(
+                            stops.get(),
+                            1,
+                            "the real stop pointer must invoke its callback once"
+                        );
+                        assert!(
+                            decisions.borrow().is_empty(),
+                            "stop must not decide an approval"
+                        );
+                    }
+                });
+            }
+        }
+
+        #[test]
+        fn chat_desktop_sidebar_reflows_with_window_and_reopens_within_native_layout() {
+            with_chat(|chat| {
+                // Capture the native workspace's real layout callback rather
+                // than deriving editor width from the assistant's preference.
+                let workspace = Rc::new(Cell::new((0_f32, 0_f32)));
+                let measured = Rc::clone(&workspace);
+                chat.app
+                    .global::<ui::Editor>()
+                    .on_workspace_resized(move |width, height| measured.set((width, height)));
+                chat.desktop_layout();
+                let app = chat.app.clone_strong();
+                let agent = app.global::<AgentUi>();
+                let check_layout = |chat: &Chat, maximum_sidebar: f32, minimum_editor: f32| {
+                    chat.render();
+                    assert!(
+                        agent.get_sidebar_open(),
+                        "this check requires a visibly open sidebar"
+                    );
+                    let view = chat.scroll_view();
+                    let size = chat
+                        .app
+                        .window()
+                        .size()
+                        .to_logical(chat.app.window().scale_factor());
+                    let (editor_width, editor_height) = workspace.get();
+                    assert!(
+                        agent.get_sidebar_width() <= maximum_sidebar + 1.
+                            && view.bounds.width <= maximum_sidebar + 1.,
+                        "requested and rendered assistant widths must both be bounded: requested={}, view={view:?}",
+                        agent.get_sidebar_width()
+                    );
+                    assert!(
+                        editor_width >= minimum_editor && editor_height > 0.,
+                        "the actual native editor must retain its usable area: editor=({editor_width}, {editor_height}), view={view:?}"
+                    );
+                    assert!(
+                        view.bounds.x >= editor_width
+                            && view.bounds.y >= 0.
+                            && view.bounds.x + view.bounds.width <= size.width + 1.
+                            && view.bounds.bottom() <= size.height + 1.,
+                        "the rendered conversation must not overlap the editor or escape the window: view={view:?}, editor={editor_width}, window={size:?}"
+                    );
+                };
+
+                chat.app
+                    .window()
+                    .set_size(slint::LogicalSize::new(2560., 900.));
+                agent.set_sidebar_width(840.);
+                check_layout(chat, 840., 600.);
+                assert!(
+                    chat.scroll_view().bounds.width > 700.,
+                    "the fixture must really start wide"
+                );
+
+                // The old code only bounded gutter drags, so its 840px
+                // preference survived this resize and consumed the editor.
+                chat.app
+                    .window()
+                    .set_size(slint::LogicalSize::new(1250., 900.));
+                check_layout(chat, 575., 600.);
+                chat.app
+                    .window()
+                    .set_size(slint::LogicalSize::new(2560., 900.));
+                check_layout(chat, 840., 600.);
+                let open_editor_width = workspace.get().0;
+                chat.click("收起 Pi 助手");
+                chat.render();
+                assert!(!agent.get_sidebar_open());
+                assert!(
+                    workspace.get().0 > open_editor_width,
+                    "hiding the sidebar returns real space to the editor"
+                );
+                chat.click("展开 Pi 助手");
+                check_layout(chat, 840., 600.);
+
+                chat.app
+                    .window()
+                    .set_size(slint::LogicalSize::new(900., 560.));
+                // The minimum desktop supports the compact native workspace;
+                // intentionally reopening the assistant must still fit it.
+                check_layout(chat, 320., 550.);
+                chat.click("收起 Pi 助手");
+                chat.render();
+                chat.click("展开 Pi 助手");
+                check_layout(chat, 320., 550.);
+            });
+        }
+
+        #[test]
+        fn chat_history_screen_anchor_survives_task_status_and_progress_changes() {
+            with_chat(|chat| {
+                chat.desktop_layout();
+                let app = chat.app.clone_strong();
+                let agent = app.global::<AgentUi>();
+                let mut status = agent.get_status();
+                status.missing = "".into();
+                status.title = "等待输入".into();
+                status.detail = "".into();
+                agent.set_status(status.clone());
+                chat.assert_latest_visible();
+                chat.wheel(360.);
+                chat.render();
+                chat.assert_latest_below_view();
+                let (anchor, before) = chat.visible_history_anchor();
+
+                // A fixed content-y is insufficient: a disappearing status
+                // above the viewport can move every visible history line.
+                status.busy = true;
+                status.can_send = false;
+                status.can_stop = true;
+                status.title = "正在生成回复".into();
+                status.detail = "正在接收真实模型与原生工具执行结果。".into();
+                agent.set_status(status.clone());
+                chat.assert_history_anchor(&anchor, before, "task start");
+                chat.assert_latest_below_view();
+
+                status.has_progress = true;
+                status.progress = 0.25;
+                agent.set_status(status.clone());
+                chat.assert_history_anchor(&anchor, before, "progress appears");
+                status.progress = 0.75;
+                agent.set_status(status.clone());
+                chat.assert_history_anchor(&anchor, before, "progress advances");
+                status.has_progress = false;
+                agent.set_status(status.clone());
+                chat.assert_history_anchor(&anchor, before, "progress disappears");
+
+                status.busy = false;
+                status.can_send = true;
+                status.can_stop = false;
+                status.title = "等待输入".into();
+                status.detail = "".into();
+                agent.set_status(status.clone());
+                chat.assert_history_anchor(&anchor, before, "task completion");
+                chat.append("任务结束后仍不打断历史阅读");
+                chat.assert_history_anchor(&anchor, before, "completed message append");
+                chat.assert_latest_below_view();
+
+                status.busy = true;
+                status.can_send = false;
+                status.can_stop = true;
+                status.title = "继续处理".into();
+                status.detail = "任务状态正常换行也不应移动阅读位置。".repeat(3).into();
+                agent.set_status(status);
+                chat.assert_history_anchor(&anchor, before, "task restarts with wrapped status");
+                chat.append("重新开始后到达的新内容");
+                chat.assert_history_anchor(&anchor, before, "restarted task append");
+                chat.assert_latest_below_view();
+            });
+        }
+
+        #[test]
+        fn chat_history_screen_anchor_survives_streamed_model_replacements() {
+            with_chat(|chat| {
+                chat.desktop_layout();
+                let agent = chat.app.global::<AgentUi>();
+                let mut status = agent.get_status();
+                status.busy = true;
+                status.can_send = false;
+                status.can_stop = true;
+                status.missing = "".into();
+                status.title = "正在生成回复".into();
+                status.detail = "正在接收回复。".into();
+                agent.set_status(status);
+                let mut partial = message("正在输出的第一段。\n");
+                partial.pending = true;
+                chat.messages.push(partial);
+                chat.publish();
+                chat.assert_latest_visible();
+                chat.wheel(360.);
+                chat.render();
+                let (anchor, before) = chat.visible_history_anchor();
+                chat.assert_latest_below_view();
+
+                // Replace the production message model on each update, as
+                // AgentPane::publish does, while the latest body gains lines.
+                for lines in 2..=8 {
+                    chat.messages.last_mut().unwrap().body =
+                        "正在输出的新增段落。\n".repeat(lines).into();
+                    chat.publish();
+                    chat.assert_history_anchor(&anchor, before, "streamed text growth");
+                    chat.assert_latest_below_view();
+                }
+                chat.messages.last_mut().unwrap().pending = false;
+                chat.publish();
+                chat.assert_history_anchor(&anchor, before, "streamed message completion");
+                chat.append("后续消息到达时仍保持历史阅读位置。");
+                chat.assert_history_anchor(&anchor, before, "following message append");
+                chat.assert_latest_below_view();
+            });
+        }
+
         #[test]
         fn chat_layout_clamp_does_not_resume_but_user_scroll_to_end_does() {
             with_chat(|chat| {
@@ -1293,6 +2190,7 @@ pub(crate) mod tests {
                 chat.publish();
                 chat.render();
                 let before = chat.scroll_view();
+                let (anchor, anchor_bounds) = chat.visible_history_anchor();
                 chat.click("展开完整内容");
                 chat.render();
                 let expanded = chat.scroll_view();
@@ -1304,7 +2202,13 @@ pub(crate) mod tests {
                     (expanded.content_y - before.content_y).abs() < 1.,
                     "expanding history must keep its reading position"
                 );
+                chat.assert_history_anchor(&anchor, anchor_bounds, "history expansion");
                 chat.append("展开历史时到达的最新消息");
+                chat.assert_history_anchor(
+                    &anchor,
+                    anchor_bounds,
+                    "append after history expansion",
+                );
                 chat.assert_latest_below_view();
                 chat.wheel(-100_000.);
                 chat.assert_latest_visible();
@@ -1314,7 +2218,11 @@ pub(crate) mod tests {
                     chat.scroll_view().content_height < expanded.content_height,
                     "the real history row must collapse"
                 );
+                // Collapsing content can legitimately clamp the offset.
+                // Once that settles, later arrivals must not move the reader.
+                let (anchor, anchor_bounds) = chat.visible_history_anchor();
                 chat.append(&"收起历史后仍保留阅读选择。\n".repeat(12));
+                chat.assert_history_anchor(&anchor, anchor_bounds, "append after history collapse");
                 chat.assert_latest_below_view();
             });
         }

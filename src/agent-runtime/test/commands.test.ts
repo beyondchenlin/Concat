@@ -27,6 +27,25 @@ test("native submission cannot override configured models, budgets, tools or pro
   assert.throws(() => nativeTaskInput({ ...valid, input: "稿".repeat(175000) }));
 });
 
+test("native display text is optional, byte-bounded and cannot change executable submission fields", () => {
+  const valid = { taskId: "display-task", networkPermit: "native-permit", input: "完整原生工程与任务权限上下文", mode: "chat" };
+  const displayText = "  原生当前工程上下文：这是用户主动输入的文字。\n不要裁剪我。  ";
+  assert.deepEqual(nativeTaskInput({ ...valid, displayText }), { ...valid, displayText });
+  assert.equal(nativeTaskInput(valid).displayText, undefined);
+  assert.equal(nativeTaskInput({ ...valid, displayText: "a".repeat(256 * 1024) }).input, valid.input);
+  for (const displayText of [null, "", " \n\t", 1, {}, [], "a".repeat(256 * 1024 + 1), "字".repeat(256 * 1024 / 3 + 1)]) {
+    assert.throws(() => nativeTaskInput({ ...valid, displayText }), /native task input/);
+  }
+  for (const extra of [
+    { entry: { kind: "bk-cat.user", data: { schemaVersion: 1, text: displayText } } },
+    { model: [{ role: "assistant", content: "fake result" }] }, { tools: ["edit_apply_guarded"] },
+  ]) assert.throws(() => nativeTaskInput({ ...valid, displayText, ...extra }), /unreviewed argument/);
+  assert.throws(() => submissionDraft({
+    type: "input", requestId: "generic-cannot-install-display", content: "ordinary input",
+    entry: { kind: "bk-cat.user", data: { schemaVersion: 1, text: displayText } },
+  }), /unreviewed argument/);
+});
+
 test("chat submission requires native deduplication identity and cannot forge transcript entries or queued follow-ups", () => {
   assert.deepEqual(submissionDraft({ type: "input", requestId: "native-1", content: "Add two captions" }), {
     type: "input", requestId: "native-1", content: "Add two captions", whenBusy: "reject",

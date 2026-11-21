@@ -9,7 +9,7 @@ use concat_agent::configuration::{ConfigurationSnapshot, ConfigurationStore};
 use concat_agent::conversations::{
     ConversationBindings, inspect_latest, inspect_project_conversations,
 };
-use concat_agent::credentials::platform_store;
+use concat_agent::credentials::{CredentialStore, platform_store};
 use concat_agent::network::{ModelNetwork, ModelRequest, runtime_configuration};
 use concat_agent::operations::Invocation;
 use concat_agent::scripts::{ScriptStore, VersionBinding};
@@ -78,6 +78,62 @@ pub(crate) struct SubmissionIntent {
     pub generation: Option<GenerationRequest>,
 }
 
+impl SubmissionIntent {
+    /// Display text is captured before native context is added. It is metadata
+    /// on the same original Pi input entry, never a second executable request.
+    fn runtime_payload(&self, input: &str, permit: &str, conversation: Option<u64>) -> Value {
+        let mut payload = json!({
+            "method": "runtime.submit", "taskId": self.id, "networkPermit": permit,
+            "input": input, "mode": self.mode.as_str(),
+        });
+        // Internal callers predating display metadata have an empty UI draft.
+        // Their complete model input remains the compatible display fallback.
+        if !self.ui_draft.trim().is_empty() {
+            payload["displayText"] = json!(self.ui_draft);
+        }
+        if let Some(conversation) = conversation {
+            payload["conversationId"] = json!(conversation);
+        }
+        payload
+    }
+}
+
+/// Only local input bounds are recoverable. Ownership, project, storage and
+/// transport failures retain the existing fail-closed lifecycle.
+#[derive(Debug)]
+pub(crate) enum SubmissionError {
+    RejectedInput(&'static str),
+    Failed(String),
+}
+
+impl std::fmt::Display for SubmissionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::RejectedInput(message) => message,
+            Self::Failed(message) => message,
+        })
+    }
+}
+
+impl From<String> for SubmissionError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
+}
+
+impl From<&str> for SubmissionError {
+    fn from(message: &str) -> Self {
+        Self::Failed(message.to_owned())
+    }
+}
+
+struct PreparedInput {
+    project: CurrentProject,
+    snapshot: ConfigurationSnapshot,
+    input: String,
+    conversation: Option<u64>,
+}
+
 #[derive(Clone)]
 struct AuthorizedTask {
     id: String,
@@ -121,9 +177,18 @@ impl NativeTasks {
 
     /// Worker-only. No authority is derived from a page's proposed model or
     /// script version. The caller has already consumed the native fee action.
-    pub(crate) fn prepare(&self, intent: &SubmissionIntent) -> Result<Value, String> {
-        if intent.input.trim().is_empty() || intent.input.len() > 256 * 1024 {
-            return Err("请输入有效内容，每次请求最多256千字节。".into());
+    pub(crate) fn prepare<T>(
+        &self,
+        intent: &SubmissionIntent,
+        encode: impl FnOnce(Value) -> Result<T, SubmissionError>,
+    ) -> Result<T, SubmissionError> {
+        if intent.input.trim().is_empty()
+            || intent.input.len() > 256 * 1024
+            || intent.ui_draft.len() > 256 * 1024
+        {
+            return Err(SubmissionError::RejectedInput(
+                "请输入有效内容，每次请求最多256千字节。",
+            ));
         }
         if self.task.lock().map_err(|_| "任务状态不可用。")?.is_some() {
             return Err("已有任务正在执行，请等待完成或停止后重新连接。".into());
@@ -218,9 +283,6 @@ impl NativeTasks {
                 intent.mode.authority_instructions(),
                 input
             );
-            if input.len() > 512 * 1024 {
-                return Err("所选文案与请求合计超过本次模型输入上限。".into());
-            }
             let existing = if intent.mode == TaskMode::Script {
                 None
             } else {
@@ -234,23 +296,44 @@ impl NativeTasks {
             };
             Ok((input, existing))
         })?;
-        // The location lock covers local identity/history work only. Do not
-        // hold it while accessing a system vault or issuing network authority.
+        // The location lock covers local identity/history work only. Encode
+        // the complete transport frame before opening a vault or issuing any
+        // model authority, and send those exact admitted bytes later.
+        self.admit_prepared(
+            intent,
+            PreparedInput {
+                project: current,
+                snapshot,
+                input,
+                conversation: existing,
+            },
+            encode,
+            || platform_store().map_err(|error| error.to_string()),
+        )
+    }
+
+    fn admit_prepared<T>(
+        &self,
+        intent: &SubmissionIntent,
+        prepared: PreparedInput,
+        encode: impl FnOnce(Value) -> Result<T, SubmissionError>,
+        credentials: impl FnOnce() -> Result<Arc<dyn CredentialStore>, String>,
+    ) -> Result<T, SubmissionError> {
+        if prepared.input.len() > 512 * 1024 {
+            return Err(SubmissionError::RejectedInput(
+                "所选文案与请求合计超过本次模型输入上限，请缩短内容后重试。",
+            ));
+        }
+        let permit = random_capability()?;
+        let payload = intent.runtime_payload(&prepared.input, &permit, prepared.conversation);
+        let encoded = encode(payload)?;
         let network = Arc::new(ModelNetwork::authorize(
             Arc::clone(&self.bridge.owner),
             self.bridge.token.clone(),
             self.store.clone(),
-            snapshot,
-            platform_store().map_err(|error| error.to_string())?,
+            prepared.snapshot,
+            credentials()?,
         )?);
-        let permit = random_capability()?;
-        let payload = json!({"method":"runtime.submit","taskId":intent.id,"networkPermit":permit,
-            "input":input,"mode":intent.mode.as_str(),
-        });
-        let mut payload = payload;
-        if let Some(conversation) = existing {
-            payload["conversationId"] = json!(conversation);
-        }
         let mut task = self.task.lock().map_err(|_| "任务状态不可用。")?;
         if task.is_some() {
             return Err("已有任务进入执行，本次请求未发送。".into());
@@ -259,15 +342,15 @@ impl NativeTasks {
         *task = Some(AuthorizedTask {
             id: intent.id.clone(),
             permit,
-            project: current,
+            project: prepared.project,
             mode: intent.mode,
             selected: intent.selected.clone(),
-            expected_conversation: existing,
+            expected_conversation: prepared.conversation,
             conversation: None,
             changed_by_native_tool: false,
             network,
         });
-        Ok(payload)
+        Ok(encoded)
     }
 
     /// The original runtime binds a real Pi conversation before submit can resume
@@ -684,6 +767,172 @@ pub(crate) mod tests {
                 .authority_instructions()
                 .contains("edit_apply_guarded")
         );
+    }
+
+    #[test]
+    fn user_display_metadata_keeps_the_complete_native_model_input_and_task_binding() {
+        let display = "  请保留换行\n用户要求：这是我输入的正文。  ";
+        let wrapped = format!(
+            "原生当前工程上下文：{{\"projectId\":\"{PROJECT}\",\"expectedSession\":17,\"expectedRevision\":3}}\n任务权限：只读。\n{display}"
+        );
+        for mode in [TaskMode::Chat, TaskMode::Script, TaskMode::Edit] {
+            let mut intent = SubmissionIntent {
+                id: TASK.into(),
+                project: CurrentProject {
+                    project_id: PROJECT.into(),
+                    path: "isolated-project".into(),
+                    session_id: 17,
+                    revision: 3,
+                },
+                mode,
+                input: display.into(),
+                ui_draft: display.into(),
+                reference_keys: vec![],
+                selected: None,
+                generation: None,
+            };
+            let payload = intent.runtime_payload(&wrapped, PERMIT, Some(CONVERSATION));
+            assert_eq!(payload["input"], wrapped);
+            assert_eq!(payload["displayText"], display);
+            assert_eq!(payload["taskId"], TASK);
+            assert_eq!(payload["networkPermit"], PERMIT);
+            assert_eq!(payload["mode"], mode.as_str());
+            assert_eq!(payload["conversationId"], CONVERSATION);
+            for legacy_draft in ["", " \n\t"] {
+                intent.ui_draft = legacy_draft.into();
+                let legacy = intent.runtime_payload(&wrapped, PERMIT, None);
+                assert!(legacy.get("displayText").is_none());
+                assert!(legacy.get("conversationId").is_none());
+                assert_eq!(legacy["input"], wrapped);
+            }
+        }
+    }
+
+    #[test]
+    fn oversized_user_display_is_rejected_before_another_task_or_credential_access() {
+        let fixture = Fixture::new(TaskMode::Chat, None);
+        let intent = SubmissionIntent {
+            id: "not-admitted".into(),
+            project: fixture.project(),
+            mode: TaskMode::Chat,
+            input: "valid short model input".into(),
+            ui_draft: "字".repeat(256 * 1024 / 3 + 1),
+            reference_keys: vec![],
+            selected: None,
+            generation: None,
+        };
+        let reads = fixture.credentials.reads.load(Ordering::SeqCst);
+        assert_eq!(
+            fixture.tasks.prepare(&intent, Ok).unwrap_err().to_string(),
+            "请输入有效内容，每次请求最多256千字节。"
+        );
+        assert_eq!(fixture.credentials.reads.load(Ordering::SeqCst), reads);
+        assert_eq!(
+            fixture.tasks.task.lock().unwrap().as_ref().unwrap().id,
+            TASK
+        );
+        fixture.network.check_current().unwrap();
+    }
+
+    #[test]
+    fn complete_frame_budget_precedes_vault_authority_and_allows_valid_retry() {
+        let fixture = Fixture::new(TaskMode::Chat, None);
+        let project = fixture.project();
+        let snapshot = fixture.tasks.startup.lock().unwrap().clone().unwrap();
+        fixture.tasks.abandon();
+        let original_reads = fixture.credentials.reads.load(Ordering::SeqCst);
+        let vault_opens = AtomicUsize::new(0);
+        let draft = "\u{1}".repeat(200_000);
+        let mut intent = SubmissionIntent {
+            id: "bounded-native-input".into(),
+            project: project.clone(),
+            mode: TaskMode::Chat,
+            input: draft.clone(),
+            ui_draft: draft,
+            reference_keys: vec![],
+            selected: None,
+            generation: None,
+        };
+        let encode = |payload| {
+            crate::embedded::encode_frame(
+                "actual-component-with-complete-envelope",
+                json!({"id":format!("native:{}", u64::MAX),"payload":payload}),
+            )
+            .map_err(SubmissionError::from)
+        };
+        let error = fixture
+            .tasks
+            .admit_prepared(
+                &intent,
+                PreparedInput {
+                    project: project.clone(),
+                    snapshot: snapshot.clone(),
+                    input: format!("原生完整上下文\n{}", intent.input),
+                    conversation: None,
+                },
+                encode,
+                || {
+                    vault_opens.fetch_add(1, Ordering::SeqCst);
+                    Ok(fixture.credentials.clone())
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(error, SubmissionError::RejectedInput(_)));
+        assert_eq!(vault_opens.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            fixture.credentials.reads.load(Ordering::SeqCst),
+            original_reads
+        );
+        assert!(fixture.tasks.task.lock().unwrap().is_none());
+        assert!(fixture.tasks.network.lock().unwrap().is_none());
+        assert_eq!(
+            fixture.bridge.status().unwrap().phase,
+            concat_agent::Phase::Ready
+        );
+
+        intent.input = "请解释当前工程，并保留我的换行。\n第二行。".into();
+        intent.ui_draft = intent.input.clone();
+        let full_input = format!("原生完整上下文\n{}", intent.input);
+        let encoded = fixture
+            .tasks
+            .admit_prepared(
+                &intent,
+                PreparedInput {
+                    project,
+                    snapshot,
+                    input: full_input.clone(),
+                    conversation: None,
+                },
+                encode,
+                || {
+                    vault_opens.fetch_add(1, Ordering::SeqCst);
+                    Ok(fixture.credentials.clone())
+                },
+            )
+            .unwrap();
+        let frame: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(frame["payload"]["input"], full_input);
+        assert_eq!(frame["payload"]["displayText"], intent.ui_draft);
+        assert_eq!(frame["id"], format!("native:{}", u64::MAX));
+        assert_eq!(vault_opens.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            fixture.credentials.reads.load(Ordering::SeqCst),
+            original_reads + 1
+        );
+        assert_eq!(
+            fixture.tasks.task.lock().unwrap().as_ref().unwrap().id,
+            intent.id
+        );
+        fixture
+            .tasks
+            .network
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .check_current()
+            .unwrap();
+        fixture.tasks.abandon();
     }
 
     struct Directory(PathBuf);

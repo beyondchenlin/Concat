@@ -266,14 +266,15 @@ impl NativeSession {
 
     /// A page's ready event cannot bypass the native completion of an explicit
     /// discard. Writable recovery storage alone never admits a new model task.
-    pub(crate) fn prepare_submission(
+    pub(crate) fn prepare_submission<T>(
         &self,
         intent: &super::tasks::SubmissionIntent,
-    ) -> Result<Value, String> {
+        encode: impl FnOnce(Value) -> Result<T, super::tasks::SubmissionError>,
+    ) -> Result<T, super::tasks::SubmissionError> {
         if !self.state()?.execution_ready() {
             return Err("原生会话恢复核验尚未完成，未签发模型任务许可。".into());
         }
-        self.tasks.prepare(intent)
+        self.tasks.prepare(intent, encode)
     }
 
     fn check_bound(&self, payload: &Value) -> Result<(), String> {
@@ -1886,8 +1887,9 @@ mod tests {
                 generation: None,
             };
             assert!(
-                next.prepare_submission(&intent)
+                next.prepare_submission(&intent, Ok)
                     .unwrap_err()
+                    .to_string()
                     .contains("恢复核验")
             );
             let database = next
@@ -1950,8 +1952,9 @@ mod tests {
                 assert!(result.is_err(), "{mutation}");
                 assert!(!next.state().unwrap().execution_ready());
                 assert!(
-                    next.prepare_submission(&intent)
+                    next.prepare_submission(&intent, Ok)
                         .unwrap_err()
+                        .to_string()
                         .contains("恢复核验")
                 );
             }

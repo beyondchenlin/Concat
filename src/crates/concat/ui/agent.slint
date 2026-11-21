@@ -11,7 +11,7 @@ import { Focus } from "util.slint";
 import { Button } from "primitives/modal.slint";
 import { ResizeBox } from "primitives/resize-box.slint";
 import { SectionTabs } from "primitives/section-tabs.slint";
-import { Pane, PaneHeader } from "workspace/pane.slint";
+import { Pane, PaneHeader, PaneScroll } from "workspace/pane.slint";
 import { SourcePreview } from "workspace/media-pane.slint";
 
 export enum AgentView { chat, editor, script }
@@ -64,6 +64,12 @@ export global AgentUi {
     // Only the assistant rail is resizable; the original editor dock is unchanged.
     // Keep the editor dominant at startup; the user can widen the rail with its gutter.
     in-out property <length> sidebar-width: 420px;
+    // One policy for direct gutter drags and later window resizes.
+    // Called on input/size events rather than bound into layout constraints.
+    public pure function bounded-sidebar-width(requested: length, available: length) -> length {
+        return Math.clamp(requested, 320px,
+            Math.max(320px, Math.min(840px, Math.min(available * 0.46, available - 600px))));
+    }
     in-out property <string> draft;
     in-out property <int> draft-cursor;
     in-out property <bool> script-picker;
@@ -311,6 +317,14 @@ export component AgentChat inherits Rectangle {
     private property <int> native-permission-mode: AgentUi.tool-mode;
     changed native-permission-mode => { permission-picker.current = self.native-permission-mode; }
     private property <bool> helping: root.send-help && AgentUi.draft != "" && !AgentUi.status.busy;
+    private property <bool> has-activity: AgentUi.tool-pending
+        || AgentUi.status.busy || AgentUi.status.has-progress
+        || (AgentUi.status.can-send && AgentUi.status.title == "操作未执行")
+        || AgentUi.status.error != "" || AgentUi.status.missing != ""
+        || AgentUi.status.recovery-summary != ""
+        || (!root.helping && (AgentUi.status.can-review || AgentUi.status.can-continue
+            || AgentUi.status.can-connect || AgentUi.status.can-discard
+            || AgentCallUi.can-authorize || AgentCallUi.allowed));
 
     function send-draft() {
         if AgentUi.attachment-pending || !AgentUi.status.can-send {
@@ -344,65 +358,6 @@ export component AgentChat inherits Rectangle {
         if root.phone: HorizontalLayout {
             height: 28px; alignment: end;
             IconButton { glyph: Glyph.settings; label: "模型设置"; enabled: !AgentSettingsUi.busy; clicked => { AgentSettingsUi.open-requested(); } }
-        }
-        // Keep recovery, failures and explicit call authorization visible.
-        if AgentUi.status.busy || (AgentUi.status.can-send && AgentUi.status.title == "操作未执行"): Text {
-            text: AgentUi.status.title + (AgentUi.status.detail == "" ? "" : " · " + AgentUi.status.detail);
-            color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap;
-        }
-        if AgentUi.status.has-progress: Rectangle {
-            height: 4px; border-radius: 2px; background: Theme.field;
-            Rectangle { width: parent.width * Math.clamp(AgentUi.status.progress, 0, 1); height: parent.height; border-radius: 2px; background: Theme.accent; }
-        }
-        if AgentUi.status.error != "": VerticalLayout {
-            spacing: 4px;
-            Text {
-                text: AgentUi.status.error; color: Theme.danger; font-size: Theme.fs; wrap: word-wrap;
-            }
-            if AgentUi.status.error == "模型服务未接受当前密钥（401）。"
-                || AgentUi.status.error == "模型账户余额或计费额度不足（402）。"
-                || AgentUi.status.error == "模型服务拒绝当前账户或模型访问权限（403）。": HorizontalLayout {
-                spacing: 6px;
-                Text {
-                    text: AgentUi.status.error == "模型服务未接受当前密钥（401）。"
-                        ? "请核对当前服务密钥及模型配置。"
-                        : AgentUi.status.error == "模型账户余额或计费额度不足（402）。"
-                            ? "请检查模型服务账户的余额和计费额度。"
-                            : "请检查当前账户是否拥有所选模型的访问权限。";
-                    color: Theme.fg-muted; font-size: Theme.fs-sm;
-                    wrap: word-wrap; horizontal-stretch: 1;
-                }
-                Button { label: "检查模型"; clicked => { AgentSettingsUi.open-requested(); } }
-            }
-            if AgentUi.status.error == "当前工程标识尚未保存或已改变，文案操作已停止，请重新打开工程。": HorizontalLayout {
-                spacing: 6px;
-                Text {
-                    text: "保存后重新打开工程，再连接智能会话。";
-                    color: Theme.fg-muted; font-size: Theme.fs-sm;
-                    wrap: word-wrap; horizontal-stretch: 1;
-                }
-                if AgentUi.status.can-stop: Button {
-                    label: "停止会话"; clicked => { AgentUi.stop-requested(); }
-                }
-            }
-        }
-        if AgentUi.status.missing != "": Text {
-            text: AgentUi.status.missing; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap;
-        }
-        if AgentUi.status.recovery-summary != "": Text {
-            text: AgentUi.status.recovery-summary; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap;
-        }
-        if !root.helping && (AgentUi.status.can-review || AgentUi.status.can-continue || AgentUi.status.can-connect || AgentUi.status.can-discard): HorizontalLayout {
-            spacing: 4px; alignment: start;
-            if AgentUi.status.can-review: Button { label: "核对工程"; clicked => { AgentUi.review-requested(); } }
-            if AgentUi.status.can-continue: Button { label: "确认继续"; clicked => { AgentUi.continue-requested(); } }
-            if AgentUi.status.can-connect: Button { label: "连接会话"; clicked => { AgentUi.connect-requested(); } }
-            if AgentUi.status.can-discard: Button { label: "放弃任务"; clicked => { AgentUi.discard-requested(); } }
-        }
-        if !root.helping && (AgentCallUi.can-authorize || AgentCallUi.allowed): HorizontalLayout {
-            spacing: 4px;
-            Text { text: AgentCallUi.usage-policy; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap; horizontal-stretch: 1; }
-            Button { label: AgentCallUi.allowed ? "撤回授权" : "允许调用"; enabled: AgentCallUi.can-authorize || AgentCallUi.allowed; clicked => { AgentCallUi.authorize-requested(); } }
         }
         side-transcript := Flickable {
             vertical-stretch: 1; min-height: 40px;
@@ -486,6 +441,119 @@ export component AgentChat inherits Rectangle {
                                 root.expanded-message-index = root.expanded-message-index == index ? -1 : index;
                             }
                         }
+                    }
+                }
+            }
+        }
+        // The history stays first. Transient details give up space before
+        // decisions or the composer; their one scroller owns its wheel events.
+        if root.has-activity: Rectangle {
+            min-height: activity-layout.min-height;
+            preferred-height: activity-layout.preferred-height;
+            max-height: activity-layout.preferred-height;
+            vertical-stretch: 0;
+            border-radius: Theme.r;
+            background: AgentUi.tool-pending ? Theme.well : transparent;
+            border-width: AgentUi.tool-pending ? 1px : 0px;
+            border-color: Theme.accent;
+            activity-layout := VerticalLayout {
+                padding: AgentUi.tool-pending ? 8px : 0px;
+                spacing: 6px;
+                activity-details := PaneScroll {
+                    finger: root.phone;
+                    // A complete native action row must remain scrollable into view.
+                    min-height: Math.max(28px, Theme.fs-sm * 1.4);
+                    preferred-height: Math.max(self.min-height, Math.min(156px, activity-copy.preferred-height));
+                    max-height: self.preferred-height;
+                    vertical-stretch: 0;
+                    accessible-role: list;
+                    accessible-label: AgentUi.tool-pending ? "剪辑操作详情" : "会话状态详情";
+                    private property <string> request-identity: AgentUi.tool-request-id;
+                    changed request-identity => { self.reset-scroll(); }
+                    activity-copy := VerticalLayout {
+                        spacing: 6px;
+                        if AgentUi.tool-pending: VerticalLayout {
+                            spacing: 6px;
+                            Text {
+                                text: "批准当前工程的剪辑操作？";
+                                color: Theme.fg; font-size: Theme.fs;
+                                font-weight: Theme.weight-title;
+                            }
+                            Text {
+                                text: AgentUi.tool-summary; color: Theme.fg-muted;
+                                font-size: Theme.fs-sm; wrap: word-wrap;
+                            }
+                        }
+                        if AgentUi.status.busy || (AgentUi.status.can-send && AgentUi.status.title == "操作未执行"): Text {
+                            text: AgentUi.status.title + (AgentUi.status.detail == "" ? "" : " · " + AgentUi.status.detail);
+                            color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap;
+                        }
+                        if AgentUi.status.has-progress: Rectangle {
+                            height: 4px; border-radius: 2px; background: Theme.field;
+                            Rectangle { width: parent.width * Math.clamp(AgentUi.status.progress, 0, 1); height: parent.height; border-radius: 2px; background: Theme.accent; }
+                        }
+                        if AgentUi.status.error != "": VerticalLayout {
+                            spacing: 4px;
+                            Text {
+                                text: AgentUi.status.error; color: Theme.danger; font-size: Theme.fs; wrap: word-wrap;
+                            }
+                            if AgentUi.status.error == "模型服务未接受当前密钥（401）。"
+                                || AgentUi.status.error == "模型账户余额或计费额度不足（402）。"
+                                || AgentUi.status.error == "模型服务拒绝当前账户或模型访问权限（403）。": HorizontalLayout {
+                                spacing: 6px;
+                                Text {
+                                    text: AgentUi.status.error == "模型服务未接受当前密钥（401）。"
+                                        ? "请核对当前服务密钥及模型配置。"
+                                        : AgentUi.status.error == "模型账户余额或计费额度不足（402）。"
+                                            ? "请检查模型服务账户的余额和计费额度。"
+                                            : "请检查当前账户是否拥有所选模型的访问权限。";
+                                    color: Theme.fg-muted; font-size: Theme.fs-sm;
+                                    wrap: word-wrap; horizontal-stretch: 1;
+                                }
+                                Button { label: "检查模型"; clicked => { AgentSettingsUi.open-requested(); } }
+                            }
+                            if AgentUi.status.error == "当前工程标识尚未保存或已改变，文案操作已停止，请重新打开工程。": HorizontalLayout {
+                                spacing: 6px;
+                                Text {
+                                    text: "保存后重新打开工程，再连接智能会话。";
+                                    color: Theme.fg-muted; font-size: Theme.fs-sm;
+                                    wrap: word-wrap; horizontal-stretch: 1;
+                                }
+                                if AgentUi.status.can-stop: Button {
+                                    label: "停止会话"; clicked => { AgentUi.stop-requested(); }
+                                }
+                            }
+                        }
+                        if AgentUi.status.missing != "": Text {
+                            text: AgentUi.status.missing; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap;
+                        }
+                        if AgentUi.status.recovery-summary != "": Text {
+                            text: AgentUi.status.recovery-summary; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap;
+                        }
+                        if !root.helping && (AgentUi.status.can-review || AgentUi.status.can-continue || AgentUi.status.can-connect || AgentUi.status.can-discard): HorizontalLayout {
+                            spacing: 4px; alignment: start;
+                            if AgentUi.status.can-review: Button { label: "核对工程"; clicked => { AgentUi.review-requested(); } }
+                            if AgentUi.status.can-continue: Button { label: "确认继续"; clicked => { AgentUi.continue-requested(); } }
+                            if AgentUi.status.can-connect: Button { label: "连接会话"; clicked => { AgentUi.connect-requested(); } }
+                            if AgentUi.status.can-discard: Button { label: "放弃任务"; clicked => { AgentUi.discard-requested(); } }
+                        }
+                        if !root.helping && (AgentCallUi.can-authorize || AgentCallUi.allowed): HorizontalLayout {
+                            spacing: 4px;
+                            Text { text: AgentCallUi.usage-policy; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap; horizontal-stretch: 1; }
+                            Button { label: AgentCallUi.allowed ? "撤回授权" : "允许调用"; enabled: AgentCallUi.can-authorize || AgentCallUi.allowed; clicked => { AgentCallUi.authorize-requested(); } }
+                        }
+                    }
+                }
+                // Keep the identity-bound decisions outside the scrolled text.
+                if AgentUi.tool-pending: HorizontalLayout {
+                    height: 28px; spacing: 6px;
+                    ApprovalDecisionButton {
+                        label: "拒绝"; request-id: AgentUi.tool-request-id; approve: false;
+                        decided(request-id, approve) => { AgentUi.tool-decision-requested(request-id, approve); }
+                    }
+                    ApprovalDecisionButton {
+                        label: "批准本次"; request-id: AgentUi.tool-request-id; approve: true;
+                        decided(request-id, approve) => { AgentUi.tool-decision-requested(request-id, approve); }
                     }
                 }
             }
@@ -590,47 +658,6 @@ export component AgentChat inherits Rectangle {
                 if AgentCallUi.allowed && !AgentUi.status.can-send: Button { label: "撤回授权"; clicked => { AgentCallUi.authorize-requested(); } }
             }
         }
-        // A guarded edit is approved beside the prompt, where it is read.
-        // A long batch can be inspected by scrolling its complete plan.
-        if AgentUi.tool-pending: Rectangle {
-            min-height: approval-layout.preferred-height;
-            border-radius: Theme.r;
-            background: Theme.well;
-            border-width: 1px;
-            border-color: Theme.accent;
-            approval-layout := VerticalLayout {
-                padding: 8px; spacing: 6px;
-                Text {
-                    text: "批准当前工程的剪辑操作？";
-                    color: Theme.fg; font-size: Theme.fs;
-                    font-weight: Theme.weight-title;
-                }
-                Flickable {
-                    height: Math.min(156px, approval-summary.preferred-height);
-                    content-width: self.width;
-                    content-height: approval-summary.preferred-height;
-                    approval-summary := Text {
-                        width: parent.width;
-                        height: self.preferred-height;
-                        text: AgentUi.tool-summary;
-                        color: Theme.fg-muted;
-                        font-size: Theme.fs-sm;
-                        wrap: word-wrap;
-                    }
-                }
-                HorizontalLayout {
-                    spacing: 6px;
-                    ApprovalDecisionButton {
-                        label: "拒绝"; request-id: AgentUi.tool-request-id; approve: false;
-                        decided(request-id, approve) => { AgentUi.tool-decision-requested(request-id, approve); }
-                    }
-                    ApprovalDecisionButton {
-                        label: "批准本次"; request-id: AgentUi.tool-request-id; approve: true;
-                        decided(request-id, approve) => { AgentUi.tool-decision-requested(request-id, approve); }
-                    }
-                }
-            }
-        }
         if root.confirm-full-access: Rectangle {
             min-height: full-warning-layout.preferred-height;
             border-radius: Theme.r;
@@ -666,7 +693,10 @@ export component AgentChat inherits Rectangle {
             }
         }
         composer := Rectangle {
-            min-height: composer-layout.preferred-height; max-height: composer-layout.preferred-height;
+            min-height: composer-layout.min-height;
+            preferred-height: composer-layout.preferred-height;
+            max-height: composer-layout.preferred-height;
+            vertical-stretch: 0;
             background: Theme.well; border-radius: Theme.r; border-width: 1px;
             // Keep the compose area quiet even while typing.
             border-color: Theme.line;
@@ -674,6 +704,9 @@ export component AgentChat inherits Rectangle {
                 padding: 5px; spacing: 2px;
                 side-prompt-box := ResizeBox {
                     box-height: 66px; min-box: 56px; max-box: 150px; flat: true;
+                    allow-layout-shrink: true;
+                    accessible-role: groupbox;
+                    accessible-label: "对话输入区域";
                     content-height: side-prompt.preferred-height; focused: side-prompt.has-focus;
                     side-prompt := TextInput {
                         x: 0px; y: side-prompt-box.pad-y;

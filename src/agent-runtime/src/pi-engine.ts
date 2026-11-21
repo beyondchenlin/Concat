@@ -207,7 +207,14 @@ async function runOriginal(
         gate.assertReady(lease);
         nativeTask.active = { ...input, conversationId: conversation.id };
         gate.authorizeNetwork(lease, input.networkPermit);
-        const submission = await conversation.submit({ type: "input", requestId: input.taskId, content: input.input, whenBusy: "reject" }, context);
+        const submission = await conversation.submit({
+          type: "input", requestId: input.taskId, content: input.input, whenBusy: "reject",
+          // Original Pi persists display data beside the full model input in
+          // the same entry. It never becomes instructions or edit authority.
+          ...(input.displayText === undefined ? {} : {
+            entry: { kind: "bk-cat.user", data: { schemaVersion: 1, text: input.displayText } },
+          }),
+        }, context);
         gate.assertReady(lease);
         nativeTask.active = { ...nativeTask.active, submissionId: submission.id };
         return { taskId: input.taskId, conversationId: conversation.id, submissionId: submission.id };

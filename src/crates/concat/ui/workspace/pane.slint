@@ -111,6 +111,9 @@ export component PaneScroll inherits Rectangle {
     property <length> press-at;
     property <length> press-y;
 
+    /// Show the beginning when a consumer replaces the inspected operation.
+    public function reset-scroll() { root.offset = 0px; }
+
     clip: true;
 
     wheel := TouchArea {

@@ -13,6 +13,7 @@ import { pathToFileURL } from "node:url";
 import test from "node:test";
 import vm from "node:vm";
 import { packageRoot, pins, referencePaths, referenceRoot, verifyReference } from "../scripts/reference.mjs";
+import { conversationPresentation } from "../src/presentation.ts";
 
 const require = verifyReference();
 const bundle = readFileSync(resolve(packageRoot, "dist/runtime.js"));
@@ -440,6 +441,92 @@ function completionResponse(parts) {
   })}\n\n`).join("") + "data: [DONE]\n\n";
   return new Response(chunks, { headers: { "content-type": "text/event-stream" } });
 }
+
+test("original native input persists separate display metadata with unchanged model context across reopen and invalid metadata fallback", { timeout: 20000 }, async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), "bkcat-user-display-"));
+  const file = resolve(directory, "session.sqlite3");
+  const displayText = "  请解释当前工程。\n用户要求：这也是我的原文。  ";
+  const fullInput = '原生当前工程上下文：{"path":"isolated-project","expectedSession":17,"expectedRevision":3}\n任务权限：对话（只读）。\n' + displayText;
+  let requests = 0;
+  const first = fixture(file, 1, api.nativeModelConfiguration(nativeConfiguration()), async (_lease, permit, input, init) => {
+    assert.equal(permit, "display-native-permit");
+    const request = JSON.parse(await new Request(input, init).text());
+    const users = request.messages.filter((message) => message.role === "user");
+    assert.equal(users.length, 1);
+    const content = typeof users[0].content === "string" ? users[0].content
+      : users[0].content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+    assert.equal(content, fullInput, "the original provider must receive all native context and authority instructions");
+    requests++;
+    return completionResponse([{ delta: { role: "assistant", content: "真实固定组件测试回复" } }, { finish: "stop" }]);
+  });
+  let second; let third;
+  try {
+    const snapshot = await first.runtime.start();
+    await first.runtime.confirmRecovery({ snapshotId: snapshot.snapshotId, decision: "continue", approvalId: "display-native-recovery" });
+    const admitted = await first.runtime.dispatch("nativeSubmit", {
+      taskId: "display-native-task", networkPermit: "display-native-permit", input: fullInput, displayText, mode: "chat",
+    });
+    const completed = await first.runtime.dispatch("nativeWait", { taskId: "display-native-task" });
+    assert.equal(completed.status, "done", completed.status === "done" ? undefined : durableFailure(file));
+    assert.equal(requests, 1);
+    assert.equal(first.mcpCalls.filter((message) => message.method === "tools/call").length, 0);
+    const live = await first.runtime.observeConversation(admitted.conversationId, () => {});
+    const inputs = live.value.entries.filter((entry) => entry.model?.some((message) => message.role === "user"));
+    assert.equal(inputs.length, 1, "one submitted user action must still produce exactly one input entry");
+    const entry = JSON.parse(JSON.stringify(inputs[0]));
+    assert.equal(entry.kind, "bk-cat.user");
+    assert.deepEqual(entry.data, { schemaVersion: 1, text: displayText });
+    assert.equal(entry.model.length, 1);
+    assert.equal(entry.model[0].content, fullInput);
+    assert.deepEqual(conversationPresentation(live.value).messages.filter((message) => message.role === "user"),
+      [{ role: "user", text: displayText }]);
+    live.detach();
+    await first.runtime.stop();
+
+    const reader = new DatabaseSync(file, { readOnly: true });
+    try {
+      const stored = JSON.parse(reader.prepare("SELECT record FROM entries WHERE id = ?").get(entry.id).record);
+      assert.deepEqual(stored, entry, "display and complete model input belong to the same actual SQLite record");
+    } finally { reader.close(); }
+
+    second = fixture(file, 2);
+    const reopened = await second.runtime.start();
+    await second.runtime.confirmRecovery({ snapshotId: reopened.snapshotId, decision: "continue", approvalId: "display-reopen" });
+    const view = await second.runtime.observeConversation(admitted.conversationId, () => {});
+    const reloaded = view.value.entries.find((record) => record.id === entry.id);
+    assert.deepEqual(JSON.parse(JSON.stringify(reloaded)), entry);
+    assert.deepEqual(conversationPresentation(view.value).messages.filter((message) => message.role === "user"),
+      [{ role: "user", text: displayText }]);
+    assert.equal(second.networkCalls(), 0, "restoring display metadata must not issue a model request");
+    view.detach();
+    await second.runtime.stop();
+
+    // Only this isolated fixture file is changed. Simulate a future or
+    // damaged display schema while preserving the exact original model field.
+    const writer = new DatabaseSync(file);
+    try {
+      const invalid = { ...entry, data: { schemaVersion: 2, text: "must not hide the original input" } };
+      assert.equal(writer.prepare("UPDATE entries SET record = ? WHERE id = ?")
+        .run(JSON.stringify(invalid), entry.id).changes, 1);
+    } finally { writer.close(); }
+    third = fixture(file, 3);
+    const fallback = await third.runtime.start();
+    await third.runtime.confirmRecovery({ snapshotId: fallback.snapshotId, decision: "continue", approvalId: "display-fallback-reopen" });
+    const invalidView = await third.runtime.observeConversation(admitted.conversationId, () => {});
+    assert.deepEqual(conversationPresentation(invalidView.value).messages.filter((message) => message.role === "user"),
+      [{ role: "user", text: fullInput }]);
+    assert.equal(invalidView.value.entries.find((record) => record.id === entry.id).model[0].content, fullInput);
+    assert.equal(third.networkCalls(), 0);
+    assert.equal(forbiddenFetch, 0);
+    invalidView.detach();
+    await third.runtime.stop();
+  } finally {
+    await first.runtime.stop().catch(() => {});
+    await second?.runtime.stop().catch(() => {});
+    await third?.runtime.stop().catch(() => {});
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 // The pinned Pi scheduler must run beyond the old cap, even when the saved
 // conversation still contains the previous four-turn setting.
@@ -972,6 +1059,8 @@ test("built production bootstrap submits through native task binding, streams th
   const directory = mkdtempSync(resolve(tmpdir(), "bkcat-bootstrap-production-"));
   const sqlite = sqliteFixture(resolve(directory, "session.sqlite3"), 1);
   const waiting = new Map(); const listeners = new Set(); const sent = [];
+  const displayText = "生成一段短视频文案";
+  const fullInput = '原生当前工程上下文：{"projectId":"bootstrap-fixture"}\n任务权限：文案（只读）。\n' + displayText;
   let detached; let bound = false; let opens = 0; let cursor = 0;
   let settle;
   const completed = new Promise((resolve) => { settle = resolve; });
@@ -1008,6 +1097,11 @@ test("built production bootstrap submits through native task binding, streams th
           assert.equal(bound, true); assert.equal(payload.networkPermit, "production-permit");
           assert.equal(payload.methodName, "POST"); assert.equal(payload.url, "https://model.invalid/custom/chat/completions");
           assert.equal(payload.headers.some(([name]) => ["authorization", "x-api-key", "cookie"].includes(name)), false);
+          const users = JSON.parse(payload.body).messages.filter((message) => message.role === "user");
+          assert.equal(users.length, 1);
+          const content = typeof users[0].content === "string" ? users[0].content
+            : users[0].content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+          assert.equal(content, fullInput, "built bootstrap preserves the complete original model input");
           opens++; return { streamId: "native-stream", status: 200, headers: [["content-type", "text/event-stream"]] };
         }
         if (payload.method === "network.read") {
@@ -1030,13 +1124,20 @@ test("built production bootstrap submits through native task binding, streams th
     await command("production-start", { method: "runtime.start", storageId: "isolated-pi", modelConfiguration: nativeConfiguration() });
     await command("production-recovery", { method: "runtime.confirmRecovery", approval: { snapshotId: "native-reviewed", decision: "continue", approvalId: "native-action" } });
     assert.equal(opens, 0, "restoring settings and the original store alone never starts a model request");
-    const admitted = await command("production-submit", { method: "runtime.submit", taskId: "production-task", networkPermit: "production-permit", mode: "script", input: "生成一段短视频文案" });
+    const admitted = await command("production-submit", {
+      method: "runtime.submit", taskId: "production-task", networkPermit: "production-permit",
+      mode: "script", input: fullInput, displayText,
+    });
     const final = await completed;
     assert.equal(final.taskId, "production-task"); assert.equal(final.submissionId, admitted.submissionId);
     assert.equal(final.status, "done", final.status === "done" ? undefined : durableFailure(resolve(directory, "session.sqlite3")));
     assert.equal(final.text, "经生产入口保存的候选");
     assert.equal(opens, 1); assert.equal(forbiddenFetch, 0);
-    assert.ok(sent.some((frame) => frame.event === "conversation.presentation" && frame.messages.some((message) => message.role === "user" && message.text === "生成一段短视频文案")));
+    const shownUsers = sent.filter((frame) => frame.event === "conversation.presentation")
+      .flatMap((frame) => frame.messages).filter((message) => message.role === "user");
+    assert.ok(shownUsers.length > 0);
+    assert.equal(shownUsers.every((message) => message.text === displayText), true,
+      "every built presentation event uses only the captured display text");
     assert.ok(sent.findIndex((frame) => frame.payload?.method === "task.bind") < sent.findIndex((frame) => frame.payload?.method === "network.open"));
     await command("production-stop", { method: "runtime.stop" });
   } finally {
