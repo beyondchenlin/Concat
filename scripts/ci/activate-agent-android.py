@@ -161,7 +161,7 @@ def decode_png(payload, deadline=None):
 
 
 def color_regions(image, bounds, predicate, bridge, deadline):
-    """Small sampled masks, with a bounded gap for the three sparkle strokes."""
+    """Small sampled masks, with a bounded gap between the launcher letters."""
     step = max(1, image.width // 360)
     left, top, right, bottom = bounds
     xs, ys = range(left, right, step), range(top, bottom, step)
@@ -206,7 +206,7 @@ def locate_target(image, target, scale=None, deadline=None):
     """Only the production portrait, dark/lime smoke UI is accepted.
 
     Coordinates come from this image. The white 72dp CreateTile supplies the
-    scale used for the 52dp launcher and its 12dp right inset. No fallback tap
+    scale used for the 52dp launcher and its default 12dp left inset. No fallback tap
     or assumption about keyboard focus is permitted.
     """
     width, height = image.width, image.height
@@ -226,18 +226,18 @@ def locate_target(image, target, scale=None, deadline=None):
                     and abs(width - right - 16 * candidate_scale) <= 4 * candidate_scale):
                 matches.append(((left, top, right, bottom), candidate_scale))
     elif target == "assistant" and scale is not None and scale > 0:
-        regions = color_regions(image, (int(.75 * width), int(.25 * height),
-            width, int(.62 * height)),
+        regions = color_regions(image, (0, int(.25 * height),
+            int(.25 * width), int(.62 * height)),
             lambda r, g, b: g >= 145 and g - r >= 15 and g - b >= 70 and b <= 130,
-            5 * scale, deadline)
+            7 * scale, deadline)
         for (left, top, right, bottom), area in regions:
             w, h = right - left, bottom - top
             cx, cy = (left + right) / 2, (top + bottom) / 2
-            if (not 15 * scale <= w <= 27 * scale or not 15 * scale <= h <= 27 * scale
+            if (not 15 * scale <= w <= 28 * scale or not 12 * scale <= h <= 20 * scale
                     or not .1 <= area / (w * h) <= .65
-                    or abs(cx - (width - 38 * scale)) > 5 * scale):
+                    or abs(cx - 38 * scale) > 5 * scale):
                 continue
-            # An outlined dark 52dp button must enclose the sparse lime icon.
+            # An outlined dark 52dp button must enclose the sparse AI label.
             # Export, play and the filled timeline plus cannot supply this rim.
             rim = 0
             for angle in range(0, 360, 45):

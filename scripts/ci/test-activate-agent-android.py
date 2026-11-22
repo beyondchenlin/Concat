@@ -97,22 +97,19 @@ def screen(kind="start", width=720):
                     index = (y * width + x) * 3
                     pixels[index:index + 3] = bytes(color)
 
-    def launcher(cy, rim=True, filled=False):
+    def launcher(cy, rim=True, filled=False, cx=100):
         lime = (203, 245, 63)
         if rim:
-            circle(980, cy, 68, (76, 76, 78))
-            circle(980, cy, 65, (33, 33, 35))
+            circle(cx, cy, 68, (76, 76, 78))
+            circle(cx, cy, 65, (33, 33, 35))
         if filled:
-            rectangle((956, cy - 24, 1004, cy + 24), lime)
+            rectangle((cx - 24, cy - 24, cx + 24, cy + 24), lime)
             return
-        points = [(980, cy - 22), (985, cy - 5), (1002, cy), (985, cy + 5),
-                  (980, cy + 22), (975, cy + 5), (958, cy), (975, cy - 5)]
-        for a, b in zip(points, points[1:] + points[:1]):
-            stroke(a, b, lime)
-        stroke((997, cy - 23), (997, cy - 15), lime)
-        stroke((993, cy - 19), (1001, cy - 19), lime)
-        circle(962, cy + 18, 5, lime)
-        circle(962, cy + 18, 2, (33, 33, 35))
+        # Synthetic letter strokes exercise recognition bounds, not typography.
+        stroke((cx - 24, cy + 20), (cx - 9, cy - 20), lime)
+        stroke((cx - 9, cy - 20), (cx + 6, cy + 20), lime)
+        stroke((cx - 17, cy + 2), (cx - 1, cy + 2), lime)
+        stroke((cx + 22, cy - 20), (cx + 22, cy + 20), lime)
 
     if kind in ("start", "double_create", "shifted_create"):
         bounds = (42, 333, 1038, 522) if kind != "shifted_create" else (0, 333, 996, 522)
@@ -120,13 +117,14 @@ def screen(kind="start", width=720):
         rectangle((240, 390, 700, 420), (14, 14, 16))
         if kind == "double_create":
             rectangle((42, 700, 1038, 889), (245, 245, 247))
-    elif kind in ("editor", "double_assistant", "no_rim", "filled_assistant", "controls_only"):
+    elif kind in ("editor", "double_assistant", "no_rim", "filled_assistant", "controls_only", "right_assistant"):
         lime = (203, 245, 63)
         rectangle((833, 79, 1059, 174), lime)  # Export is above the search region.
-        circle(540, 1340, 53, lime)  # Play is central, not at the right inset.
+        circle(540, 1340, 53, lime)  # Play is central, not at the left inset.
         rectangle((923, 1659, 1038, 1774), lime)  # Timeline plus is below it.
         if kind != "controls_only":
-            launcher(1161, rim=kind != "no_rim", filled=kind == "filled_assistant")
+            launcher(1161, rim=kind != "no_rim", filled=kind == "filled_assistant",
+                     cx=980 if kind == "right_assistant" else 100)
         if kind == "double_assistant":
             launcher(900)
     # Filter zero is valid screencap data and keeps fixture generation cheap.
@@ -188,7 +186,7 @@ class ScreenshotChecks(unittest.TestCase):
                 assistant = activation.locate_target(activation.decode_png(screen("editor", width)),
                                                      "assistant", create["scale"])
                 self.assertAlmostEqual(create["point"][0], width / 2, delta=2)
-                self.assertAlmostEqual(assistant["point"][0], 980 * width / 1080, delta=3)
+                self.assertAlmostEqual(assistant["point"][0], 100 * width / 1080, delta=3)
                 self.assertAlmostEqual(assistant["point"][1], 1161 * width / 1080, delta=3)
 
     def test_multiple_cards_or_launchers_are_rejected(self):
@@ -200,7 +198,8 @@ class ScreenshotChecks(unittest.TestCase):
     def test_wrong_screen_color_shape_and_missing_rim_do_not_supply_a_target(self):
         for kind, target, scale in (("editor", "create", None), ("start", "assistant", 1.75),
                 ("controls_only", "assistant", 1.75), ("no_rim", "assistant", 1.75),
-                ("filled_assistant", "assistant", 1.75), ("shifted_create", "create", None)):
+                ("filled_assistant", "assistant", 1.75), ("right_assistant", "assistant", 1.75),
+                ("shifted_create", "create", None)):
             with self.subTest(kind=kind, target=target):
                 with self.assertRaisesRegex(activation.ActivationFailed, "not-unique:0"):
                     activation.locate_target(activation.decode_png(screen(kind)), target, scale)

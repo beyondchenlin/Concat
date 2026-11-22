@@ -1631,6 +1631,205 @@ pub(crate) mod tests {
                 .unwrap();
         }
 
+        #[cfg(not(target_os = "android"))]
+        mod phone_launcher {
+            use super::*;
+
+            fn bounds(chat: &Chat) -> Bounds {
+                chat.render();
+                fully_visible_control(chat.app.window(), "打开智能助手", AccessibleRole::Button)
+            }
+
+            fn assert_position(actual: Bounds, x: f32, y: f32) {
+                assert!(
+                    (actual.x - x).abs() < 1. && (actual.y - y).abs() < 1.,
+                    "the actual launcher must stay at ({x}, {y}): {actual:?}"
+                );
+            }
+
+            fn press(chat: &Chat) -> slint::LogicalPosition {
+                let position = bounds(chat).center();
+                chat.app
+                    .window()
+                    .dispatch_event(WindowEvent::PointerMoved { position });
+                chat.app
+                    .window()
+                    .dispatch_event(WindowEvent::PointerPressed {
+                        position,
+                        button: PointerEventButton::Left,
+                    });
+                position
+            }
+
+            fn release(chat: &Chat, position: slint::LogicalPosition) {
+                chat.app
+                    .window()
+                    .dispatch_event(WindowEvent::PointerReleased {
+                        position,
+                        button: PointerEventButton::Left,
+                    });
+                chat.render();
+            }
+
+            fn drag_to(chat: &Chat, destination: slint::LogicalPosition) -> Bounds {
+                let start = press(chat);
+                // Consecutive native moves expose feedback errors when an
+                // absolute pointer is mistakenly mixed with the moving chip.
+                for step in 1..=4 {
+                    let progress = step as f32 / 4.;
+                    let position = slint::LogicalPosition::new(
+                        start.x + (destination.x - start.x) * progress,
+                        start.y + (destination.y - start.y) * progress,
+                    );
+                    chat.app
+                        .window()
+                        .dispatch_event(WindowEvent::PointerMoved { position });
+                    chat.advance(16);
+                    chat.render();
+                }
+                release(chat, destination);
+                assert_eq!(
+                    chat.app.global::<AgentUi>().get_phone_sheet_state(),
+                    0,
+                    "releasing a real launcher drag must not open the assistant"
+                );
+                bounds(chat)
+            }
+
+            fn text_color(chat: &Chat) -> slint::Brush {
+                let root = WindowInner::from_pub(chat.app.window())
+                    .window_item_rc()
+                    .unwrap();
+                let mut colors = Vec::new();
+                root.visit_descendants::<()>(|item| {
+                    if item.is_visible() {
+                        if let Some(text) = item.downcast::<SimpleText>() {
+                            let pin = text.as_pin_ref();
+                            if SimpleText::FIELD_OFFSETS.text().apply_pin(pin).get() == "AI" {
+                                colors.push(SimpleText::FIELD_OFFSETS.color().apply_pin(pin).get());
+                            }
+                        } else if let Some(text) = item.downcast::<ComplexText>() {
+                            let pin = text.as_pin_ref();
+                            if ComplexText::FIELD_OFFSETS.text().apply_pin(pin).get() == "AI" {
+                                colors
+                                    .push(ComplexText::FIELD_OFFSETS.color().apply_pin(pin).get());
+                            }
+                        }
+                    }
+                    ControlFlow::Continue(())
+                });
+                assert_eq!(colors.len(), 1, "one visible AI label in the real editor");
+                colors.pop().unwrap()
+            }
+
+            #[test]
+            fn defaults_left_follows_theme_and_keeps_a_free_position_after_opening() {
+                with_chat(|chat| {
+                    let app = chat.app.clone_strong();
+                    let agent = app.global::<AgentUi>();
+                    agent.set_phone_sheet_state(0);
+                    let opened = Rc::new(Cell::new(0));
+                    let observed = Rc::clone(&opened);
+                    agent.on_phone_open_requested(move || observed.set(observed.get() + 1));
+                    let initial = bounds(chat);
+                    assert!(
+                        (initial.x - 12.).abs() < 1.,
+                        "default is the left edge: {initial:?}"
+                    );
+                    assert!((initial.width - 52.).abs() < 1. && (initial.height - 52.).abs() < 1.);
+
+                    let theme = app.global::<ui::Theme>();
+                    for (dark, choice) in [(true, 0), (true, 2), (false, 2)] {
+                        theme.set_dark(dark);
+                        theme.set_accent_choice(choice);
+                        chat.render();
+                        assert_eq!(
+                            text_color(chat),
+                            slint::Brush::from(theme.get_accent()),
+                            "the visible launcher must follow the live theme/accent selection"
+                        );
+                    }
+
+                    let horizontal =
+                        drag_to(chat, slint::LogicalPosition::new(215., initial.center().y));
+                    assert_position(horizontal, 189., initial.y);
+                    let vertical = drag_to(chat, slint::LogicalPosition::new(215., 245.));
+                    assert_position(vertical, 189., 219.);
+                    let placed = drag_to(chat, slint::LogicalPosition::new(325., 300.));
+                    assert_position(placed, 299., 274.);
+                    assert_eq!(opened.get(), 0);
+
+                    // A small real tap jitter must still open exactly once,
+                    // without replacing the user's free position.
+                    let start = press(chat);
+                    let position = slint::LogicalPosition::new(start.x + 3., start.y - 2.);
+                    app.window()
+                        .dispatch_event(WindowEvent::PointerMoved { position });
+                    release(chat, position);
+                    assert_eq!(agent.get_phone_sheet_state(), 1);
+                    assert_eq!(opened.get(), 1);
+                    chat.click("收起智能助手");
+                    assert_eq!(agent.get_phone_sheet_state(), 0);
+                    assert_position(bounds(chat), placed.x, placed.y);
+                    chat.click("打开智能助手");
+                    assert_eq!(opened.get(), 2);
+                    chat.click("收起智能助手");
+                    assert_position(bounds(chat), placed.x, placed.y);
+                });
+            }
+
+            #[test]
+            fn clamps_both_axes_and_cancels_pointer_or_resize_without_opening() {
+                with_chat(|chat| {
+                    let app = chat.app.clone_strong();
+                    let agent = app.global::<AgentUi>();
+                    agent.set_phone_sheet_state(0);
+                    let opened = Rc::new(Cell::new(0));
+                    let observed = Rc::clone(&opened);
+                    agent.on_phone_open_requested(move || observed.set(observed.get() + 1));
+                    // Keep the finger inside the actual window while the
+                    // chip's requested bounds cross its two outer edges.
+                    let bottom_right = drag_to(chat, slint::LogicalPosition::new(599., 899.));
+                    assert_position(bottom_right, 548., 848.);
+                    app.window().set_size(slint::LogicalSize::new(320., 640.));
+                    assert_position(bounds(chat), 268., 588.);
+                    app.window().set_size(slint::LogicalSize::new(600., 900.));
+                    assert_position(bounds(chat), bottom_right.x, bottom_right.y);
+                    let top_left = drag_to(chat, slint::LogicalPosition::new(1., 1.));
+                    assert_position(top_left, 0., 0.);
+
+                    drag_to(chat, slint::LogicalPosition::new(200., 250.));
+                    let start = press(chat);
+                    let position = slint::LogicalPosition::new(start.x + 30., start.y + 30.);
+                    app.window()
+                        .dispatch_event(WindowEvent::PointerMoved { position });
+                    chat.render();
+                    app.window().dispatch_event(WindowEvent::PointerExited);
+                    let cancelled = bounds(chat);
+                    let position = slint::LogicalPosition::new(400., 450.);
+                    app.window()
+                        .dispatch_event(WindowEvent::PointerMoved { position });
+                    release(chat, position);
+                    assert_position(bounds(chat), cancelled.x, cancelled.y);
+                    assert_eq!(opened.get(), 0, "cancel must not become a tap");
+
+                    let start = press(chat);
+                    app.window().set_size(slint::LogicalSize::new(600., 800.));
+                    chat.render();
+                    release(chat, start);
+                    assert_eq!(agent.get_phone_sheet_state(), 0);
+                    assert_eq!(opened.get(), 0, "resize must cancel the in-flight press");
+                    chat.click("打开智能助手");
+                    assert_eq!(agent.get_phone_sheet_state(), 1);
+                    assert_eq!(
+                        opened.get(),
+                        1,
+                        "a fresh tap after cancellation still works"
+                    );
+                });
+            }
+        }
+
         #[test]
         fn script_picker_opens_the_correct_native_workspace_and_preserves_the_draft() {
             with_chat(|chat| {

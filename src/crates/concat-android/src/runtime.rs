@@ -187,7 +187,8 @@ impl Drop for AndroidHost {
 /// Installs the platform factory before concat::run creates the native shell.
 pub fn install(app: &AndroidApp) -> Result<(), String> {
     // Register the observer before any factory request can enter the Android
-    // UI queue. It cannot serialize or recreate a runtime component.
+    // UI queue. It reports foreground state but cannot serialize/revive an
+    // old component or bypass native ownership release for a replacement.
     super::java::with_runtime_class(app, |env, activity, class| {
         env.call_static_method(
             class,
@@ -204,7 +205,7 @@ pub fn install(app: &AndroidApp) -> Result<(), String> {
     })
 }
 
-/// Register only the three fixed Java declarations on the bundled class.
+/// Register only the fixed Java declarations on the bundled class.
 pub(super) fn register(env: &mut Env, class: &JClass) -> jni::errors::Result<()> {
     // SAFETY: signatures exactly match BKCatRuntime.java. All callbacks catch
     // unwinding so a Rust panic cannot cross the JVM's native call boundary.
@@ -224,6 +225,11 @@ pub(super) fn register(env: &mut Env, class: &JClass) -> jni::errors::Result<()>
                 jni_str!("runtimeClosed"),
                 jni_str!("(Ljava/lang/String;Ljava/lang/String;)V"),
                 runtime_closed as *mut c_void,
+            ),
+            jni::NativeMethod::from_raw_parts(
+                jni_str!("runtimeActivityState"),
+                jni_str!("(Z)V"),
+                runtime_activity_state as *mut c_void,
             ),
         ]
     };
@@ -290,4 +296,20 @@ unsafe extern "system" fn runtime_closed(
     reason: sys::jstring,
 ) {
     receive(instance, reason, HostState::closed);
+}
+
+unsafe extern "system" fn runtime_activity_state(
+    _env: *mut sys::JNIEnv,
+    _class: sys::jclass,
+    foreground: sys::jboolean,
+) {
+    // JNI boolean arguments use a byte, not Rust's bool ABI. No Java object or
+    // capability crosses this lifecycle-only callback, and it never blocks UI.
+    if std::panic::catch_unwind(|| {
+        concat::embedded::platform_foreground_changed(foreground != sys::JNI_FALSE);
+    })
+    .is_err()
+    {
+        log::error!("Android foreground notification failed");
+    }
 }

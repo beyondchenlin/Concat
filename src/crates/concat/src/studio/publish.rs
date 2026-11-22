@@ -191,6 +191,14 @@ impl Studio {
             .set_preview_frame(self.monitor.image.clone());
     }
 
+    /// A paused phone preview changes the picture and its stage handles,
+    /// including the measured bounds of a title painted asynchronously.
+    /// It does not change timeline, waveform, inspector or dock models.
+    pub fn publish_preview(&self, app: &App, models: &Models) {
+        self.publish_frame(app);
+        sync(&models.stage, self.stage_items());
+    }
+
     /// A pinch changes only the viewport while fingers are moving. Refresh
     /// costly clip/waveform models after release, allowing the last live scale
     /// to paint before doing potentially slow media work on the UI thread.

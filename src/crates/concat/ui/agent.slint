@@ -445,7 +445,7 @@ export component AgentChat inherits Rectangle {
         || AgentUi.status.error != "" || AgentUi.status.missing != ""
         || AgentUi.status.recovery-summary != ""
         || (!root.helping && (AgentUi.status.can-review || AgentUi.status.can-continue
-            || AgentUi.status.can-connect || AgentUi.status.can-discard
+            || (!root.phone && AgentUi.status.can-connect) || AgentUi.status.can-discard
             || AgentCallUi.can-authorize || AgentCallUi.allowed));
     private property <bool> phone-picker-open: root.phone
         && (AgentUi.suggestions-open || AgentUi.script-picker);
@@ -499,7 +499,9 @@ export component AgentChat inherits Rectangle {
     }
 
     function send-draft() {
-        if AgentUi.attachment-pending || !AgentUi.status.can-send {
+        let auto-connect = root.phone && AgentUi.status.can-connect
+            && !AgentUi.status.needs-model-setup;
+        if AgentUi.attachment-pending || (!AgentUi.status.can-send && !auto-connect) {
             root.send-help = true;
             if root.phone { phone-content.follow-latest(); }
         } else {
@@ -700,11 +702,11 @@ export component AgentChat inherits Rectangle {
                         if AgentUi.status.recovery-summary != "": Text {
                             text: AgentUi.status.recovery-summary; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap;
                         }
-                        if !root.helping && (AgentUi.status.can-review || AgentUi.status.can-continue || AgentUi.status.can-connect || AgentUi.status.can-discard): HorizontalLayout {
+                        if !root.helping && (AgentUi.status.can-review || AgentUi.status.can-continue || (!root.phone && AgentUi.status.can-connect) || AgentUi.status.can-discard): HorizontalLayout {
                             spacing: 4px; alignment: start;
                             if AgentUi.status.can-review: Button { label: "核对工程"; clicked => { AgentUi.review-requested(); } }
                             if AgentUi.status.can-continue: Button { label: "确认继续"; clicked => { AgentUi.continue-requested(); } }
-                            if AgentUi.status.can-connect: Button { label: "连接会话"; clicked => { AgentUi.connect-requested(); } }
+                            if !root.phone && AgentUi.status.can-connect: Button { label: "连接会话"; clicked => { AgentUi.connect-requested(); } }
                             if AgentUi.status.can-discard: Button { label: "放弃任务"; clicked => { AgentUi.discard-requested(); } }
                         }
                         if !root.helping && (AgentCallUi.can-authorize || AgentCallUi.allowed): HorizontalLayout {
@@ -803,7 +805,7 @@ export component AgentChat inherits Rectangle {
                     font-size: Theme.fs-sm; color: Theme.fg;
                     text: AgentUi.attachment-pending ? "素材正在导入，完成后即可发送。"
                         : AgentUi.status.needs-model-setup ? "发送前请设置模型渠道，并保存该渠道的凭据。"
-                        : AgentUi.status.can-connect ? "先连接当前工程的 Pi 会话。"
+                        : AgentUi.status.can-connect ? root.phone ? "发送时会自动连接当前工程。" : "先连接当前工程的 Pi 会话。"
                         : AgentUi.status.can-continue ? "当前工程已核对，请确认打开会话。"
                         : AgentUi.status.can-review ? AgentUi.status.recovery-summary != "" ? AgentUi.status.recovery-summary : "请先核对当前工程。"
                         : AgentCallUi.can-authorize && !AgentCallUi.allowed ? AgentCallUi.usage-policy
@@ -815,7 +817,7 @@ export component AgentChat inherits Rectangle {
             HorizontalLayout {
                 alignment: start; spacing: 4px;
                 if AgentUi.status.needs-model-setup: Button { label: "配置模型"; clicked => { AgentSettingsUi.open-requested(); } }
-                if !AgentUi.status.needs-model-setup && AgentUi.status.can-connect: Button { label: "连接会话"; clicked => { AgentUi.connect-requested(); } }
+                if !root.phone && !AgentUi.status.needs-model-setup && AgentUi.status.can-connect: Button { label: "连接会话"; clicked => { AgentUi.connect-requested(); } }
                 if AgentUi.status.can-review && !AgentUi.status.can-continue: Button { label: "核对工程"; clicked => { AgentUi.review-requested(); } }
                 if AgentUi.status.can-continue: Button { label: "确认继续"; clicked => { AgentUi.continue-requested(); } }
                 if AgentUi.status.can-discard: Button { label: "放弃任务"; clicked => { AgentUi.discard-requested(); } }

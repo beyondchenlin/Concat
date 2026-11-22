@@ -281,9 +281,11 @@ pub fn spawn_in_project_publishing<T: Send + 'static>(
 /// [`spawn_in_project`] for the monitor's frames. While playback runs a
 /// frame arrives every few dozen milliseconds and changes nothing but the
 /// picture, so only the picture is published then; the transport's own
-/// tick publishes the lanes. Otherwise it is a full publish as usual, and
-/// so is a frame that raised a toast - a failed one says so at once, not
-/// when playback stops.
+/// tick publishes the lanes. A paused phone scrub also receives a stream
+/// of frames: publish its picture and stage handles without rebuilding the
+/// timeline, inspector and dock behind the gesture's throttled publisher.
+/// A frame that raised a toast still publishes the whole window, so a
+/// failed preview is reported immediately.
 pub fn spawn_frame<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
     then: impl FnOnce(&mut Studio, &App, &Models, T) + Send + 'static,
@@ -302,14 +304,22 @@ pub fn spawn_frame<T: Send + 'static>(
                 noted.store(studio.toast.token != toast, Ordering::Relaxed);
             },
             move |studio, app, models| {
-                if studio.playing && !toasted.load(Ordering::Relaxed) {
-                    studio.publish_frame(app);
-                } else {
-                    studio.publish(app, models);
-                }
+                publish_completed_frame(studio, app, models, toasted.load(Ordering::Relaxed));
             },
         );
     });
+}
+
+/// Publication after an accepted preview result. The image is not a
+/// document edit: paused phone frames must not defeat viewport throttling.
+fn publish_completed_frame(studio: &Studio, app: &App, models: &Models, toasted: bool) {
+    if !toasted && studio.playing {
+        studio.publish_frame(app);
+    } else if !toasted && app.get_phone() {
+        studio.publish_preview(app, models);
+    } else {
+        studio.publish(app, models);
+    }
 }
 
 /// Hands a worker's result to the event-loop thread: `then` with the state
@@ -916,3 +926,7 @@ mod epoch_tests {
         assert!(!super::stale(Some(super::project_epoch())));
     }
 }
+
+#[cfg(test)]
+#[path = "host/frame_publication_tests.rs"]
+mod frame_publication_tests;

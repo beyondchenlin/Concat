@@ -8,28 +8,125 @@ import { AgentSettingsUi } from "../dialogs/model-settings.slint";
 import { ScriptUi } from "../script.slint";
 import { Focus } from "../util.slint";
 
-/// The phone's one extra entry. Its parent positions it using the native
-/// editor's monitor geometry, never over the timeline or bottom tool strip.
+/// The phone's one extra entry. Start within the native monitor on the left;
+/// afterwards the user owns its position anywhere inside the safe viewport.
 export component PhoneAgentLauncher inherits Rectangle {
+    in property <length> viewport-width;
+    in property <length> viewport-height;
+    in property <length> default-y;
+
     callback clicked();
 
+    private property <bool> positioned;
+    private property <length> position-x;
+    private property <length> position-y;
+    private property <length> origin-x;
+    private property <length> origin-y;
+    private property <length> pointer-origin-x;
+    private property <length> pointer-origin-y;
+    private property <bool> dragging;
+    private property <bool> was-dragged;
+    private property <bool> ring;
+
+    // Keep the requested location while a keyboard or rotation temporarily
+    // reduces the viewport. The button can never leave the reachable area.
+    x: Math.clamp(root.positioned ? root.position-x : 12px,
+        0px, Math.max(0px, root.viewport-width - root.width));
+    y: Math.clamp(root.positioned ? root.position-y : root.default-y,
+        0px, Math.max(0px, root.viewport-height - root.height));
     width: 52px;
     height: 52px;
     border-radius: 26px;
-    background: Theme.panel;
+    background: touch.pressed ? Theme.field-active : Theme.panel;
     border-width: 1px;
-    border-color: Theme.line-strong;
+    border-color: root.ring ? Theme.accent : Theme.line-strong;
 
-    IconButton {
-        target-size: 52px;
-        width: 52px;
-        min-height: 52px;
-        max-height: 52px;
-        glyph: Glyph.sparkle;
-        icon-size: 22px;
-        accent: true;
-        label: "打开智能助手";
-        clicked => { root.clicked(); }
+    accessible-role: button;
+    accessible-label: "打开智能助手";
+    accessible-description: "点按打开，拖动可调整位置";
+    accessible-action-default => { root.clicked(); }
+
+    function finish-drag(cancelled: bool) {
+        if root.dragging && root.was-dragged {
+            root.position-x = root.x;
+            root.position-y = root.y;
+        }
+        root.dragging = false;
+        if cancelled { root.was-dragged = true; }
+    }
+
+    changed viewport-width => { root.finish-drag(true); }
+    changed viewport-height => { root.finish-drag(true); }
+    changed visible => { if !root.visible { root.finish-drag(true); } }
+
+    // Focus precedes the touch target so keyboard access cannot swallow the
+    // pointer press. Moving changes only x/y, never the editor's layout.
+    focus := FocusScope {
+        focus-gained(reason) => { root.ring = reason == FocusReason.tab-navigation; }
+        focus-lost(reason) => { root.ring = false; }
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return EventResult.accept;
+            }
+            return EventResult.reject;
+        }
+    }
+    Text {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        text: "AI";
+        color: touch.has-hover ? Theme.accent-hover : Theme.accent;
+        font-family: Theme.font;
+        font-size: 22px;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    ScaleRotateGestureHandler {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: parent.height;
+        enabled: root.visible;
+        started => { root.finish-drag(true); }
+    }
+    touch := TouchArea {
+        mouse-cursor: move;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.origin-x = root.x;
+                root.origin-y = root.y;
+                root.pointer-origin-x = self.absolute-position.x + self.mouse-x;
+                root.pointer-origin-y = self.absolute-position.y + self.mouse-y;
+                root.dragging = true;
+                root.was-dragged = false;
+            } else if event.kind == PointerEventKind.up {
+                root.finish-drag(false);
+            } else if event.kind == PointerEventKind.cancel {
+                root.finish-drag(true);
+            }
+        }
+        moved => {
+            if root.dragging {
+                let dx = self.absolute-position.x + self.mouse-x - root.pointer-origin-x;
+                let dy = self.absolute-position.y + self.mouse-y - root.pointer-origin-y;
+                if Math.abs(dx) > 6px || Math.abs(dy) > 6px { root.was-dragged = true; }
+                if root.was-dragged {
+                    root.position-x = root.origin-x + dx;
+                    root.position-y = root.origin-y + dy;
+                    root.positioned = true;
+                }
+            }
+        }
+        clicked => {
+            if !root.was-dragged {
+                focus.focus();
+                root.clicked();
+            }
+        }
     }
     if AgentUi.tool-pending: Rectangle {
         x: parent.width - 12px;
@@ -147,8 +244,6 @@ export component PhoneAgentSheet inherits Rectangle {
         background: Theme.panel;
         border-top-left-radius: root.level == 2 ? 0px : Theme.r-xl;
         border-top-right-radius: root.level == 2 ? 0px : Theme.r-xl;
-        border-width: 1px;
-        border-color: Theme.line-strong;
         clip: true;
 
         TouchArea { scroll-event(event) => { return EventResult.accept; } }

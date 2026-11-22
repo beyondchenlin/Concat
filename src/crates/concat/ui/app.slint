@@ -914,8 +914,9 @@ export component App inherits Window {
                     close-project => { root.app-menu-selected("close-project"); }
                 }
                 PhoneAgentLauncher {
-                    x: parent.width - self.width - 12px;
-                    y: phone-editor.assistant-anchor-y;
+                    viewport-width: parent.width;
+                    viewport-height: Math.max(0px, parent.height - root.phone-keyboard-inset);
+                    default-y: phone-editor.assistant-anchor-y;
                     visible: AgentUi.phone-sheet-state == 0 && !PhoneSheets.open
                         && !SourcePreview.open && !root.content-overlay-open;
                     clicked => {

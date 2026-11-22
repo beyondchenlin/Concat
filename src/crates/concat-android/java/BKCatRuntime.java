@@ -47,7 +47,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * URLs, opens a browser, picks files, asks for web permissions or calls the
  * network. Model and database access must use the separately authorized native
  * bridge. Pausing, navigation and renderer loss permanently retire this
- * component; resuming the Activity never restarts it.
+ * component. Resuming only notifies the native owner, which may create a fresh
+ * component for an open assistant after confirmed destruction and release.
  */
 @SuppressWarnings("deprecation")
 public final class BKCatRuntime {
@@ -76,9 +77,9 @@ public final class BKCatRuntime {
         ACTIVITY_FINISHING("activity-finishing", "Android activity is finishing"),
         ACTIVITY_DESTROYED("activity-destroyed", "Android activity was destroyed"),
         ACTIVITY_REPLACED("activity-replaced", "Android activity was replaced"),
-        ACTIVITY_PAUSED("activity-paused", "Android activity paused; explicit recovery is required"),
-        ACTIVITY_STOPPED("activity-stopped", "Android activity stopped"),
-        ACTIVITY_SAVED("activity-saved", "Android activity state saved; explicit recovery is required"),
+        ACTIVITY_PAUSED("activity-paused", "安卓应用已转入后台。"),
+        ACTIVITY_STOPPED("activity-stopped", "安卓应用已停止显示。"),
+        ACTIVITY_SAVED("activity-saved", "安卓应用正在保存状态。"),
         OBSERVER_UNAVAILABLE("observer-unavailable", "Android lifecycle observer is unavailable"),
         PREVIOUS_COMPONENT_OPEN("previous-component-open", "The preceding Android runtime has not closed"),
         INITIAL_FOCUS_TIMEOUT("initial-focus-timeout", "Android window did not become foreground-ready"),
@@ -137,6 +138,7 @@ public final class BKCatRuntime {
     public static native void runtimeMessage(String instance, String message);
     public static native void runtimeStopping(String instance, String reason);
     public static native void runtimeClosed(String instance, String reason);
+    public static native void runtimeActivityState(boolean foreground);
 
     /** Install before the native platform factory can create any document. */
     public static void install(final Activity activity) {
@@ -152,6 +154,7 @@ public final class BKCatRuntime {
             try {
                 activity.getApplication().registerActivityLifecycleCallbacks(observer);
                 lifecycle = observer;
+                runtimeActivityState(true);
             } catch (RuntimeException error) {
                 // The factory's create request will refuse a missing observer.
             }
@@ -456,6 +459,7 @@ public final class BKCatRuntime {
 
         void retire(StopReason reason) {
             paused = true;
+            if (lifecycle == this) runtimeActivityState(false);
             for (BKCatRuntime host : INSTANCES.values().toArray(new BKCatRuntime[0])) {
                 if (host.activity == activity) host.dispose(reason);
             }
@@ -464,8 +468,11 @@ public final class BKCatRuntime {
         @Override public void onActivityCreated(Activity value, Bundle savedState) {}
         @Override public void onActivityStarted(Activity value) {}
         @Override public void onActivityResumed(Activity value) {
-            // Only explicit native create() can create another component.
-            if (value == activity) paused = false;
+            if (value != activity || lifecycle != this) return;
+            paused = false;
+            // This reports lifecycle only. Native checks visible assistant,
+            // current project, old component destruction and owner release.
+            runtimeActivityState(true);
         }
         @Override public void onActivityPaused(Activity value) {
             if (value == activity) retire(StopReason.ACTIVITY_PAUSED);
