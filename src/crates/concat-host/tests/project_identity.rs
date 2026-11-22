@@ -101,8 +101,11 @@ fn identity_replacement_refuses_pending_autosave_and_manual_save() {
 fn identified_session_refuses_removed_identity_and_damaged_manifests() {
     let scratch = tempfile::tempdir().unwrap();
     let info = create(scratch.path(), "Protected");
+    let opened_document = bytes(&info);
     let mut session = Session::open_info(&info).unwrap();
+    let opened_copy = projects::opened_copy_path(Path::new(&info.path));
     session.save(None).unwrap();
+    assert_eq!(std::fs::read(&opened_copy).unwrap(), opened_document);
     let mut no_identity = session.document();
     no_identity
         .as_object_mut()
@@ -116,6 +119,15 @@ fn identified_session_refuses_removed_identity_and_damaged_manifests() {
         "bkCatProjectId": session.project_identity(), "timelines": "damaged"
     });
     let manifest = projects::manifest_path(Path::new(&info.path));
+    let directory_entries = || {
+        std::fs::read_dir(&info.path)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let expected_entries =
+        std::collections::BTreeSet::from([manifest.clone(), opened_copy.clone()]);
+    assert_eq!(directory_entries(), expected_entries);
     for damaged in [
         serde_json::to_vec(&no_identity).unwrap(),
         serde_json::to_vec(&bad_identity).unwrap(),
@@ -126,7 +138,8 @@ fn identified_session_refuses_removed_identity_and_damaged_manifests() {
         std::fs::write(&manifest, &damaged).unwrap();
         assert!(session.save(None).is_err());
         assert_eq!(std::fs::read(&manifest).unwrap(), damaged);
-        assert_eq!(std::fs::read_dir(&info.path).unwrap().count(), 1);
+        assert_eq!(directory_entries(), expected_entries);
+        assert_eq!(std::fs::read(&opened_copy).unwrap(), opened_document);
     }
     std::fs::remove_file(&manifest).unwrap();
     assert!(session.save(None).is_err());
@@ -134,6 +147,11 @@ fn identified_session_refuses_removed_identity_and_damaged_manifests() {
         !manifest.exists(),
         "a missing identified manifest is never recreated"
     );
+    assert_eq!(
+        directory_entries(),
+        std::collections::BTreeSet::from([opened_copy.clone()])
+    );
+    assert_eq!(std::fs::read(&opened_copy).unwrap(), opened_document);
 }
 
 #[test]
