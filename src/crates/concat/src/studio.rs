@@ -1941,12 +1941,14 @@ pub(crate) fn file_name_of(path: &str) -> String {
 /// enum's own name, so a line reads `Split`, not `SplitClips`.
 fn command_kind(command: &Command) -> &'static str {
     match command {
+        Command::ApplySingleMainTemplate { .. } => "Apply template",
         Command::AddMedia { .. } => "Import media",
         Command::RemoveMedia { .. } => "Remove media",
         Command::SetMediaPlaceholder { .. } => "Set media as a template slot",
         Command::FillSlot { .. } => "Fill template slot",
         Command::Batch { .. } => "Several edits",
         Command::AddClip { .. }
+        | Command::AddMediaClipExact { .. }
         | Command::AddClipAtFirstFree { .. }
         | Command::AddClipsInSequence { .. } => "Add to timeline",
         Command::AddTextClip { .. } => "Add text",
