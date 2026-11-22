@@ -32,6 +32,15 @@ pub(crate) struct Source {
     key: PathBuf,
     directory: Option<Directory>,
     document: Option<[u8; 32]>,
+    // Kept only until the opened-copy backup is made, never in save authority.
+    stored: Option<Vec<u8>>,
+}
+
+impl Source {
+    /// Exact bytes from the same guarded read that established this source.
+    pub(crate) fn stored_bytes(&self) -> Option<&[u8]> {
+        self.stored.as_deref()
+    }
 }
 
 impl SaveAuthority {
@@ -143,7 +152,11 @@ pub(crate) fn read_for_session(path: &str) -> Result<(Option<Value>, Source), St
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!("无法读取工程目录：{error}")),
     };
-    let (_, document) = read_manifest(&key)?;
+    let (_, stored) = read_manifest_as_stored(&key)?;
+    let (document, stored) = match stored {
+        Some((document, bytes)) => (Some(document), Some(bytes)),
+        None => (None, None),
+    };
     if target_key(Path::new(path))? != key {
         return Err("读取期间工程目录已被替换，请重新打开工程。".into());
     }
@@ -160,6 +173,7 @@ pub(crate) fn read_for_session(path: &str) -> Result<(Option<Value>, Source), St
                 key,
                 directory: None,
                 document: None,
+                stored,
             },
         ));
     }
@@ -177,6 +191,7 @@ pub(crate) fn read_for_session(path: &str) -> Result<(Option<Value>, Source), St
         key,
         directory,
         document: fingerprint(document.as_ref())?,
+        stored,
     };
     Ok((document, source))
 }
@@ -261,6 +276,10 @@ fn require_readable(document: &Value, manifest: &Path) -> Result<(), String> {
 }
 
 fn read_manifest(root: &Path) -> Result<(PathBuf, Option<Value>), String> {
+    read_manifest_as_stored(root).map(|(path, stored)| (path, stored.map(|(document, _)| document)))
+}
+
+fn read_manifest_as_stored(root: &Path) -> Result<(PathBuf, Option<(Value, Vec<u8>)>), String> {
     for name in std::iter::once(super::MANIFEST).chain(super::LEGACY_MANIFESTS.iter().copied()) {
         let manifest = root.join(name);
         match std::fs::symlink_metadata(&manifest) {
@@ -279,7 +298,7 @@ fn read_manifest(root: &Path) -> Result<(PathBuf, Option<Value>), String> {
             .map_err(|error| format!("无法读取工程清单 {}：{error}", manifest.display()))?;
         let document = serde_json::from_slice(&bytes)
             .map_err(|error| format!("工程清单 {} 已损坏，未覆盖：{error}", manifest.display()))?;
-        return Ok((manifest, Some(document)));
+        return Ok((manifest, Some((document, bytes))));
     }
     Ok((root.join(super::MANIFEST), None))
 }

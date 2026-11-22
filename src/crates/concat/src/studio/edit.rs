@@ -88,8 +88,18 @@ impl Studio {
                     .map(|session| std::path::PathBuf::from(session.path()));
                 crate::panes::settings::restart(project);
             }
+            #[cfg(target_os = "android")]
+            Some(Confirm::LastRunClosed) => {
+                if let Err(error) = crate::platform::share_log() {
+                    self.notify(&tf("settings.couldNotShareLog", &[&error]), true);
+                }
+            }
             Some(Confirm::QuitWithoutSaving { .. }) => {
-                log::warn!("close: quitting without saving, as asked");
+                crate::closing("by Quit without saving");
+                log::warn!(
+                    "close: {} could not be saved, and the person chose to leave without it; its unsaved edits are lost",
+                    self.project_name
+                );
                 self.release_project();
                 slint::quit_event_loop().ok();
             }
@@ -145,6 +155,16 @@ impl Studio {
                 cancel: t("settings.restartLater").into(),
                 calm: true,
                 glyph: crate::ui::Glyph::Reset,
+            },
+            #[cfg(target_os = "android")]
+            Confirm::LastRunClosed => crate::ui::ConfirmData {
+                open: true,
+                title: t("start.lastRunClosedTitle").into(),
+                message: t("start.lastRunClosed").into(),
+                action: t("settings.shareTheLog").into(),
+                cancel: t("relink.notNow").into(),
+                calm: true,
+                glyph: crate::ui::Glyph::Export,
             },
         }
     }
@@ -306,6 +326,10 @@ impl Studio {
             consider(clip.start as f32);
             consider((clip.start + clip.duration) as f32);
         }
+        // The song's beats, so a cut lands on the beat.
+        for beat in self.timeline_beats() {
+            consider(beat as f32);
+        }
         best
     }
 
@@ -355,7 +379,8 @@ impl Studio {
     pub fn apply(&mut self, command: Command) -> Option<String> {
         // An edit ends whatever burst the view was in.
         self.end_burst();
-        log::info!("edit: {}", command_name(&command));
+        let words = command_words(&command);
+        Asked::log(format_args!("edit: {words}"));
         self.flush_commit();
         self.echo = None;
         // Anything but an inspector commit ends the coalescing window; the
@@ -374,6 +399,7 @@ impl Studio {
                 view.created_id
             }
             Err(error) => {
+                log::warn!("edit: {words} was asked for and refused: {error}; nothing changed");
                 self.notify(&error, true);
                 None
             }
@@ -421,7 +447,8 @@ impl Studio {
     pub(super) fn apply_within(&mut self, gesture: &str, command: Command) -> Option<String> {
         // A knob's gesture, folded into one step; said at Debug, since a
         // dial turned is many of these.
-        log::debug!("edit: {} ({gesture})", command_name(&command));
+        let words = command_words(&command);
+        log::debug!("edit: {words} (part of one gesture)");
         self.echo = None;
         let session = self.session.as_mut()?;
         let before = session.video().color_space;
@@ -433,6 +460,7 @@ impl Studio {
                 view.created_id
             }
             Err(error) => {
+                log::warn!("edit: {words} was asked for and refused: {error}; nothing changed");
                 self.notify(&error, true);
                 None
             }
@@ -490,7 +518,10 @@ impl Studio {
             && session.can_undo()
         {
             session.undo();
+            Asked::log(format_args!("edit: Undo"));
             self.after_change();
+        } else {
+            log::debug!("edit: Undo was asked for with nothing to undo");
         }
     }
 
@@ -502,7 +533,10 @@ impl Studio {
             && session.can_redo()
         {
             session.redo();
+            Asked::log(format_args!("edit: Redo"));
             self.after_change();
+        } else {
+            log::debug!("edit: Redo was asked for with nothing to redo");
         }
     }
 
@@ -533,8 +567,14 @@ impl Studio {
         );
     }
 
-    /// Writes the document, on a worker. `announce` says so on success;
-    /// a failure is always said.
+    /// Writes the document, on the save lane. `announce` says so on
+    /// success; a failure is always said.
+    ///
+    /// The snapshot is taken here, on the window's thread, with the edit
+    /// that asked for it already applied; the lane only writes it. It has
+    /// a thread of its own, so a save never waits behind an export or an
+    /// analysis, and a save still waiting when the next is asked for is
+    /// replaced by it - see `host::spawn_save`.
     pub fn save(&mut self, announce: bool) {
         let Some(session) = self.session.as_mut() else {
             return;
@@ -551,9 +591,34 @@ impl Studio {
         let saved_session = snapshot.session;
         let saved_revision = snapshot.revision;
         let agent = self.host.agent.clone();
-        crate::host::spawn_in_project_publishing(
+        let name = self.project_name.clone();
+        let began = std::time::Instant::now();
+        // Use the upstream save lane and its coalesced announcement, while
+        // retaining the exact native revision and save-authority snapshot.
+        crate::host::spawn_save(
+            snapshot.path.clone(),
+            announce,
             move || snapshot.save(|saved| saved.record_written(agent.as_deref())),
-            move |studio, _, _, (result, journal_error)| {
+            move |studio, _, _, (result, journal_error), announce| {
+                match &result {
+                    Ok(projects::Saved::Written) if announce => log::info!(
+                        "project: saved {name} in {}",
+                        concat_log::span(began.elapsed())
+                    ),
+                    Ok(projects::Saved::Written) => log::debug!(
+                        "project: autosaved {name} in {}",
+                        concat_log::span(began.elapsed())
+                    ),
+                    Ok(projects::Saved::Superseded) => {
+                        log::debug!("project: a newer snapshot of {name} was already saved")
+                    }
+                    Err(error) if announce => log::error!(
+                        "project: saving {name} failed: {error}; the current revision stays unsaved"
+                    ),
+                    Err(error) => log::warn!(
+                        "project: autosaving {name} failed: {error}; the current revision stays unsaved"
+                    ),
+                }
                 studio.accept_project_save(
                     saved_session,
                     saved_revision,

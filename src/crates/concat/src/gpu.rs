@@ -85,13 +85,16 @@ impl Gpu {
         let software = std::env::var("CONCAT_GPU")
             .is_ok_and(|value| value.trim().eq_ignore_ascii_case("software"));
         if software {
-            log::warn!("CONCAT_GPU=software: the window draws on the software rasteriser");
+            log::warn!("gpu: the software rasteriser draws the window in place of the GPU");
         }
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: software,
             ..Default::default()
         }))
+        .inspect_err(|error| {
+            log::warn!("gpu: no adapter for the window: {error}; it opens without one")
+        })
         .ok()?;
         // This is not always a GPU. wgpu ranks a CPU adapter last but never
         // leaves it out, so on a machine whose hardware it will not drive -
@@ -101,13 +104,7 @@ impl Gpu {
         // see `is_software` and platform.rs for what that changes.
         // https://github.com/jub0t/Concat/issues/135
         let info = adapter.get_info();
-        log::info!(
-            "GPU adapter: {} ({:?}, {:?}, {})",
-            info.name,
-            info.device_type,
-            info.backend,
-            driver_of(&info)
-        );
+        log::info!("gpu: {}", adapter_words(&info));
         let _ = ADAPTER.set(if info.device_type == wgpu::DeviceType::Cpu {
             format!("{} · {} · software rasteriser", info.name, info.backend)
         } else {
@@ -127,22 +124,68 @@ impl Gpu {
             required_limits: adapter.limits(),
             ..Default::default()
         }))
+        .inspect_err(|error| {
+            log::warn!(
+                "gpu: {} would not open a device for the window: {error}; it opens without one",
+                info.name
+            )
+        })
         .ok()?;
+        // A device Direct3D 12 had already removed, handed back because
+        // something in the process still holds it, dies at its first
+        // frame: the window opens without one rather than draw on it.
+        if let Some(reason) = concat_render::gpu::removed(&device) {
+            log::error!(
+                "gpu: {} handed back a device Direct3D 12 had already removed ({reason}): \
+                 something in this process still holds the dead one; the window opens without one",
+                info.name
+            );
+            return None;
+        }
+        // The card's memory as the window's device opens, a line a heap:
+        // what a later "out of memory" needs, to tell a full card from a
+        // gate that refused with room to spare (#746, #802).
+        concat_render::memory::Memory::of_adapter(&adapter)
+            .say(log::Level::Info, "as the window's device opened");
         // Said in the log when it dies, with wgpu's reason: the one line a
         // report of "the GPU device was lost" needs, which until now there
         // was none of. https://github.com/jub0t/Concat/issues/223
+        // Lost to the memory gates, or refused by them, the figures behind
+        // it are said too, once (see `concat_render::memory::ran_out`). The
+        // adapter they are read through goes with the device.
+        let memory_said = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let lost = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let marked = std::sync::Arc::clone(&lost);
+        let (said, on) = (std::sync::Arc::clone(&memory_said), adapter.clone());
         device.set_device_lost_callback(move |reason, message| {
             marked.store(true, std::sync::atomic::Ordering::Relaxed);
-            log::error!("the window's GPU device was lost ({reason:?}): {message}");
+            let why = match reason {
+                wgpu::DeviceLostReason::Destroyed => "it was let go",
+                wgpu::DeviceLostReason::Unknown => "the driver gave it up",
+            };
+            log::error!(
+                "gpu: the window's device was lost, as {why}: {message}; the window cannot draw on it again"
+            );
+            if concat_render::memory::says_out_of_memory(&message) {
+                concat_render::memory::ran_out(&said, "the window's device", || {
+                    concat_render::memory::Memory::of_adapter(&on)
+                });
+            }
         });
         // An error no scope caught goes to the log too. wgpu's default
         // handler panics, and on this device that is the window's thread:
         // a texture past the limit, asked for by anything that draws on it,
         // took the app down where a bad frame would do.
-        device.on_uncaptured_error(std::sync::Arc::new(|error: wgpu::Error| {
-            log::error!("the window's GPU device reported an error: {error}");
+        let on = adapter.clone();
+        device.on_uncaptured_error(std::sync::Arc::new(move |error: wgpu::Error| {
+            log::error!(
+                "gpu: something drawing on the window's device was refused: {error}; that drawing is skipped"
+            );
+            if matches!(error, wgpu::Error::OutOfMemory { .. }) {
+                concat_render::memory::ran_out(&memory_said, "the window's device", || {
+                    concat_render::memory::Memory::of_adapter(&on)
+                });
+            }
         }));
         Some(Gpu {
             instance,
@@ -169,6 +212,34 @@ impl Gpu {
             queue: self.queue.clone(),
         }
     }
+}
+
+/// An adapter as the log's `gpu:` line has it: its own name, what kind
+/// of thing it is, the system's name for what it draws through, and its
+/// driver when it says one.
+pub fn adapter_words(info: &wgpu::AdapterInfo) -> String {
+    let kind = match info.device_type {
+        wgpu::DeviceType::IntegratedGpu => "integrated",
+        wgpu::DeviceType::DiscreteGpu => "discrete",
+        wgpu::DeviceType::VirtualGpu => "virtual",
+        wgpu::DeviceType::Cpu => "software",
+        wgpu::DeviceType::Other => "of no stated kind",
+    };
+    let backend = match info.backend {
+        wgpu::Backend::Vulkan => "Vulkan",
+        wgpu::Backend::Metal => "Metal",
+        wgpu::Backend::Dx12 => "Direct3D 12",
+        wgpu::Backend::Gl => "OpenGL ES",
+        wgpu::Backend::BrowserWebGpu => "WebGPU",
+        wgpu::Backend::Noop => "no backend",
+    };
+    let mut words = format!("{} · {kind} · {backend}", info.name);
+    let driver = driver_of(info);
+    if driver != "driver unknown" {
+        words.push_str(" · ");
+        words.push_str(&driver);
+    }
+    words
 }
 
 /// The adapter's driver as the log names it: the driver and its version

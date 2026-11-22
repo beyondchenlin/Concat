@@ -58,7 +58,7 @@ fn main() -> Result<(), slint::PlatformError> {
             .unwrap_or_default();
         let _ = concat_host::logs::open_console(None);
         return concat_mcp::run(mode).map_err(|error| {
-            log::error!("mcp: {error}");
+            log::error!("api: the MCP server for an agent stopped: {error}; Concat exits");
             slint::PlatformError::Other(error)
         });
     }
@@ -83,6 +83,9 @@ fn main() -> Result<(), slint::PlatformError> {
         // machine's, and a modal box with nobody to press OK would hang it
         // rather than fail it. Returning the error exits non-zero.
         Launch::Smoke => concat::smoke().inspect_err(|error| {
+            log::error!("smoke: could not start: {error}");
+        }),
+        Launch::SmokeExport(clip) => concat::smoke_export(clip).inspect_err(|error| {
             log::error!("smoke: could not start: {error}");
         }),
         // Answered above, before the log was opened.

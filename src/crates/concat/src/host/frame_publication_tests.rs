@@ -7,7 +7,7 @@
 use super::*;
 use slint::{ComponentHandle, Model};
 
-use crate::ui::{Editor, TimelineTabData};
+use crate::ui::{Editor, TimelineTabData, ToastKind};
 
 struct Scratch(std::path::PathBuf);
 
@@ -174,7 +174,7 @@ fn paused_phone_preview_updates_frames_without_rebuilding_editor_models() {
             "a failed preview retains the full error publication path"
         );
         assert_eq!(app.get_toast().message, "Preview failure fixture");
-        assert!(app.get_toast().failed);
+        assert_eq!(app.get_toast().kind, ToastKind::Failed);
 
         // Keep the existing paused desktop behavior. This regression is
         // scoped to the phone; it does not change desktop completion rules.

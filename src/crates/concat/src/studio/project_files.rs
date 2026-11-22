@@ -10,7 +10,60 @@ impl Studio {
     /// Opens a project as the session and leaves the launch screen, or
     /// says why it could not.
     pub fn open_project(&mut self, info: ProjectInfo) -> Result<(), String> {
-        log::info!("project: opening {}", info.path);
+        let name = info.name.clone();
+        let began = std::time::Instant::now();
+        let opened = self.open_project_timed(info);
+        match &opened {
+            Ok(()) => {
+                if let Some(session) = &self.session {
+                    let timeline = session.project().active();
+                    let tracks = match timeline.tracks.len() {
+                        1 => "1 track".to_owned(),
+                        count => format!("{count} tracks"),
+                    };
+                    log::info!(
+                        "project: opened {name} in {} · {tracks}, {}, {}",
+                        concat_log::span(began.elapsed()),
+                        clips_of(timeline.clips.len()),
+                        concat_log::span(std::time::Duration::from_secs_f64(
+                            timeline.duration().max(0.0)
+                        )),
+                    );
+                }
+            }
+            Err(error) => {
+                let left = if self.session.is_some() {
+                    format!("{} stays open", self.project_name)
+                } else {
+                    "the launch screen stays up".to_owned()
+                };
+                log::error!("project: opening {name} failed: {error}; {left}");
+            }
+        }
+        opened
+    }
+
+    /// The project in the folder at `path`, read and opened: what Open and
+    /// Recents do. A folder that will not read says so in the log as
+    /// [`Studio::open_project`] does for one that will not open.
+    pub fn open_project_at(&mut self, path: &str) -> Result<(), String> {
+        let info = projects::open(path).inspect_err(|error| {
+            let left = if self.session.is_some() {
+                format!("{} stays open", self.project_name)
+            } else {
+                "the launch screen stays up".to_owned()
+            };
+            log::error!(
+                "project: reading {} failed: {error}; {left}",
+                file_name_of(path)
+            );
+        })?;
+        self.open_project(info)
+    }
+
+    /// [`Studio::open_project`], which says how it went.
+    fn open_project_timed(&mut self, info: ProjectInfo) -> Result<(), String> {
+        log::debug!("project: opening {}", info.path);
         // File › Open and Recents from a window with a project in it: that
         // project is closed first, as a close would - saved, its folder let
         // go, its jobs stopped. Swapping the session alone dropped what the
@@ -23,6 +76,7 @@ impl Studio {
             .map(|session| session.path().to_owned())
         {
             if same_folder(&open, &info.path) {
+                log::debug!("project: {} is already open", info.name);
                 return Ok(());
             }
             self.save_and_release()
@@ -45,14 +99,23 @@ impl Studio {
                     .pid
                     .map(|pid| pid.to_string())
                     .unwrap_or_else(|| "?".to_owned());
-                log::warn!("project: {} is held by process {pid}", info.path);
+                log::debug!("project: {} is held by process {pid}", info.path);
                 return Err(tf("studio.projectOpenElsewhere", &[&pid]));
             }
         }
+        // When the project was last saved, read before anything opening it
+        // can write: what tells a voiceover it lost from one taken out of
+        // it; see `voiceover::lost_takes`.
+        let saved = std::fs::metadata(projects::manifest_path(std::path::Path::new(&info.path)))
+            .and_then(|meta| meta.modified())
+            .ok();
         match Session::open_info(&info) {
             Ok(session) => {
                 if let Err(error) = projects::remember(&self.host.dirs.config, &info) {
-                    log::warn!("{error}");
+                    log::warn!(
+                        "project: adding {} to Recents failed: {error}; it opens all the same",
+                        info.name
+                    );
                 }
                 self.pause();
                 // The proxies of media no longer in the project, or read
@@ -74,13 +137,17 @@ impl Studio {
                     .collect();
                 let swept = concat_host::proxy::sweep(project_dir, &kept);
                 if swept > 0 {
-                    log::info!("{swept} stale proxies swept from {}", project_dir.display());
+                    log::debug!(
+                        "project: {swept} stale proxies swept from {}",
+                        project_dir.display()
+                    );
                 }
                 self.session = Some(session);
                 self.script = Default::default();
                 // The relink dialog belongs to the project that opened it;
                 // this project's own check follows below.
                 self.relink = Default::default();
+                self.unread_pending = None;
                 crate::host::next_project_epoch();
                 self.forget_art();
                 self.art_failed.clear();
@@ -157,6 +224,13 @@ impl Studio {
                         false,
                     );
                 }
+                // Parts of the file this build cannot read - from a newer
+                // Concat, or damaged - are kept in it unchanged, and the
+                // person told once, after the other notices of this open.
+                let unread = self
+                    .session
+                    .as_ref()
+                    .and_then(|session| unread_notice(session.unread()));
 
                 // Log missing media to file for debugging
                 if let Some(session) = &self.session {
@@ -178,6 +252,19 @@ impl Studio {
                         ));
                     }
                 }
+                // The relink dialog opening now would hide the notice while
+                // the person deals with it: it waits for the dialog to close.
+                if let Some(notice) = unread {
+                    if self.relink.open {
+                        self.unread_pending = Some(notice);
+                    } else {
+                        self.warn(&notice);
+                    }
+                }
+                // Voiceovers still recording when Concat last let this
+                // project go without them - a crash, a quit without saving
+                // - go back in Media.
+                crate::panes::voiceover::recover_lost_takes(self, saved);
                 // The application already knows which project the user opened.
                 // Bind its assistant after this mutable Studio borrow ends;
                 // ordinary manual cutting never waits for the AI component.
@@ -291,20 +378,37 @@ impl Studio {
     }
 
     fn save_and_release_project(&mut self) -> Result<(), String> {
-        log::info!("project: closing {}", self.project_name);
+        log::debug!("project: closing {}", self.project_name);
         // Words still being typed land in the save, not on the floor.
         self.flush_commit();
+        // So does a voiceover still being recorded, or stopped a moment ago
+        // and not landed yet: put in this project's bin and on its
+        // timeline as Stop would, for the save below to keep. Left to
+        // Stop's own way, it was dropped on its way back and its file sat
+        // in the audio folder unseen.
+        if self.voiceover.holds_take() {
+            self.handle(crate::panes::Msg::Voiceover(
+                crate::panes::voiceover::VoiceoverMsg::ProjectClosing,
+            ));
+        }
         self.pause();
         // Saved before the workers are cancelled: a close that cannot be
         // written is not a close, and the jobs it would have stopped are
         // not ours to throw away.
         if let Some(session) = self.session.as_mut() {
             if let Err(error) = session.save(None) {
-                log::warn!("project: could not be saved, not closing: {error}");
+                log::error!(
+                    "project: saving {} to close it failed: {error}; it stays open",
+                    self.project_name
+                );
                 return Err(error);
             }
         }
+        let name = self.session.is_some().then(|| self.project_name.clone());
         self.release_project();
+        if let Some(name) = name {
+            log::info!("project: closed {name}");
+        }
         Ok(())
     }
 
@@ -368,8 +472,9 @@ impl Studio {
         // find stays up over the launch screen.
         self.relink = Default::default();
         self.source = None;
-        // A take running as the project closes stops, keeping its file;
-        // the next project's speakers are not left silent.
+        // A take running as the project closes without a save - Quit
+        // without saving - stops, keeping its file for the next open to
+        // put back; the next project's speakers are not left silent.
         self.voiceover = Default::default();
         self.host.playback.set_muted(false);
         self.echo = None;
@@ -468,6 +573,13 @@ impl Studio {
                 let mut pane = std::mem::take(&mut self.relink);
                 pane.update(msg, self);
                 self.relink = pane;
+                // However the dialog closed - every file found, the last one
+                // removed, dismissed - the notice it held back goes up now.
+                if !self.relink.open
+                    && let Some(notice) = self.unread_pending.take()
+                {
+                    self.warn(&notice);
+                }
             }
             crate::panes::Msg::Project(msg) => {
                 let mut pane = std::mem::take(&mut self.project_sheet);
@@ -500,3 +612,65 @@ impl Studio {
 
 #[cfg(test)]
 mod project_retirement_tests;
+
+/// What the person is told when part of the project opened cannot be shown,
+/// or None when all of it can.
+pub(super) fn unread_notice(unread: concat_project::UnreadSummary) -> Option<String> {
+    let what: Vec<String> = [
+        match unread.clips {
+            0 => None,
+            1 => Some(t("studio.unreadClipOne")),
+            n => Some(tf("studio.unreadClipsMany", &[&n.to_string()])),
+        },
+        match unread.media {
+            0 => None,
+            1 => Some(t("studio.unreadMediaOne")),
+            n => Some(tf("studio.unreadMediaMany", &[&n.to_string()])),
+        },
+        match unread.timelines {
+            0 => None,
+            1 => Some(t("studio.unreadTimelineOne")),
+            n => Some(tf("studio.unreadTimelinesMany", &[&n.to_string()])),
+        },
+        match unread.parts {
+            0 => None,
+            1 => Some(t("studio.unreadPartOne")),
+            n => Some(tf("studio.unreadPartsMany", &[&n.to_string()])),
+        },
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    (!what.is_empty()).then(|| tf("studio.unreadKept", &[&what.join(", ")]))
+}
+
+/// The Details panel's short count of what the project holds and cannot
+/// show, or empty when it shows everything.
+pub(super) fn unread_count(unread: concat_project::UnreadSummary) -> String {
+    let what: Vec<String> = [
+        match unread.clips {
+            0 => None,
+            1 => Some(t("configPane.notShownClipOne")),
+            n => Some(tf("configPane.notShownClipsMany", &[&n.to_string()])),
+        },
+        match unread.media {
+            0 => None,
+            1 => Some(t("configPane.notShownMediaOne")),
+            n => Some(tf("configPane.notShownMediaMany", &[&n.to_string()])),
+        },
+        match unread.timelines {
+            0 => None,
+            1 => Some(t("configPane.notShownTimelineOne")),
+            n => Some(tf("configPane.notShownTimelinesMany", &[&n.to_string()])),
+        },
+        match unread.parts {
+            0 => None,
+            1 => Some(t("configPane.notShownPartOne")),
+            n => Some(tf("configPane.notShownPartsMany", &[&n.to_string()])),
+        },
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    what.join(", ")
+}

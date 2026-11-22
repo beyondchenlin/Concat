@@ -12,15 +12,15 @@
 <p align="center">
   <a href="https://github.com/jub0t/Concat/releases"><img src="https://img.shields.io/github/downloads/jub0t/concat/total?style=flat&logo=github&logoColor=F8F8F8&label=Downloads&labelColor=212123&color=0568FD" alt="Total Downloads" /></a>
   <a href="https://github.com/jub0t/Concat/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/jub0t/Concat/ci.yml?style=flat&logo=githubactions&logoColor=F8F8F8&label=Build&labelColor=000000" alt="Build Status" /></a>
-  <a href="https://github.com/jub0t/Concat/releases"><img src="https://img.shields.io/badge/Version-0.2.10-0568FD?style=flat&logo=semver&logoColor=F8F8F8&labelColor=212123" alt="Concat Version 0.2.10" /></a>
+  <a href="https://github.com/jub0t/Concat/releases"><img src="https://img.shields.io/badge/Version-0.2.12-0568FD?style=flat&logo=semver&logoColor=F8F8F8&labelColor=212123" alt="Concat Version 0.2.12" /></a>
   <a href="https://discord.gg/DVuPfpXfqP"><img src="https://img.shields.io/badge/Discord-Join%20the%20server-5865F2?style=flat&logo=discord&logoColor=F8F8F8&labelColor=000000" alt="Join Concat Discord" /></a>
   <a href="../LICENSE"><img src="https://img.shields.io/badge/License-AGPL%20v3-0568FD?style=flat&logo=gnu&logoColor=F8F8F8&labelColor=212123" alt="License: AGPL-3.0-or-later" /></a>
 </p>
 
 <p align="center">
   <a href="https://www.star-history.com/jub0t/concat"><img src="https://api.star-history.com/badge?repo=jub0t/concat&type=rank" alt="Star History Rank" height="62" /></a>
-  <a href="https://trendshift.io/repositories/191379?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-191379" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/191379/daily?language=Rust" alt="jub0t%2FConcat | Trendshift" width="250" height="55"/></a>
   <a href="https://concat.standalones.org/#download"><img src="../assets/download_button.svg" alt="Download Concat" width="251" /></a>
+  <a href="https://trendshift.io/repositories/191379?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-191379" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/191379" alt="jub0t%2FConcat | Trendshift" width="250" height="55"/></a>
 </p>
 
 [🇬🇧 English](../README.md) · [🇩🇪 Deutsch](README.de.md) · [🇪🇸 Español](README.es.md) · [🇫🇷 Français](README.fr.md) · [🇮🇹 Italiano](README.it.md) · [🇳🇱 Nederlands](README.nl.md) · [🇵🇱 Polski](README.pl.md) · [🇧🇷 Português (Brasil)](README.pt-BR.md) · [🇷🇺 Русский](README.ru.md) · [🇺🇦 Українська](README.uk.md) · [🇹🇷 Türkçe](README.tr.md) · [🇦🇿 Azərbaycanca](README.az.md) · [🇭🇷 Hrvatski](README.hr.md) · [🇮🇩 Bahasa Indonesia](README.id.md) · [🇻🇳 Tiếng Việt](README.vi.md) · [🇹🇭 ไทย](README.th.md) · [🇯🇵 日本語](README.ja.md) · [🇰🇷 한국어](README.ko.md) · [🇨🇳 简体中文](README.zh-Hans.md) · [🇹🇼 繁體中文](README.zh-TW.md) · **🇸🇦 العربية** · [🇮🇱 עברית](README.he.md) · [🇮🇷 فارسی](README.fa.md) · [🇮🇳 हिन्दी](README.hi.md) · [🇵🇰 اردو](README.ur.md) · [🇧🇩 বাংলা](README.bn.md)
@@ -44,7 +44,7 @@
 
 ## نبذة
 
-Concat محرر فيديو مجاني ومفتوح المصدر على macOS وWindows وLinux وAndroid. فيه ما تحتاجه معظم المونتاجات: الترجمة التلقائية، تحويل النص إلى كلام، إزالة الخلفية، التحريك بالإطارات المفتاحية، المؤثرات والعناوين، القص متعدد المسارات، التصدير بدقة 4K. وبلا أي فخاخ: لا علامة مائية، لا حساب، لا اشتراك، لا رفع للملفات.
+Concat محرر فيديو مجاني ومفتوح المصدر على macOS وWindows وLinux وAndroid وiOS. فيه ما تحتاجه معظم المونتاجات: الترجمة التلقائية، عزل الصوت، تحويل النص إلى كلام، إزالة الخلفية، الرسوم المتحركة والإطارات المفتاحية، المؤثرات والعناوين، القص متعدد المسارات، التصدير بدقة 4K. وبلا أي فخاخ: لا علامة مائية، لا حساب، لا اشتراك، لا رفع للملفات.
 
 كل شيء يعمل محليًا على محرك Rust أصلي مع مركّب رسوميات على بطاقة الرسوميات. ثبّته، أسقط لقطاتك، وقصّ. نماذج الذكاء الاصطناعي للترجمة والأصوات والقص تُنزَّل مرة واحدة من الإعدادات ثم تعمل دون اتصال. لقطاتك لا تغادر قرصك أبدًا.
 
@@ -55,20 +55,25 @@ Concat محرر فيديو مجاني ومفتوح المصدر على macOS وW
 ## أبرز الميزات
 
 - 🚫 **لا علامات مائية. لا حساب. لا جدار دفع.** أبدًا.
-- 🔒 **محلي 100 %.** لا شيء يُرفع. يعمل دون اتصال.
-- 💬 **ترجمة تلقائية.** Whisper محلي. اختر حجم النموذج واحصل على ترجمات منسّقة على الخط الزمني.
-- 🗣️ **تحويل النص إلى كلام + استنساخ الصوت.** أصوات محلية مجانية، أو أي صوت من بضع ثوانٍ من التسجيل.
-- 🧍 **إزالة الخلفية.** الأشخاص، الأشياء، أو ارسم القناع بنفسك.
-- 🎞️ **إطارات مفتاحية.** الموضع، الحجم، الدوران، الشفافية، مستوى الصوت، معاملات المؤثرات. محرر منحنيات مدمج.
-- ✨ **100 مؤثر ومرشح وانتقال.** تُرسم على بطاقة الرسوميات، مباشرة في المعاينة.
-- ✂️ **قصّ سريع.** تقسيم، تشذيب، إزاحة، دمج، تجميد الإطار، السرعة. خط زمني مغناطيسي إن أردت.
-- 🎚️ **مسارات متعددة، خطوط زمنية متعددة.** عدة مونتاجات في مشروع واحد. أنماط المزج، الاقتصاص، القلب.
-- 📝 **عناوين.** خطوط، حدود، ظل، لوحة خلفية. إعدادات مسبقة للبدء منها.
-- 🎙️ **تنقية الصوت بمفتاح واحد.** إزالة الضوضاء، تحسين الصوت، موازنة الارتفاع. إضافة إلى السنجاب والروبوت والهاتف وغيرها.
-- 📤 **تصدير.** H.264 وHEVC وAV1. حتى 4K بمعدل 60، ألوان 10 بت.
-- 🦀 **محرك Rust أصلي.** مركّب على بطاقة الرسوميات، ملفات وسيطة، فك ترميز عتادي. تمرير 4K سلس.
+- 🔒 **محلي 100 %.** لا شيء يُرفع، حتى الذكاء الاصطناعي. يعمل دون اتصال.
+- 💬 **ترجمة تلقائية.** باللغة التي تتحدث بها، تُنشأ على جهازك، منسّقة وجاهزة على الخط الزمني.
+- 🎤 **عزل الصوت.** استخرج صوتًا من موسيقاه أو ضجيجه، أو أزِله، ولكل جزء مستواه الخاص.
+- 🗣️ **تحويل النص إلى كلام + استنساخ الصوت.** صوت محلي مجاني، أو أي صوت من بضع ثوانٍ من تسجيل. على سطح المكتب.
+- 🧍 **إزالة الخلفية ومفتاح الكروما والأقنعة.** يُقصّ الأشخاص والأجسام من أجلك، وشاشة خضراء تُزال بنفسها، ومجموعة أقنعة على كل مقطع، لكل قناع وضعه وإطاراته المفتاحية.
+- 🌀 **حركات الدخول والخروج والتكرار.** للمقاطع والصور والعناوين والأشكال. تُعرض كل حركة على بطاقتها قبل أن تختارها.
+- ✨ **أكثر من 100 مؤثر ومرشّح وانتقال، و25 مؤثرًا صوتيًا.** إطلالات سينمائية، اهتزازات وارتطامات، ريترو، مسحات، كلها حية في المعاينة. الانتقال مقطع تنقله وتقصّه مثل أي مقطع آخر.
+- 🎞️ **الإطارات المفتاحية.** الموضع، المقياس، الحجم، التدوير، التعتيم، مستوى الصوت، معاملات المؤثرات. محرر منحنيات مدمج.
+- 🏃 **منحدرات ومنحنيات السرعة.** ثابتة أو مرسومة، سلسة أو مستقيمة. تجميد الإطار والتشغيل العكسي.
+- 🪄 **التحسين وتثبيت الصورة.** استعد اللقطات الباهتة أو القديمة، حتى 2K. ثبّت اللقطة المهتزة.
+- ✂️ **قصّ سريع، قصّ دقيق.** تقسيم، قص، ripple، دمج، ترجمات وطبقات علوية مرتبطة، وخط زمني مغناطيسي إن أردته. كل قطع يقع على الإطار تمامًا، بالطريقة نفسها في المعاينة والتصدير.
+- 🎚️ **مسارات متعددة، خطوط زمنية متعددة.** كدّس الفيديو والصور الثابتة والعناوين والأشكال على أي عدد من المسارات. عدة نسخ مونتاج في مشروع واحد. أوضاع المزج، والاقتصاص، والقلب.
+- 📝 **العناوين والأشكال.** خطوط، حدود، ظلال، ألواح خلفية، إيموجي ملوّنة، وإعدادات مسبقة للعربية والصينية والهندية والتايلاندية وثماني لغات أخرى. أشكال بتدرجات ونجوم وحدود وظلال.
+- 🎙️ **التعليق الصوتي وتنقية الصوت بمفتاح واحد.** سجّل فوق مونتاجك. إزالة الضجيج، وتحسين الصوت، وموازنة مستوى الصوت. إضافة إلى السنجاب والروبوت والهاتف وغيرها.
+- 📤 **تصدير.** H.264 وHEVC وAV1، على مرمّز جهازك نفسه. حتى 4K بمعدل 60، ألوان 10 بت.
+- ⚡ **سريع.** ملفات وسيطة مدمجة لتصفّح 4K بسلاسة. تُرسم العناوين على كل النوى، وكل مؤثر جاهز لحظة فتح النافذة.
+- 🛟 **يواصل العمل على أي جهاز.** حين تستسلم شريحة الرسوميات، تواصل المعاينة الرسم.
 - 🤖 **قابل للبرمجة.** واجهة JSON-RPC يمكن للسكربتات ووكلاء الذكاء الاصطناعي قص الفيديو بها. والبناء من الشيفرة المصدرية يضيف gRPC وأداة سطر أوامر.
-- 🖥️ **macOS وWindows وLinux وAndroid.** 26 لغة. التطبيق نفسه، ملفات المشروع نفسها.
+- 🖥️ **macOS وWindows وLinux وAndroid وiOS.** 26 لغة. التطبيق نفسه، ملفات المشروع نفسها.
 
 ## التنزيل
 

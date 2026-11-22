@@ -278,8 +278,17 @@ fn observing_the_persisted_identity_consumes_even_a_superseded_first_permission(
 fn identical_legacy_content_in_a_replaced_directory_is_not_first_save_authority() {
     let scratch = tempfile::tempdir().unwrap();
     let info = create(scratch.path(), "Legacy");
-    let original = legacy(&info);
+    let mut original = legacy(&info);
+    // Whitespace makes byte preservation distinguishable from reserializing
+    // the parsed document that established the native save authority.
+    original.extend_from_slice(b"\n \t\n");
+    std::fs::write(projects::manifest_path(Path::new(&info.path)), &original).unwrap();
     let mut session = Session::open_info(&info).unwrap();
+    assert_eq!(
+        std::fs::read(projects::opened_copy_path(Path::new(&info.path))).unwrap(),
+        original,
+        "the upstream backup preserves the exact bytes of the guarded open"
+    );
     let moved = scratch.path().join("Moved legacy");
     std::fs::rename(&info.path, &moved).unwrap();
     std::fs::create_dir(&info.path).unwrap();
@@ -287,6 +296,12 @@ fn identical_legacy_content_in_a_replaced_directory_is_not_first_save_authority(
     assert!(session.save(None).is_err());
     assert_eq!(bytes(&info), original);
     assert_eq!(std::fs::read(moved.join("concat.json")).unwrap(), original);
+    assert_eq!(
+        std::fs::read(projects::opened_copy_path(&moved)).unwrap(),
+        original,
+        "the backup stays with the original directory after a refused save"
+    );
+    assert!(!projects::opened_copy_path(Path::new(&info.path)).exists());
 }
 
 #[test]

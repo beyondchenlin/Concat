@@ -13,10 +13,10 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
-    AppliedFilter, AudioTrack, Background, Clip, ClipKind, ClipMotion, ColorRange, ColorSpace,
-    Crop, CustomFont, Cutout, CutoutMode, Enhanced, Framing, KeyEase, KeyProperty, Mask, MediaItem,
-    MediaKind, MediaOrigin, Project, RunStyle, ShapeStyle, SpeedPoint, Stabilize, Stroke,
-    TextStyle, Timeline, Track, Transition, VideoSettings, VoiceMix,
+    AppliedFilter, AudioTrack, Background, BeatMarks, Clip, ClipKind, ClipMotion, ColorRange,
+    ColorSpace, Crop, CustomFont, Cutout, CutoutMode, Enhanced, Framing, KeyEase, KeyProperty,
+    Mask, MediaItem, MediaKind, MediaOrigin, Project, RunStyle, ShapeStyle, SpeedPoint, Stabilize,
+    Stroke, TextStyle, Timeline, Track, Transition, VideoSettings, VoiceMix,
 };
 
 mod audio;
@@ -522,12 +522,15 @@ pub enum Command {
         /// The clip to retime.
         clip_id: String,
         /// The curve, or None for a constant rate at the current mean.
+        /// Its points are put in order of `at`, held to `0..=1` and to the
+        /// speed range, and reach both ends of the clip, as they will be
+        /// played and saved. A curve with no usable point is None.
+        #[serde(default)]
         curve: Option<Vec<SpeedPoint>>,
-        /// When true - the magnetic timeline - the clips after it on its
-        /// lane move by however far its end moved, either way, so a clip
-        /// sped up closes up behind it as a magnetic trim does. False
-        /// leaves the gap; later clips then only move out of the way of a
-        /// clip that grew over them.
+        /// The magnetic timeline: the clips behind on the lane follow the
+        /// clip's end whether it grows or shrinks, closing up the gap a
+        /// shrink would leave. False moves them only to make room when the
+        /// clip grows over the next.
         #[serde(default)]
         ripple: bool,
     },
@@ -875,12 +878,12 @@ pub enum Command {
         /// The clip to retime. An unknown id is a no-op.
         clip_id: String,
         /// The new rate, clamped into 0.0625..=16 (the engine's range).
+        /// A speed curve the clip had ends: the footage it covered is kept.
         speed: f64,
-        /// When true - the magnetic timeline - the clips after it on its
-        /// lane move by however far its end moved, either way, so a clip
-        /// sped up closes up behind it as a magnetic trim does. False
-        /// leaves the gap; later clips then only move out of the way of a
-        /// clip that grew over them.
+        /// The magnetic timeline: the clips behind on the lane follow the
+        /// clip's end whether it grows or shrinks, closing up the gap a
+        /// shrink would leave. False moves them only to make room when the
+        /// clip grows over the next.
         #[serde(default)]
         ripple: bool,
     },
@@ -908,10 +911,10 @@ pub enum Command {
     /// Sizes a picture to the frame in one step: fitted whole inside it,
     /// or covering it, centred either way and unstretched (see
     /// [`crate::model::framing_scale`]; a turned picture is sized as turned).
-    /// A scale or a position with keys gets a key at `at` rather than a new
-    /// constant, the way every edit of a keyed property lands, so the rest
-    /// of the ride is left as it was. A no-op for a clip that is not a video
-    /// or a still, or whose media's size is unknown.
+    /// A scale, a position or a stretch with keys gets a key at `at` rather
+    /// than a new constant, the way every edit of a keyed property lands, so
+    /// the rest of the ride is left as it was. A no-op for a clip that is
+    /// not a video or a still, or whose media's size is unknown.
     FrameClip {
         /// The clip to size. An unknown id is a no-op.
         clip_id: String,
@@ -1052,6 +1055,17 @@ pub enum Command {
         /// own tag.
         range: Option<ColorRange>,
     },
+    /// Asks for a media file's beats - listened to, marked along every
+    /// clip of it on every timeline at the beats `marks` names, snapped to
+    /// when the timeline snaps - or, with None, stops asking. A file of
+    /// its own, not the app's: one song cut to, another only underneath.
+    /// An unknown id is a no-op.
+    SetMediaBeats {
+        /// The bin item.
+        media_id: String,
+        /// Which beats, or None for none.
+        marks: Option<BeatMarks>,
+    },
 }
 
 /// What a command produced, beyond the new state: the ids it minted, so the
@@ -1177,6 +1191,11 @@ impl IdMint {
             for clip in &timeline.clips {
                 self.adopt(&clip.id);
             }
+        }
+        // And every id in what the read held unread: a clip minted here
+        // must never share an id with one the file still carries.
+        for id in project.unread.ids() {
+            self.adopt(id);
         }
     }
 }
@@ -1453,7 +1472,8 @@ pub fn apply(
         | Command::AddFont { .. }
         | Command::RemoveFont { .. }
         | Command::UpdateMediaPath { .. }
-        | Command::SetMediaColorRange { .. }) => media::apply(project, mint, command),
+        | Command::SetMediaColorRange { .. }
+        | Command::SetMediaBeats { .. }) => media::apply(project, mint, command),
         command @ (Command::AddClip { .. }
         | Command::AddMediaClipExact { .. }
         | Command::AddClipAtFirstFree { .. }

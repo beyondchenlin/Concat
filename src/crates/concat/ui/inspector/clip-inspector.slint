@@ -1305,22 +1305,22 @@ export component SpeedPanel inherits VerticalLayout {
     property <float> speed;
     function seed() {
         root.speed = root.selected.speed;
-        root.fastest = SpeedRamp.fastest;
-        root.slowest = SpeedRamp.slowest;
+        root.fastest = SpeedRamp.peak-speed;
+        root.slowest = SpeedRamp.trough-speed;
     }
     init => { root.seed(); }
     changed selected => { root.seed(); }
 
     // Rust's word on the mode and the preset.
-    property <bool> curved: SpeedRamp.curved;
-    property <int> preset: SpeedRamp.preset;
+    property <bool> curved: SpeedRamp.has-curve;
+    property <int> preset: SpeedRamp.active-preset;
     // The two sliders' values, seeded from Rust's like the rate's: a
     // slider writes its own value as it is dragged, which would end a
     // binding.
     property <float> fastest;
     property <float> slowest;
-    property <float> fastest-truth: SpeedRamp.fastest;
-    property <float> slowest-truth: SpeedRamp.slowest;
+    property <float> fastest-truth: SpeedRamp.peak-speed;
+    property <float> slowest-truth: SpeedRamp.trough-speed;
     changed fastest-truth => { root.fastest = root.fastest-truth; }
     changed slowest-truth => { root.slowest = root.slowest-truth; }
 
@@ -1359,7 +1359,7 @@ export component SpeedPanel inherits VerticalLayout {
                     icons: [Glyph.speed-constant, Glyph.speed-curve];
                     current: root.curved ? 1 : 0;
                     changed(index) => {
-                        SpeedRamp.curve(index == 1);
+                        SpeedRamp.toggle-curve(index == 1);
                         root.commit();
                     }
                 }
@@ -1372,11 +1372,11 @@ export component SpeedPanel inherits VerticalLayout {
                     property <int> truth: root.preset;
                     changed truth => { self.current = self.truth; }
 
-                    options: SpeedRamp.presets;
+                    options: SpeedRamp.preset-names;
                     current: root.preset;
                     placeholder: I18n.t("speedRamp.custom");
                     changed(index) => {
-                        SpeedRamp.preset-chosen(index);
+                        SpeedRamp.pick-preset(index);
                         root.commit();
                     }
                 }
@@ -1386,11 +1386,11 @@ export component SpeedPanel inherits VerticalLayout {
                 padding-left: Theme.pad;
                 padding-right: Theme.pad;
                 point(index, x, y) => {
-                    SpeedRamp.point(index, x, y);
+                    SpeedRamp.move-point(index, x, y);
                     root.commit();
                 }
                 remove(index) => {
-                    SpeedRamp.remove(index);
+                    SpeedRamp.remove-point(index);
                     root.commit();
                 }
                 changed => { root.commit(); }
@@ -1400,14 +1400,14 @@ export component SpeedPanel inherits VerticalLayout {
                 label: I18n.t("speedRamp.bends");
                 SegmentedControl {
                     // As the mode's: set again from Rust's word.
-                    property <bool> truth: SpeedRamp.smooth;
+                    property <bool> truth: SpeedRamp.eased;
                     changed truth => { self.current = self.truth ? 0 : 1; }
 
                     options: [I18n.t("speedRamp.smooth"), I18n.t("speedRamp.straight")];
                     icons: [Glyph.bend-smooth, Glyph.bend-straight];
-                    current: SpeedRamp.smooth ? 0 : 1;
+                    current: SpeedRamp.eased ? 0 : 1;
                     changed(index) => {
-                        SpeedRamp.smoothness(index == 0);
+                        SpeedRamp.set-eased(index == 0);
                         root.commit();
                     }
                 }
@@ -1425,7 +1425,7 @@ export component SpeedPanel inherits VerticalLayout {
                 default-value: 2;
                 fmt: ParamFormat.rate;
                 unit: "x";
-                changed(v) => { SpeedRamp.extreme(true, v); root.commit(); }
+                changed(v) => { SpeedRamp.set-limit(true, v); root.commit(); }
             }
             if root.curved && root.slowest > 0: Param {
                 label: I18n.t("speedRamp.slowest");
@@ -1436,7 +1436,7 @@ export component SpeedPanel inherits VerticalLayout {
                 default-value: 0.5;
                 fmt: ParamFormat.rate;
                 unit: "x";
-                changed(v) => { SpeedRamp.extreme(false, v); root.commit(); }
+                changed(v) => { SpeedRamp.set-limit(false, v); root.commit(); }
             }
 
             if !root.curved: Param {
@@ -1710,6 +1710,8 @@ export component VideoPanel inherits VerticalLayout {
 
             Param {
                 label: I18n.t("common.width");
+                keyable: true;
+                field: ClipField.stretch-x;
                 value <=> root.stretch-x;
                 minimum: 0.1;
                 maximum: 4;
@@ -1723,6 +1725,8 @@ export component VideoPanel inherits VerticalLayout {
 
             Param {
                 label: I18n.t("common.height");
+                keyable: true;
+                field: ClipField.stretch-y;
                 value <=> root.stretch-y;
                 minimum: 0.1;
                 maximum: 4;
@@ -3496,3 +3500,89 @@ export component FilterPanel inherits VerticalLayout {
 // The catalogues. Data only: the stack renders whatever params a preset
 // declares, so adding a processor is one entry here and no change to the
 // panel. The ids are written into project files, so they are stable forever.
+
+/// A file's beats, under its Treatments. The header's switch turns them on
+/// for this file alone - listened to, marked along its clips, snapped to
+/// when the timeline snaps - and off, the default. On: the tempo heard,
+/// which beats the marks are, and Cut on beats, which splits the clips
+/// over the song at each mark. Marks follow the zoom unless Marks names a
+/// beat: a song's beats are many, and a wall of ticks reads as nothing.
+export component BeatsPanel inherits VerticalLayout {
+    /// "131 BPM", or empty while there is none to show.
+    in property <string> tempo;
+    /// What stands in the Tempo row's place: listening, or no beat found.
+    in property <string> note;
+    in property <bool> on;
+    in property <int> marks;
+
+    callback on-changed(on: bool);
+    callback marks-changed(index: int);
+    callback cut();
+
+    Section {
+        SectionHeader {
+            title: I18n.t("beats.title");
+            switchable: true;
+            on: root.on;
+            switched(on) => { root.on-changed(on); }
+        }
+
+        if !root.on: SectionBody {
+            Note { text: I18n.t("beats.offNote"); }
+        }
+
+        if root.on: SectionBody {
+            // The tempo as a value, like every other row's: its name on
+            // the left, the number on the right.
+            if root.tempo != "": HorizontalLayout {
+                padding-left: Theme.pad;
+                padding-right: Theme.pad;
+                padding-top: 4px;
+                padding-bottom: 4px;
+                Text {
+                    text: I18n.t("beats.tempoLabel");
+                    color: Theme.fg-dim;
+                    font-size: Theme.fs;
+                    horizontal-stretch: 1;
+                }
+                Text {
+                    text: root.tempo;
+                    color: Theme.fg;
+                    font-size: Theme.fs;
+                    font-family: Theme.font-technical;
+                }
+            }
+            if root.tempo == "" && root.note != "": Note { text: root.note; }
+            Subhead { title: I18n.t("beats.marks"); }
+            HorizontalLayout {
+                padding-left: Theme.pad;
+                padding-right: Theme.pad;
+                SegmentedControl {
+                    options: [
+                        I18n.t("beats.marksZoom"),
+                        I18n.t("beats.marksEvery"),
+                        I18n.t("beats.marksSecond"),
+                        I18n.t("beats.marksBar"),
+                    ];
+                    // A press assigns `current` inside the control; the
+                    // property follows the preference back.
+                    property <int> shown: root.marks;
+                    current: self.shown;
+                    changed shown => { self.current = self.shown; }
+                    changed(index) => { root.marks-changed(index); }
+                }
+            }
+            HorizontalLayout {
+                padding-left: Theme.pad;
+                padding-right: Theme.pad;
+                padding-top: 6px;
+                Button {
+                    label: I18n.t("beats.cut");
+                    block: true;
+                    clicked => { root.cut(); }
+                }
+            }
+            Note { text: I18n.t("beats.cutNote"); }
+        }
+    }
+}

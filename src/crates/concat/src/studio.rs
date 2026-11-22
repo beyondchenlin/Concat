@@ -45,6 +45,7 @@ use concat_project::model::{
 use concat_project::{Command, PlayheadSide};
 
 mod backdrop;
+mod beats;
 mod consolidate;
 use consolidate::MergeJob;
 mod masking;
@@ -52,19 +53,27 @@ mod masks;
 use masking::{MaskFrame, MaskGrip};
 mod bin;
 mod chains;
+#[cfg(test)]
+mod copy_tests;
 mod edit;
 mod gestures;
 mod inspector;
 mod keyboard;
 mod keyframes;
 mod menus;
+#[cfg(test)]
+mod merge_words_tests;
 mod monitor;
 mod placing;
 mod project_files;
 mod publish;
 mod speech;
+#[cfg(test)]
+mod speed_curve_tests;
 mod stage;
 mod text;
+mod toast;
+pub use toast::ToastState;
 mod vision;
 mod voice;
 use slint::{Model, ModelRc, SharedString, VecModel};
@@ -80,8 +89,8 @@ use crate::grading;
 use crate::host::{
     CachedStrip, Host, MediaArt, MediaPoster, WindowArt, cached_media_art, cached_window_art,
     image_at, image_of, media_peaks, media_poster, media_strip, on_ui_in_project, spawn, spawn_art,
-    spawn_in_project, spawn_poster, spawn_strip, spawn_wave, strip_window, window_art, window_span,
-    window_start,
+    spawn_in_project, spawn_long, spawn_long_in_project, spawn_poster, spawn_strip, spawn_wave,
+    strip_window, window_art, window_span, window_start,
 };
 use crate::i18n::{self, t, tf};
 use crate::keymap;
@@ -432,6 +441,12 @@ pub const SHELF_KINDS: [PackageKind; 4] = [
     PackageKind::Transition,
 ];
 
+/// The sound packages Basic > Treatments switches on and off: a clip's
+/// loudness, its noise and its voice. They are switches there and nowhere
+/// a card, so the Library's sound shelf leaves them out; a sound layer,
+/// which has no Treatments page, still lists them in its own chain.
+pub const TREATMENTS: [&str; 3] = ["concat.loudness", "concat.denoise", "concat.enhance-voice"];
+
 /// `name` under the home directory, as a path string; empty when there is
 /// no home to speak of, and the form then asks for a folder outright.
 ///
@@ -450,15 +465,6 @@ pub(crate) fn home_folder(name: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The bottom-right notice: one at a time. The token is what the panel
-/// watches, bumped per notice so the same sentence said twice blinks twice.
-#[derive(Default)]
-pub struct ToastState {
-    pub token: i32,
-    pub message: String,
-    pub failed: bool,
-}
-
 /// Which edge of a clip a trim has hold of.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Edge {
@@ -469,7 +475,10 @@ pub enum Edge {
 /// Where one clip sat when a gesture began, so the whole set moves rigidly.
 pub struct MoveOrigin {
     pub clip: String,
-    pub start: f32,
+    /// Where the clip began when the press landed, exact: the drag adds its
+    /// shift to this, not to the echo's start, which already holds the last
+    /// shift.
+    pub start: f64,
     pub row: i32,
 }
 
@@ -741,6 +750,9 @@ pub struct Models {
     /// The looks made from tables, for the Adjustments page's LUTs shelf.
     pub catalogue_luts: Rc<VecModel<CatalogueEntryData>>,
     pub catalogue_audio: Rc<VecModel<CatalogueEntryData>>,
+    /// The Library's sound-effect shelf: the same, less the treatments,
+    /// which are switches under Basic > Treatments and not cards.
+    pub catalogue_audio_library: Rc<VecModel<CatalogueEntryData>>,
     pub catalogue_transitions: Rc<VecModel<CatalogueEntryData>>,
     pub effect_groups: Rc<VecModel<SharedString>>,
     pub filter_groups: Rc<VecModel<SharedString>>,
@@ -774,12 +786,13 @@ pub struct Models {
     pub link_wheels: RefCell<HashMap<i32, Rc<VecModel<WheelData>>>>,
     pub link_curves: RefCell<HashMap<i32, Rc<VecModel<CurveData>>>>,
     pub curve_points: RefCell<HashMap<(i32, String), Rc<VecModel<CurvePointData>>>>,
-    /// The Speed tab's curve: its points and the presets' names, kept like
-    /// the colour curves' so a point being dragged is not dropped.
-    pub speed_points: Rc<VecModel<CurvePointData>>,
+    /// The Speed graph's points, kept like the rest so a point being
+    /// dragged is not dropped when the graph is published under the pointer.
+    pub ramp_points: Rc<VecModel<SpeedPointData>>,
     /// Which of them are chosen, one flag a point.
-    pub speed_chosen: Rc<VecModel<bool>>,
-    pub speed_presets: Rc<VecModel<SharedString>>,
+    pub curve_selected: Rc<VecModel<bool>>,
+    /// The speed presets' names, in the interface's language.
+    pub preset_labels: Rc<VecModel<SharedString>>,
     /// The keyframe cluster's rows and the libraries' views: synced like
     /// the rest, since a model handed over fresh is unequal to the last by
     /// identity and re-evaluates every binding on it.
@@ -849,6 +862,7 @@ impl Models {
             catalogue_filters: Rc::new(VecModel::default()),
             catalogue_luts: Rc::new(VecModel::default()),
             catalogue_audio: Rc::new(VecModel::default()),
+            catalogue_audio_library: Rc::new(VecModel::default()),
             catalogue_transitions: Rc::new(VecModel::default()),
             effect_groups: Rc::new(VecModel::default()),
             filter_groups: Rc::new(VecModel::default()),
@@ -870,9 +884,9 @@ impl Models {
             link_wheels: RefCell::new(HashMap::new()),
             link_curves: RefCell::new(HashMap::new()),
             curve_points: RefCell::new(HashMap::new()),
-            speed_points: Rc::new(VecModel::default()),
-            speed_chosen: Rc::new(VecModel::default()),
-            speed_presets: Rc::new(VecModel::default()),
+            ramp_points: Rc::new(VecModel::default()),
+            curve_selected: Rc::new(VecModel::default()),
+            preset_labels: Rc::new(VecModel::default()),
             key_rows: Rc::new(VecModel::default()),
             key_editor_rows: Rc::new(VecModel::default()),
             key_marks: Rc::new(VecModel::default()),
@@ -1029,6 +1043,11 @@ pub struct Studio {
     pub media: crate::panes::media_bin::MediaBin,
     /// Decoded art by media id, and the ids a worker is decoding for.
     pub peaks: HashMap<String, Arc<Pyramid>>,
+    /// Each sound file's beats by media id, the ids being heard, and those
+    /// that could not be; see `studio::beats`.
+    pub beats: HashMap<String, Arc<concat_speech::beats::Beats>>,
+    pub beats_pending: HashSet<String>,
+    pub beats_failed: HashSet<String>,
     /// Filmstrips by media id: the picture, how many frames are in it, one
     /// frame's width and the strip's height, in the picture's own pixels.
     pub strips: HashMap<String, Strip>,
@@ -1088,6 +1107,9 @@ pub struct Studio {
     pub export: crate::panes::export::ExportPane,
     pub settings: crate::panes::settings::SettingsPane,
     pub relink: crate::panes::relink::RelinkPane,
+    /// The notice that part of the project cannot be shown, held back while
+    /// the relink dialog the same open raised is up; raised when it closes.
+    pub unread_pending: Option<String>,
     /// What the confirmation sheet is asking about, while it is up.
     pub confirm: Option<Confirm>,
     /// The clip whose incoming transition is selected, while no clip is:
@@ -1303,7 +1325,7 @@ pub struct Studio {
     voice_failed: HashSet<std::path::PathBuf>,
     /// The Speed graph's chosen points, by index, and the clip they are
     /// on: another clip selected chooses none.
-    speed_chosen: (String, Vec<usize>),
+    curve_selected: (String, Vec<usize>),
     /// The curve as it was when a drag of the chosen points began: each
     /// move is measured from it, so a point held at a limit does not drift.
     speed_grabbed: Option<Vec<model::SpeedPoint>>,
@@ -1679,6 +1701,8 @@ fn key_field_of(property: model::KeyProperty) -> ClipField {
         model::KeyProperty::OffsetX => ClipField::OffsetX,
         model::KeyProperty::OffsetY => ClipField::OffsetY,
         model::KeyProperty::Rotation => ClipField::Rotation,
+        model::KeyProperty::StretchX => ClipField::StretchX,
+        model::KeyProperty::StretchY => ClipField::StretchY,
         model::KeyProperty::Opacity => ClipField::Opacity,
         model::KeyProperty::Volume => ClipField::Volume,
     }
@@ -1802,6 +1826,7 @@ fn knob_range(property: model::KeyProperty) -> (f64, f64) {
         model::KeyProperty::Scale => (0.05, 8.0),
         model::KeyProperty::OffsetX | model::KeyProperty::OffsetY => (-1.0, 1.0),
         model::KeyProperty::Rotation => (-180.0, 180.0),
+        model::KeyProperty::StretchX | model::KeyProperty::StretchY => (0.1, 4.0),
         model::KeyProperty::Opacity => (0.0, 1.0),
         model::KeyProperty::Volume => (-60.0, 24.0),
     }
@@ -1840,44 +1865,339 @@ fn batch_value(field: ClipField, value: f64, reference: f64, current: f64) -> f6
 /// stops reading the constant the moment a property is keyed, so a knob or
 /// a stage drag that wrote it would change nothing on screen.
 fn write_keyable(clip: &mut Clip, property: model::KeyProperty, value: f64, at: f64) {
-    if clip.is_keyed(property) {
-        let ease = clip
-            .keys_on(property)
-            .rfind(|key| key.at < at)
-            .map_or(model::KeyEase::LINEAR, |key| key.ease);
-        clip.set_key(property, at, value, ease);
-        return;
+    clip.write_at(property, value, at);
+}
+
+thread_local! {
+    /// How the person asked for the edits being applied, when whoever is
+    /// applying them knows; see [`Asked`].
+    static ASKED: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
+/// What [`Asked::told`] leaves in place of a way of asking: the caller has
+/// written the line itself.
+const TOLD: &str = "";
+
+/// How the person asked for the edits applied while this is held - a
+/// shortcut, a menu row - so the log's line for an edit says what happened
+/// and how it was asked for in one: `edit: Split at 12.40 s (shortcut)`.
+/// The first to say wins: a key that goes through the menu's handler is a
+/// shortcut, not a menu row.
+pub(crate) struct Asked(Option<&'static str>);
+
+impl Asked {
+    /// Until this is dropped, edits were asked for by `how`.
+    pub(crate) fn by(how: &'static str) -> Asked {
+        let before = ASKED.get();
+        if before.is_none() {
+            ASKED.set(Some(how));
+        }
+        Asked(before)
     }
-    match property {
-        model::KeyProperty::Scale => clip.scale = value,
-        model::KeyProperty::OffsetX => clip.offset_x = value,
-        model::KeyProperty::OffsetY => clip.offset_y = value,
-        model::KeyProperty::Rotation => clip.rotation = value,
-        model::KeyProperty::Opacity => clip.opacity = value,
-        model::KeyProperty::Volume => clip.volume = value,
+
+    /// Until this is dropped, the caller says what happened in a line of
+    /// its own - "captions: placed 120 captions" - and the edits behind it
+    /// are detail.
+    pub(crate) fn told() -> Asked {
+        Asked(ASKED.replace(Some(TOLD)))
+    }
+
+    /// `line`, written at the level and with the ending the way of asking
+    /// gives it.
+    pub(crate) fn log(line: std::fmt::Arguments<'_>) {
+        match ASKED.get() {
+            Some(TOLD) => log::debug!("{line}"),
+            Some(how) => log::info!("{line} ({how})"),
+            None => log::info!("{line}"),
+        }
     }
 }
 
-/// A command as the activity trail names it: its kind, and for a batch
-/// the kinds inside it. Never its contents - a patch carries a title's
-/// words - which is what keeps a line a line.
-fn command_name(command: &Command) -> String {
-    if let Command::Batch { commands } = command {
-        let inside: Vec<String> = commands.iter().map(command_name).collect();
-        return format!("Batch[{}]", inside.join(", "));
+impl Drop for Asked {
+    fn drop(&mut self) {
+        ASKED.set(self.0);
     }
-    let text = format!("{command:?}");
-    text.chars()
-        .take_while(|c| c.is_ascii_alphanumeric())
-        .collect()
+}
+
+/// `count` clips, as a person says it.
+fn clips_of(count: usize) -> String {
+    if count == 1 {
+        "1 clip".to_owned()
+    } else {
+        format!("{count} clips")
+    }
+}
+
+/// A file's own name out of its path, which is all a line needs of it.
+pub(crate) fn file_name_of(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_owned())
+}
+
+/// A command's name as the log has it: the verb the interface uses, in
+/// English whatever language the interface is in. A table rather than the
+/// enum's own name, so a line reads `Split`, not `SplitClips`.
+fn command_kind(command: &Command) -> &'static str {
+    match command {
+        Command::AddMedia { .. } => "Import media",
+        Command::RemoveMedia { .. } => "Remove media",
+        Command::SetMediaPlaceholder { .. } => "Set media as a template slot",
+        Command::FillSlot { .. } => "Fill template slot",
+        Command::Batch { .. } => "Several edits",
+        Command::AddClip { .. }
+        | Command::AddClipAtFirstFree { .. }
+        | Command::AddClipsInSequence { .. } => "Add to timeline",
+        Command::AddTextClip { .. } => "Add text",
+        Command::AddShapeClip { .. } => "Add shape",
+        Command::AddLayerClip { sound: true, .. } => "Add audio effect layer",
+        Command::AddLayerClip { .. } => "Add effect layer",
+        Command::AddTransitionClip { .. } => "Add transition",
+        Command::SetClipSpeedCurve { curve: Some(_), .. } => "Speed ramp",
+        Command::SetClipSpeedCurve { .. } => "Remove speed ramp",
+        Command::MatchClip { .. } => "Copy clip settings",
+        Command::SetClipKey { .. } | Command::SetEffectKey { .. } | Command::SetMaskKey { .. } => {
+            "Set keyframe"
+        }
+        Command::ClearClipKey { .. }
+        | Command::ClearEffectKey { .. }
+        | Command::ClearMaskKey { .. } => "Remove keyframe",
+        Command::ClearClipKeys { .. }
+        | Command::ClearEffectKeys { .. }
+        | Command::ClearMaskKeys { .. } => "Remove keyframes",
+        Command::SetClipCutout {
+            cutout: Some(_), ..
+        } => "Remove background",
+        Command::SetClipCutout { .. } => "Remove background off",
+        Command::SetClipStabilize {
+            stabilize: Some(_), ..
+        } => "Stabilize",
+        Command::SetClipStabilize { .. } => "Stabilize off",
+        Command::SetClipVoice { voice: Some(_), .. } => "Voice isolation",
+        Command::SetClipVoice { .. } => "Voice isolation off",
+        Command::AddCutoutStroke { .. } => "Smart brush stroke",
+        Command::MoveClips { .. } => "Move",
+        Command::TrimClip { .. } => "Trim",
+        Command::SplitClips { .. } => "Split",
+        Command::ReplaceClipMedia { .. } => "Replace clip's file",
+        Command::SetClipEnhanced { on: true, .. } => "Enhance on",
+        Command::SetClipEnhanced { .. } => "Enhance off",
+        Command::FreezeFrame { .. } => "Freeze frame",
+        Command::MergeClips { .. } => "Merge",
+        Command::ConsolidateClips { .. } => "Merge into one clip",
+        Command::RemoveClips { ripple: true, .. } => "Ripple delete",
+        Command::RemoveClips { .. } => "Delete",
+        Command::UpdateClip { .. } => "Change clip",
+        Command::StyleTextRange { .. } => "Style text",
+        Command::ClearTextStyles { .. } => "Clear text styles",
+        Command::SetClipSpeed { .. } => "Speed",
+        Command::SetClipTransform { .. } => "Transform",
+        Command::FrameClip {
+            framing: model::Framing::Fit,
+            ..
+        } => "Fit to frame",
+        Command::FrameClip { .. } => "Fill frame",
+        Command::DetachAudio { .. } => "Detach audio",
+        Command::ReattachAudio { .. } => "Reattach audio",
+        Command::AddTrack { .. } => "Add track",
+        Command::RemoveTrack { .. } => "Delete track",
+        Command::SetTrackFlag {
+            flag: TrackFlag::Visible,
+            value,
+            ..
+        } => {
+            if *value {
+                "Show track"
+            } else {
+                "Hide track"
+            }
+        }
+        Command::SetTrackFlag { value, .. } => {
+            if *value {
+                "Mute track"
+            } else {
+                "Unmute track"
+            }
+        }
+        Command::AddTimeline => "New timeline",
+        Command::RemoveTimeline { .. } => "Delete timeline",
+        Command::SetTimelineVideo { .. } => "Project settings",
+        Command::SetTimelineBackground { .. } => "Canvas background",
+        Command::SetTimelineLinkage { on: true, .. } => "Linkage on",
+        Command::SetTimelineLinkage { .. } => "Linkage off",
+        Command::RenameTimeline { .. } => "Rename timeline",
+        Command::SelectTimeline { .. } => "Switch timeline",
+        Command::MoveTimeline { .. } => "Reorder timelines",
+        Command::AddFont { .. } => "Add font",
+        Command::RemoveFont { .. } => "Remove font",
+        Command::UpdateMediaPath { .. } => "Relink media",
+        Command::SetMediaColorRange { .. } => "Colour range",
+        Command::SetMediaBeats { marks: None, .. } => "Beats off",
+        Command::SetMediaBeats { .. } => "Beats",
+    }
+}
+
+/// What a patch changes about a clip, by name. Never to what: a patch
+/// carries a title's words and a clip's name.
+fn patch_words(patch: &ClipPatch) -> String {
+    let changed = [
+        (patch.name.is_some(), "name"),
+        (patch.volume.is_some(), "volume"),
+        (patch.fade_in.is_some() || patch.fade_out.is_some(), "fade"),
+        (patch.opacity.is_some(), "opacity"),
+        (patch.preserve_pitch.is_some(), "keep pitch"),
+        (patch.muted.is_some(), "mute"),
+        (patch.flip_h.is_some() || patch.flip_v.is_some(), "flip"),
+        (patch.blend.is_some(), "blend mode"),
+        (patch.crop.is_some(), "crop"),
+        (patch.masks.is_some(), "masks"),
+        (patch.motion.is_some(), "animation"),
+        (patch.filters.is_some(), "audio effects"),
+        (patch.video_effects.is_some(), "effects"),
+        (patch.transition_in.is_some(), "transition"),
+        (patch.text.is_some(), "text"),
+        (patch.shape.is_some(), "shape"),
+        (patch.audio_stream.is_some(), "audio track"),
+        (patch.background.is_some(), "background"),
+    ];
+    let names: Vec<&str> = changed
+        .into_iter()
+        .filter_map(|(set, name)| set.then_some(name))
+        .collect();
+    if names.is_empty() {
+        "nothing".to_owned()
+    } else {
+        names.join(", ")
+    }
+}
+
+/// A command as the activity trail says it: its name and the numbers that
+/// place it - where, how many, how much - and for a batch the kinds inside
+/// it, counted. Never its words: a title's text, a clip's or a timeline's
+/// name stay out of the log.
+fn command_words(command: &Command) -> String {
+    let kind = command_kind(command);
+    match command {
+        Command::Batch { commands } => match commands.as_slice() {
+            [] => "Nothing".to_owned(),
+            [only] => command_words(only),
+            _ => {
+                // The kinds in the order they first come, each with how
+                // many: a hundred captions are one "Add text ×100".
+                let mut kinds: Vec<(&'static str, usize)> = Vec::new();
+                for inner in commands {
+                    let name = command_kind(inner);
+                    match kinds.iter_mut().find(|(known, _)| *known == name) {
+                        Some((_, count)) => *count += 1,
+                        None => kinds.push((name, 1)),
+                    }
+                }
+                let more = kinds.len().saturating_sub(4);
+                let mut words: Vec<String> = kinds
+                    .into_iter()
+                    .take(4)
+                    .map(|(name, count)| {
+                        if count == 1 {
+                            name.to_owned()
+                        } else {
+                            format!("{name} ×{count}")
+                        }
+                    })
+                    .collect();
+                if more > 0 {
+                    words.push(format!("{more} more kinds"));
+                }
+                words.join(", ")
+            }
+        },
+        Command::AddMedia { item } | Command::FillSlot { item, .. } => {
+            format!("{kind} {}", file_name_of(&item.path))
+        }
+        Command::AddClip { start, ripple, .. } => {
+            let how = if *ripple {
+                ", pushing what follows"
+            } else {
+                ""
+            };
+            format!("{kind} at {start:.2} s{how}")
+        }
+        Command::AddClipAtFirstFree { start, .. }
+        | Command::AddTextClip { start, .. }
+        | Command::AddShapeClip { start, .. } => format!("{kind} at {start:.2} s"),
+        Command::AddClipsInSequence {
+            media_ids, start, ..
+        } => format!("{kind} {} at {start:.2} s", clips_of(media_ids.len())),
+        Command::AddLayerClip {
+            start, effect_id, ..
+        } => format!("{kind} {effect_id} at {start:.2} s"),
+        Command::AddTransitionClip {
+            start,
+            transition_id,
+            ..
+        } => format!("{kind} {transition_id} at {start:.2} s"),
+        Command::SetClipSpeedCurve {
+            curve: Some(points),
+            ..
+        } => format!("{kind} with {} points", points.len()),
+        Command::SetClipKey { at, .. }
+        | Command::SetEffectKey { at, .. }
+        | Command::SetMaskKey { at, .. }
+        | Command::ClearClipKey { at, .. }
+        | Command::ClearEffectKey { at, .. }
+        | Command::ClearMaskKey { at, .. } => format!("{kind} at {at:.2} s"),
+        Command::MoveClips { moves } => format!("{kind} {}", clips_of(moves.len())),
+        Command::TrimClip {
+            edge,
+            delta,
+            ripple,
+            ..
+        } => {
+            let edge = match edge {
+                TrimEdge::Start => "start",
+                TrimEdge::End => "end",
+            };
+            let how = if *ripple { ", rippling" } else { "" };
+            format!("{kind} a clip's {edge} by {delta:+.2} s{how}")
+        }
+        Command::SplitClips { clip_ids, time } => {
+            if clip_ids.len() == 1 {
+                format!("{kind} at {time:.2} s")
+            } else {
+                format!("{kind} {} at {time:.2} s", clips_of(clip_ids.len()))
+            }
+        }
+        Command::ReplaceClipMedia { item, .. } | Command::ConsolidateClips { item, .. } => {
+            format!("{kind}, now {}", file_name_of(&item.path))
+        }
+        Command::FreezeFrame { time, .. } => format!("{kind} at {time:.2} s"),
+        Command::MergeClips { clip_ids } | Command::RemoveClips { clip_ids, .. } => {
+            format!("{kind} {}", clips_of(clip_ids.len()))
+        }
+        Command::UpdateClip { patch, .. } => format!("{kind}: {}", patch_words(patch)),
+        Command::SetClipSpeed { speed, .. } => format!("{kind} {speed:.2}x"),
+        Command::SetTimelineVideo { video, .. } => format!(
+            "{kind} {}x{} {:.3} fps",
+            video.width,
+            video.height,
+            video.rate()
+        ),
+        Command::AddFont { path, .. } => format!("{kind} {}", file_name_of(path)),
+        Command::RemoveFont { family } => format!("{kind} {family}"),
+        Command::UpdateMediaPath { new_path, .. } => {
+            format!("{kind} to {}", file_name_of(new_path))
+        }
+        _ => kind.to_owned(),
+    }
 }
 
 /// The commands that turn `before` into `after`, clip `id` as the echo
 /// left it against the document's: a transform, a cutout, a
 /// stabilization, a speed, the
 /// keys, and one patch for everything else that differs. Empty when
-/// nothing does.
-fn clip_commands(id: &str, before: &Clip, after: &Clip, magnetic: bool) -> Vec<Command> {
+/// nothing does. A speed change on a magnetic timeline moves the lane
+/// behind the clip with its end.
+fn clip_edit_commands(id: &str, before: &Clip, after: &Clip, magnetic: bool) -> Vec<Command> {
     let mut commands = Vec::new();
     if after.scale != before.scale
         || after.offset_x != before.offset_x
@@ -1916,27 +2236,23 @@ fn clip_commands(id: &str, before: &Clip, after: &Clip, magnetic: bool) -> Vec<C
             voice: after.voice,
         });
     }
-    if after.speed_curve != before.speed_curve {
-        // A curve, changed or new, is one command; a curve taken away is
-        // the constant rate the echo left, which SetClipSpeed sets and
-        // which ends the curve.
-        commands.push(match &after.speed_curve {
-            Some(_) => Command::SetClipSpeedCurve {
+    // A curve still on the clip lands as the curve, which brings the rate
+    // and the length with it. Without one, a rate that moved lands as the
+    // rate - and so does taking a curve away, at the rate it averaged, as
+    // setting a rate is what ends a curve.
+    if after.speed_curve.is_some() {
+        if after.speed_curve != before.speed_curve {
+            commands.push(Command::SetClipSpeedCurve {
                 clip_id: id.to_owned(),
-                ripple: magnetic,
                 curve: after.speed_curve.clone(),
-            },
-            None => Command::SetClipSpeed {
-                clip_id: id.to_owned(),
                 ripple: magnetic,
-                speed: after.speed,
-            },
-        });
-    } else if after.speed != before.speed {
+            });
+        }
+    } else if after.speed != before.speed || before.speed_curve.is_some() {
         commands.push(Command::SetClipSpeed {
             clip_id: id.to_owned(),
-            ripple: magnetic,
             speed: after.speed,
+            ripple: magnetic,
         });
     }
     let mut patch = ClipPatch::default();
@@ -2534,6 +2850,10 @@ pub enum Confirm {
     /// Restarting for a setting that is read only at launch: the project
     /// is saved, and opens again in the new window.
     Restart,
+    /// The run before this one died, on a phone: said once, at launch,
+    /// with its log to share (#560).
+    #[cfg(target_os = "android")]
+    LastRunClosed,
 }
 
 /// One clip on the clipboard: the clip as it was when copied, the row of
@@ -2550,61 +2870,114 @@ pub struct Held {
     pub media: Option<model::MediaItem>,
 }
 
-/// The edits that make `placed` - the whole of `source`'s file, just laid
-/// on a free stretch of the lane - into a copy of `source` at `start` on
-/// `track_id`: its frames, speed and placement, and then everything else
-/// it has (see [`match_command`]).
+/// Changes smaller than this are not made: a copy that already matches
+/// gets no edit that does nothing.
+const COPY_SAME: f64 = 1e-6;
+
+/// The latest end of any clip on lane `track_id` of `timeline`, 0 for an
+/// empty lane: where a copy's file is first laid, so nothing lies after it
+/// while it is cut and retimed.
+fn lane_end(timeline: &Timeline, track_id: &str) -> f64 {
+    timeline
+        .clips
+        .iter()
+        .filter(|clip| clip.track_id == track_id)
+        .map(|clip| clip.start + clip.duration)
+        .fold(0.0, f64::max)
+}
+
+/// The first half of a copy of a media clip: `source`'s whole file laid at
+/// the end of lane `track_id`, where nothing can clamp the edits that
+/// shape it (see [`shape_copy`]).
+fn lay_command(timeline: &Timeline, source: &Clip, track_id: &str) -> Command {
+    Command::AddClip {
+        media_id: source.media_id.clone(),
+        track_id: track_id.to_owned(),
+        start: lane_end(timeline, track_id),
+        ripple: false,
+    }
+}
+
+/// The edits, applied in order as one batch, that make `laid` - the whole
+/// of the original's file, just put down with nothing after it on its
+/// lane - into a copy of `of` on `lane` at `at`: its frames, its speed and
+/// its place, and then everything else it has (see [`match_command`]).
 ///
-/// The footage is trimmed at normal speed to what the source covers, then
-/// retimed - the speed command keeps the footage covered and recomputes
-/// the length - and only then moved to `start`, so neighbours there never
-/// push the whole file aside and shift the frames the trims cut.
-fn copy_commands(source: &Clip, placed: &Clip, track_id: &str, start: f64) -> Vec<Command> {
-    let created = &placed.id;
-    let mut commands = Vec::new();
-    let head = source.source_start - placed.source_start;
-    if head.abs() > 1e-6 {
-        commands.push(Command::TrimClip {
-            clip_id: created.clone(),
-            edge: TrimEdge::Start,
-            delta: head,
+/// The footage is cut at the laid clip's own pace first, the tail before
+/// the head so the head never meets the shortest-clip limit; then the
+/// clip is retimed, which works the length out from the footage; and only
+/// then is it moved, so the neighbours where it lands can clamp none of
+/// the cuts. The move takes the editor's rule: a start that would cover a
+/// clip becomes the nearest one where the whole copy fits. Every edit is
+/// plain, never magnetic, so no other clip moves.
+fn shape_copy(of: &Clip, laid: &Clip, lane: &str, at: f64) -> Vec<Command> {
+    use concat_project::model::ranges::{MAX_SPEED, MIN_SPEED};
+    use concat_project::speed;
+
+    let id = &laid.id;
+    // A curve the editor would not take is no curve: the copy plays at
+    // the original's constant rate instead.
+    let curve = of
+        .speed_curve
+        .clone()
+        .filter(|points| speed::engine_curve(points).is_some());
+    // The rate the editor gives the copy, and so the footage that rate
+    // must cover to last as long as the original does.
+    let rate = curve
+        .as_deref()
+        .map_or(of.speed, speed::average_speed)
+        .clamp(MIN_SPEED, MAX_SPEED);
+    let footage = of.duration * rate;
+    let pace = laid.speed.max(MIN_SPEED);
+    // One cut, plain: nothing else on the lane moves for it.
+    let cut = |edge: TrimEdge, by: f64| Command::TrimClip {
+        ripple: false,
+        clip_id: id.clone(),
+        delta: by,
+        edge,
+    };
+
+    let mut edits = Vec::with_capacity(5);
+    let laid_end = laid.source_start + laid.duration * pace;
+    let off_the_tail = (of.source_start + footage - laid_end) / pace;
+    if off_the_tail.abs() > COPY_SAME {
+        edits.push(cut(TrimEdge::End, off_the_tail));
+    }
+    let off_the_head = (of.source_start - laid.source_start) / pace;
+    if off_the_head.abs() > COPY_SAME {
+        edits.push(cut(TrimEdge::Start, off_the_head));
+    }
+
+    if let Some(points) = curve {
+        edits.push(Command::SetClipSpeedCurve {
+            ripple: false,
+            clip_id: id.clone(),
+            curve: Some(points),
+        });
+    } else if (rate - pace).abs() > COPY_SAME {
+        edits.push(Command::SetClipSpeed {
+            clip_id: id.clone(),
+            speed: rate,
             ripple: false,
         });
     }
-    // The footage the source covers, at normal speed.
-    let covered = source.duration * source.speed;
-    let tail = covered - (placed.duration - head);
-    if tail.abs() > 1e-6 {
-        commands.push(Command::TrimClip {
-            clip_id: created.clone(),
-            edge: TrimEdge::End,
-            delta: tail,
-            ripple: false,
+
+    // A plain head cut carries the clip's start along with it.
+    let stands_at = laid.start + off_the_head;
+    let wanted = at.max(0.0);
+    if (wanted - stands_at).abs() > COPY_SAME || laid.track_id != lane {
+        let to_its_place = ClipMove {
+            track_id: lane.to_owned(),
+            start: wanted,
+            clip_id: id.clone(),
+        };
+        edits.push(Command::MoveClips {
+            moves: vec![to_its_place],
         });
     }
-    if (source.speed - 1.0).abs() > 1e-9 {
-        commands.push(Command::SetClipSpeed {
-            clip_id: created.clone(),
-            ripple: false,
-            speed: source.speed,
-        });
-    }
-    if source.speed_curve.is_some() {
-        commands.push(Command::SetClipSpeedCurve {
-            clip_id: created.clone(),
-            ripple: false,
-            curve: source.speed_curve.clone(),
-        });
-    }
-    commands.push(Command::MoveClips {
-        moves: vec![ClipMove {
-            clip_id: created.clone(),
-            start,
-            track_id: track_id.to_owned(),
-        }],
-    });
-    commands.push(match_command(source, created));
-    commands
+
+    edits.push(match_command(of, id));
+    edits
 }
 
 /// Makes `created` like `source` in everything but its place, named as a
@@ -2713,7 +3086,7 @@ impl Studio {
                 .log_level
                 .as_deref()
                 .and_then(concat_host::logs::level_named)
-            && level != log::max_level()
+            && level != concat_host::logs::level()
         {
             concat_host::logs::set_level(level);
         }
@@ -2734,6 +3107,9 @@ impl Studio {
             autosave: slint::Timer::default(),
             media: crate::panes::media_bin::MediaBin::default(),
             peaks: HashMap::new(),
+            beats: HashMap::new(),
+            beats_pending: HashSet::new(),
+            beats_failed: HashSet::new(),
             strips: HashMap::new(),
             windows: HashMap::new(),
             art_pending: HashSet::new(),
@@ -2761,6 +3137,7 @@ impl Studio {
             export: Default::default(),
             settings: crate::panes::settings::SettingsPane::default(),
             relink: crate::panes::relink::RelinkPane::default(),
+            unread_pending: None,
             confirm: None,
             transition_selected: None,
             open_menu: -1,
@@ -2832,7 +3209,7 @@ impl Studio {
             voice_jobs: HashMap::new(),
             voice_cancel: None,
             voice_failed: HashSet::new(),
-            speed_chosen: (String::new(), Vec::new()),
+            curve_selected: (String::new(), Vec::new()),
             speed_grabbed: None,
             stabilize_retry: HashSet::new(),
             mask_focus: None,
@@ -2936,7 +3313,8 @@ mod tests {
     use super::{
         Command, Footprint, Studio, adjust_key_names, chain_choices, chain_colours, chain_rows,
         colour_about, custom_frame, custom_rate, fps_of, grading_rows, has_hue, home_folder,
-        key_commands, packed, place_in, shown, wheel_partners, write_keyable,
+        key_commands, key_field_of, knob_range, packed, place_in, shown, wheel_partners,
+        write_keyable,
     };
 
     /// The inspector writes its Voice isolation into the echo, and the
@@ -2950,7 +3328,7 @@ mod tests {
         for mix in [Some(VoiceMix::KEEP_VOICE), Some(VoiceMix::REMOVE_VOICE)] {
             let mut after = before.clone();
             after.voice = mix;
-            let commands = super::clip_commands("c1", &before, &after, false);
+            let commands = super::clip_edit_commands("c1", &before, &after, false);
             assert!(
                 commands.iter().any(|command| matches!(
                     command,
@@ -2962,7 +3340,7 @@ mod tests {
         let mut on = before.clone();
         on.voice = Some(VoiceMix::KEEP_VOICE);
         assert!(
-            super::clip_commands("c1", &on, &before, false)
+            super::clip_edit_commands("c1", &on, &before, false)
                 .iter()
                 .any(|command| matches!(command, Command::SetClipVoice { voice: None, .. }))
         );
@@ -2990,11 +3368,11 @@ mod tests {
             })
         };
         assert_eq!(
-            patched(super::clip_commands("c1", &before, &after, false)),
+            patched(super::clip_edit_commands("c1", &before, &after, false)),
             Some(after.motion.clone())
         );
         assert_eq!(
-            patched(super::clip_commands("c1", &after, &before, false)),
+            patched(super::clip_edit_commands("c1", &after, &before, false)),
             Some(None)
         );
     }
@@ -3060,6 +3438,36 @@ mod tests {
         // A thousandth of a second past the cut at 2 is that cut's frame.
         assert_eq!(walk(2.001, true), 3.0);
         assert_eq!(walk(2.001, false), 1.0);
+    }
+
+    /// The three treatments are packages the Treatments switches turn on,
+    /// so they must exist as sound packages; and they are switches, not
+    /// cards, so the Library's sound shelf leaves them out while the rest
+    /// of the sound library stays.
+    #[test]
+    fn the_treatments_are_switches_not_library_cards() {
+        use concat_effects::catalogue::Catalogue;
+        let audio: Vec<&str> = Catalogue::builtin()
+            .of_kind(super::SHELF_KINDS[2])
+            .map(|package| package.manifest.effect.id.as_str())
+            .collect();
+        for id in super::TREATMENTS {
+            assert!(audio.contains(&id), "{id} is a sound package");
+        }
+        let view = Default::default();
+        let (_, shelf) = super::shelves(
+            super::SHELF_KINDS[2],
+            &view,
+            &[],
+            &std::cell::RefCell::new(std::collections::HashMap::new()),
+            &std::collections::HashMap::new(),
+            |package| !super::TREATMENTS.contains(&package.manifest.effect.id.as_str()),
+        );
+        let ids: Vec<String> = shelf.iter().map(|entry| entry.id.to_string()).collect();
+        for id in super::TREATMENTS {
+            assert!(!ids.iter().any(|shown| shown == id), "{id} is not a card");
+        }
+        assert_eq!(ids.len(), audio.len() - super::TREATMENTS.len());
     }
 
     /// A text box's caret counts bytes and a run counts characters: an
@@ -3140,80 +3548,6 @@ mod tests {
                 .iter()
                 .all(Option::is_none)
         );
-    }
-
-    /// A copy of a split clip's tail, laid right after it, shows the
-    /// tail's frames at the tail's speed - not the file's opening frames,
-    /// which it showed when the whole file was laid over the halves (#335).
-    #[test]
-    fn a_copy_of_a_split_tail_shows_the_tails_frames() {
-        use concat_project::Editor;
-        use concat_project::commands::NewMedia;
-        use concat_project::model::MediaKind;
-        for speed in [1.0, 2.0] {
-            let mut editor = Editor::new();
-            let item = NewMedia {
-                path: "/a.mp4".to_owned(),
-                name: "a.mp4".to_owned(),
-                duration: Some(10.0),
-                kind: MediaKind::Video,
-                width: Some(1920),
-                height: Some(1080),
-                frame_rate: Some(30.0),
-                frame_rate_fraction: Some("30/1".to_owned()),
-                video_codec: Some("h264".to_owned()),
-                audio_codec: None,
-                has_audio: false,
-                audio_tracks: Vec::new(),
-                origin: None,
-                color_space: Default::default(),
-            };
-            let apply =
-                |editor: &mut Editor, command| editor.apply(command).expect("applies").created_id;
-            let media_id = apply(&mut editor, Command::AddMedia { item }).expect("media");
-            let track_id = editor.project().active().tracks[0].id.clone();
-            let add = |start| Command::AddClip {
-                media_id: media_id.clone(),
-                track_id: track_id.clone(),
-                start,
-                ripple: false,
-            };
-            let whole = apply(&mut editor, add(0.0)).expect("clip");
-            apply(
-                &mut editor,
-                Command::SetClipSpeed {
-                    clip_id: whole.clone(),
-                    ripple: false,
-                    speed,
-                },
-            );
-            apply(
-                &mut editor,
-                Command::SplitClips {
-                    clip_ids: vec![whole],
-                    time: 2.0,
-                },
-            );
-            let tail = editor.project().active().clips[1].clone();
-            let end = tail.start + tail.duration;
-
-            let placed = apply(&mut editor, add(end)).expect("copy");
-            let placed = editor
-                .project()
-                .active()
-                .clip(&placed)
-                .expect("placed")
-                .clone();
-            let commands = super::copy_commands(&tail, &placed, &track_id, end);
-            apply(&mut editor, Command::Batch { commands });
-
-            let copy = editor.project().active().clip(&placed.id).expect("copy");
-            assert_eq!(
-                (copy.start, copy.duration, copy.source_start, copy.speed),
-                (end, tail.duration, tail.source_start, speed),
-                "at speed {speed}"
-            );
-        }
     }
 
     /// A detach that cannot happen has a reason to give, and a picture
@@ -3571,6 +3905,49 @@ mod tests {
         assert_eq!(place_in(&after, 12.0), 1.0, "held to the end");
     }
 
+    /// Width and height key the way scale does: a knob on an unkeyed pull
+    /// sets the constant, and once it carries keys the knob writes a key
+    /// that the commit carries, while the other axis is left as it was.
+    /// Every keyable property has a field that names it and back, which
+    /// is what lets an inspector row and a Keyframes row find each other.
+    #[test]
+    fn a_pull_is_keyed_like_a_scale() {
+        use concat_project::model::{Clip, ClipKind, KeyEase, KeyProperty};
+        let before = Clip::blank("c1", "t1", ClipKind::Video, "clip", 0.0, 10.0);
+        let mut after = before.clone();
+        write_keyable(&mut after, KeyProperty::StretchX, 1.5, 0.5);
+        assert_eq!(after.stretch_x, 1.5, "no keys: the constant");
+
+        after.set_key(KeyProperty::StretchX, 0.0, 1.0, KeyEase::LINEAR);
+        write_keyable(&mut after, KeyProperty::StretchX, 2.0, 1.0);
+        assert_eq!(after.stretch_x, 1.5, "keyed: the constant is left alone");
+        assert_eq!(shown(&after, KeyProperty::StretchX, 0.5), 1.5);
+        assert_eq!(shown(&after, KeyProperty::StretchY, 0.5), 1.0);
+        let commands = key_commands("c1", &before, &after);
+        assert_eq!(commands.len(), 2, "one per key: {commands:?}");
+        assert!(commands.iter().all(|command| matches!(
+            command,
+            Command::SetClipKey {
+                property: KeyProperty::StretchX,
+                ..
+            }
+        )));
+
+        for property in KeyProperty::ALL {
+            assert_eq!(
+                Studio::key_property_of(key_field_of(property)),
+                Some(property)
+            );
+            let (low, high) = knob_range(property);
+            assert!(low < high, "{property:?}");
+        }
+        assert_eq!(
+            knob_range(KeyProperty::StretchY),
+            (0.1, 4.0),
+            "the inspector's"
+        );
+    }
+
     /// A batch level lands on every clip as the inspector commits it - one
     /// batch of each clip's commands - and one undo takes all of it back:
     /// the plain clip's level and the keyed clip's whole ride, with no key
@@ -3636,7 +4013,7 @@ mod tests {
             let before = document.active().clip(id).expect("clip");
             let mut after = before.clone();
             crate::batch_volume::set_level(&mut after, before, 0.5, 0.0);
-            commands.extend(super::clip_commands(id, before, &after, false));
+            commands.extend(super::clip_edit_commands(id, before, &after, false));
         }
         editor.apply(Command::Batch { commands }).expect("applies");
         let clip = |editor: &concat_project::Editor, id: &str| {

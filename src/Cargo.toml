@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.2.10"
+version = "0.2.12"
 edition = "2024"
 rust-version = "1.93"
 license = "AGPL-3.0-or-later"
@@ -22,6 +22,7 @@ concat-speech = { path = "crates/concat-speech" }
 concat-effects = { path = "crates/concat-effects" }
 concat-text = { path = "crates/concat-text" }
 concat-vision = { path = "crates/concat-vision" }
+concat-log = { path = "crates/concat-log" }
 concat = { path = "crates/concat" }
 
 serde_json = "1"
@@ -61,6 +62,16 @@ too_many_arguments = "allow"
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+
+# The window's crate, split for the compiler. Its Slint code expands to
+# about 970,000 lines of Rust (81,000 functions, 86 MB), and as one unit
+# that is compiled on one core: 74 of the 76 minutes of CI's iOS build,
+# and growing with every screen. In units it is compiled on every core,
+# and thin LTO still inlines across them. The engine crates, where the
+# frame time is spent, stay one unit each. The app profile's fat LTO
+# merges the units back into one module before optimising.
+[profile.release.package.concat]
+codegen-units = 16
 
 # For trying a change in the window: `cargo dev` (an alias for
 # `cargo run --bin concat --profile quick`, see .cargo/config.toml).
@@ -161,11 +172,22 @@ debug = 0
 # bump it with Slint, re-applying the change.
 [patch.crates-io]
 i-slint-renderer-skia = { path = "patches/i-slint-renderer-skia" }
+# Slint's Android backend, as published, with one change: a mouse wheel's
+# scroll scrolls rather than panicking in a `todo!()` (#800; see
+# patches/README.md). 1.18.1 exactly, as the renderer above.
+i-slint-backend-android-activity = { path = "patches/i-slint-backend-android-activity" }
 # whisper.cpp's Rust build, as published, able to build ggml as shared
 # libraries with one CPU backend per x86_64 generation chosen at run time
 # (see patches/README.md, and GGML_BACKEND_DL in build-app.yml). 0.15.0
 # exactly; bump it with whisper-rs, re-applying the change.
 whisper-rs-sys = { path = "patches/whisper-rs-sys" }
+# wgpu's hardware layer, as published, with its Vulkan memory gates reading
+# the heap an allocation lands in: a buffer the CPU writes is no longer
+# refused over a spent BAR the allocator would go past, and the BAR no
+# longer loses the device (#746; see patches/README.md). 30.0.1 exactly;
+# bump it with wgpu, re-applying the change.
+wgpu-hal = { path = "patches/wgpu-hal" }
+
 # Preserve JNI's unsigned-byte return ABI on 64-bit Android. The published
 # binding otherwise interprets nonzero upper register bits as an exception.
 # See patches/README.md for the native reproduction and patch scope.

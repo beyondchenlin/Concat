@@ -28,6 +28,8 @@ pub mod brush;
 pub mod capcut;
 pub mod cards;
 pub mod consolidate;
+#[cfg(test)]
+mod consolidate_tests;
 pub mod crash;
 pub mod cutout;
 pub mod dirs;
@@ -43,6 +45,8 @@ pub mod models;
 pub mod net;
 pub mod playback;
 pub mod preview;
+#[cfg(test)]
+mod project_save_tests;
 pub mod projects;
 pub mod proxy;
 pub mod record;
