@@ -1,0 +1,196 @@
+{
+  "kind": "resource-review-and-cleanup-not-a-build",
+  "sourceCommit": "815f8303247670e44d200a6db13e683f2044981e",
+  "note": "Structured evidence summary; original receipts remain on the build machine. Related service identities are omitted. Cleanup's original integer-rounded ShortOf50GiB field is not used; the fresh preflight calculates the deficit from free bytes.",
+  "memory": {
+    "cacheReclaim": {
+      "operation": "one-time clean cache reclamation in existing docker-desktop VM",
+      "before": {
+        "At": "2026-11-22T16:01:42.7582035+08:00",
+        "FreePhysicalGiB": 13.894,
+        "FreeVirtualGiB": 38.463
+      },
+      "after": {
+        "At": "2026-11-22T16:01:49.3828305+08:00",
+        "FreePhysicalGiB": 13.832,
+        "FreeVirtualGiB": 38.891
+      },
+      "containerSetUnchanged": true,
+      "containerCount": 13,
+      "persistentConfigurationChanged": false
+    },
+    "final": {
+      "at": "2026-11-22T16:11:31.3195662+08:00",
+      "totalPhysicalGiB": 31.816,
+      "freePhysicalGiB": 14.149,
+      "freeVirtualGiB": 39.636,
+      "compilerCount": 0
+    }
+  },
+  "cleanup": {
+    "started": "2026-11-22T16:10:18.4462551+08:00",
+    "finished": "2026-11-22T16:10:29.0953822+08:00",
+    "success": true,
+    "deletedDirectoryEntries": 14233,
+    "deletedLogicalBytes": 18530223246,
+    "inventories": [
+      {
+        "Path": "C:\\BK-CAT-app-target-20261119\\app",
+        "Kind": "directory",
+        "Files": 2828,
+        "LogicalBytes": 1433111165,
+        "SkippedReparsePoints": 0
+      },
+      {
+        "Path": "C:\\BK-CAT-app-target-20261119\\quick",
+        "Kind": "directory",
+        "Files": 3130,
+        "LogicalBytes": 1446225082,
+        "SkippedReparsePoints": 0
+      },
+      {
+        "Path": "C:\\BK-CAT-app-target-20261119\\x86_64-pc-windows-msvc\\quick\\incremental",
+        "Kind": "directory",
+        "Files": 1870,
+        "LogicalBytes": 7200157128,
+        "SkippedReparsePoints": 0
+      },
+      {
+        "Path": "C:\\BK-CAT-app-target-20261119\\x86_64-pc-windows-msvc\\app\\deps",
+        "Kind": "directory",
+        "Files": 1127,
+        "LogicalBytes": 1970448068,
+        "SkippedReparsePoints": 2
+      },
+      {
+        "Path": "C:\\BK-CAT-app-target-20261119\\x86_64-pc-windows-msvc\\app\\build",
+        "Kind": "directory",
+        "Files": 1096,
+        "LogicalBytes": 231369294,
+        "SkippedReparsePoints": 0
+      },
+      {
+        "Path": "C:\\BK-CAT-app-target-20261119\\x86_64-pc-windows-msvc\\quick\\deps",
+        "Kind": "directory",
+        "Files": 1182,
+        "LogicalBytes": 4000101551,
+        "SkippedReparsePoints": 2
+      },
+      {
+        "Path": "C:\\BK-CAT-app-target-20261119\\x86_64-pc-windows-msvc\\quick\\build",
+        "Kind": "directory",
+        "Files": 1152,
+        "LogicalBytes": 247191901,
+        "SkippedReparsePoints": 0
+      },
+      {
+        "Path": "D:\\BK-CAT-build\\template-tests-20261116\\debug",
+        "Kind": "directory",
+        "Files": 565,
+        "LogicalBytes": 693798483,
+        "SkippedReparsePoints": 0
+      },
+      {
+        "Path": "D:\\BK-CAT-build\\template-tests-20261116\\x86_64-pc-windows-msvc",
+        "Kind": "directory",
+        "Files": 1282,
+        "LogicalBytes": 1029614622,
+        "SkippedReparsePoints": 0
+      },
+      {
+        "Path": "E:\\BK-CAT\\.build\\bk-cat-diagnostic-binaries-20261119\\concat-agent-accept-20261119.exe",
+        "Kind": "file",
+        "Files": 1,
+        "LogicalBytes": 278205952,
+        "SkippedReparsePoints": 0
+      }
+    ],
+    "skippedReparsePointCount": 4,
+    "preservedProgramHashesVerified": true,
+    "diskChanges": [
+      {
+        "Drive": "C",
+        "BeforeFreeGiB": 25.897,
+        "AfterFreeGiB": 39.818,
+        "ObservedFreeChangeGiB": 13.921
+      },
+      {
+        "Drive": "D",
+        "BeforeFreeGiB": 41.461,
+        "AfterFreeGiB": 42.982,
+        "ObservedFreeChangeGiB": 1.521
+      },
+      {
+        "Drive": "E",
+        "BeforeFreeGiB": 32.25,
+        "AfterFreeGiB": 32.509,
+        "ObservedFreeChangeGiB": 0.259
+      }
+    ],
+    "noSourceOrCurrentBuildCacheRemoved": true,
+    "noServicesStopped": true
+  },
+  "finalPreflight": {
+    "at": "2026-11-22T16:11:31.3195662+08:00",
+    "disks": [
+      {
+        "Drive": "C",
+        "FreeBytes": 42756239360,
+        "FreeGiB": 39.82,
+        "ShortOf50GiB": 10.18
+      },
+      {
+        "Drive": "D",
+        "FreeBytes": 46151659520,
+        "FreeGiB": 42.982,
+        "ShortOf50GiB": 7.018
+      },
+      {
+        "Drive": "E",
+        "FreeBytes": 34905919488,
+        "FreeGiB": 32.509,
+        "ShortOf50GiB": 17.491
+      }
+    ],
+    "cleanupStillRunning": false,
+    "build12Started": false,
+    "activeProfile": false
+  },
+  "scriptsPreparedNotExecuted": [
+    {
+      "file": "build-android-refinements-12.ps1",
+      "bytes": 29679,
+      "sha256": "84285F4C5740BCD2D31FB7066A0FDAB62A218D3186DA309B20AEC9E0DA813EA0"
+    },
+    {
+      "file": "run-refinements-host-tests-build12.ps1",
+      "bytes": 49486,
+      "sha256": "16F1744F018C9FC85F77CDEA2EA9AA240E717B2A9A5F23CF94617A9A5CD8C8DB"
+    },
+    {
+      "file": "run-upstream-save-tests-build12.ps1",
+      "bytes": 48461,
+      "sha256": "F49127E29CD8CF8D0CDFB00B98BD914C70A61F4DC4DB36E08B5A8ABB7A44892B"
+    }
+  ],
+  "originalEvidenceHashes": [
+    {
+      "Name": "verified-old-cache-cleanup-20261122-result.json",
+      "Bytes": 5599,
+      "Sha256": "946CEC3AD4DB8180CD05D5CC1145C2C0E830A2F85C8806566CAD3D09795E9AEF"
+    },
+    {
+      "Name": "verified-old-cache-cleanup-20261122-before.json",
+      "Bytes": 5499122,
+      "Sha256": "610949D2ADB88997A81274B5B40D6EF235D7CDE931020E7F3077636EB9AF0704"
+    },
+    {
+      "Name": "memory-cache-reclaim-20261122-1603.json",
+      "Bytes": 1668,
+      "Sha256": "7FD10D588A99FC459E20293934638C4888B80E9A22C37622A8C92FDA3FEE7F86"
+    }
+  ],
+  "apkProduced": false,
+  "nativeRegressionsExecuted": false,
+  "phonePerformanceVerified": false
+}
