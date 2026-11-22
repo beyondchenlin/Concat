@@ -4172,6 +4172,16 @@ mod tests {
                     key(delete);
                     assert!(shell.studio.borrow().clip(&clip).is_none());
                     assert_eq!(&*menu_actions.borrow(), &["save", "delete"]);
+                    // Let the authorized delete finish its real autosave before
+                    // taking the later approval-isolation disk baseline.
+                    let deleted_revision =
+                        shell.studio.borrow().session.as_ref().unwrap().revision();
+                    assert_eq!(app.get_project_status(), "unsaved changes");
+                    pump(&jobs, || app.get_project_status() == "saved");
+                    assert_eq!(
+                        shell.studio.borrow().session.as_ref().unwrap().revision(),
+                        deleted_revision
+                    );
                     click_accessible_control_at(&app, "打开智能助手", 0.9);
                     assert_eq!(callbacks.lock().unwrap().len(), 1);
                     assert_eq!(
