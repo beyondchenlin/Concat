@@ -1,0 +1,55 @@
+{
+  "kind": "local-disk-reserve-exception-proposal",
+  "status": "awaiting_user_confirmation_not_enabled",
+  "expected_source_commit": "815f8303247670e44d200a6db13e683f2044981e",
+  "current_required_disk_reserve_gib": {
+    "C": 50,
+    "D": 50,
+    "E": 50
+  },
+  "proposed_disk_reserve_gib": {
+    "C": 50,
+    "D": 30,
+    "E": 30
+  },
+  "remote_synced": false,
+  "configuration_restored": false,
+  "build_or_tests_executed": false,
+  "files": [
+    {
+      "file": "build-android-refinements-12.ps1",
+      "original_bytes": 29679,
+      "original_sha256": "84285F4C5740BCD2D31FB7066A0FDAB62A218D3186DA309B20AEC9E0DA813EA0",
+      "proposal_bytes": 29693,
+      "proposal_sha256": "C2239F00F1E89639AF0A39EA3875DEC4B3CC6002561F386EF996994363FF966F",
+      "disk_guard_sites": 2,
+      "only_expected_replacements": true,
+      "exact_reverse_matches_original": true,
+      "patch_file": "build-android-refinements-12.ps1.patch"
+    },
+    {
+      "file": "run-refinements-host-tests-build12.ps1",
+      "original_bytes": 49486,
+      "original_sha256": "16F1744F018C9FC85F77CDEA2EA9AA240E717B2A9A5F23CF94617A9A5CD8C8DB",
+      "proposal_bytes": 49493,
+      "proposal_sha256": "ED269A861D474860C6B674FABA7EE31597D001EF7B2D121204118ADD0F164D0B",
+      "disk_guard_sites": 1,
+      "only_expected_replacements": true,
+      "exact_reverse_matches_original": true,
+      "patch_file": "run-refinements-host-tests-build12.ps1.patch"
+    },
+    {
+      "file": "run-upstream-save-tests-build12.ps1",
+      "original_bytes": 48461,
+      "original_sha256": "F49127E29CD8CF8D0CDFB00B98BD914C70A61F4DC4DB36E08B5A8ABB7A44892B",
+      "proposal_bytes": 48468,
+      "proposal_sha256": "3BB3062417E7071039EEFFBC7D6BB6017A9190EF0DFDCEE71784E265DB57D9B0",
+      "disk_guard_sites": 1,
+      "only_expected_replacements": true,
+      "exact_reverse_matches_original": true,
+      "patch_file": "run-upstream-save-tests-build12.ps1.patch"
+    }
+  ],
+  "combined_patch_sha256": "9BD4C51909A88FD262EB820FECD8A8C391A06BDB4161518403976C38447EB378",
+  "validation": "Exact inverse of the disk-limit and associated error-message replacements equals each original byte-for-byte; local PowerShell parser availability reported separately."
+}

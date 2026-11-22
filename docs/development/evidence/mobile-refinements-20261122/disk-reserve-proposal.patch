@@ -1,0 +1,52 @@
+--- original/build-android-refinements-12.ps1
++++ proposal-data-reserve30/build-android-refinements-12.ps1
+@@ -134,7 +134,7 @@
+  if((Get-FileHash -LiteralPath $ortLibrary -Algorithm SHA256).Hash -ne 'F826D8EFB03ADF0A84F10E7BA408F9D4CD11B0A2CCD8D08AEB0F7451FB50CACC'){throw 'Pinned Android ORT library mismatch'}
+  $preflight=Get-CimInstance Win32_OperatingSystem
+  if($preflight.FreePhysicalMemory/1MB -lt 4 -or $preflight.FreeVirtualMemory/1MB -lt 10){throw 'Insufficient memory reserve before build'}
+- if((Get-PSDrive D).Free/1GB -lt 50 -or (Get-PSDrive C).Free/1GB -lt 50 -or (Get-PSDrive E).Free/1GB -lt 50){throw 'Insufficient disk reserve before build (C, D and E each 50 GiB)'}
++ if((Get-PSDrive D).Free/1GB -lt 30 -or (Get-PSDrive C).Free/1GB -lt 50 -or (Get-PSDrive E).Free/1GB -lt 30){throw 'Insufficient disk reserve before build (C 50 GiB; D and E each 30 GiB)'}
+  & (Join-Path $toolRoot 'cargo-bootstrap\bin\rustc.exe') --version
+  $proc=Start-Process -FilePath $exe -ArgumentList @('apk','build','-p','concat-android','--target','aarch64-linux-android') -WorkingDirectory (Join-Path $source 'src') -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err -PassThru
+  $processHandle=$proc.Handle
+@@ -355,7 +355,7 @@
+   if((Get-Item -LiteralPath $out).Length -gt 40MB -or (Get-Item -LiteralPath $err).Length -gt 40MB){throw 'Build log exceeded 40 MiB bound'}
+   if(@($compilerMetrics|Where-Object{$_.private_mib -gt 24576}).Count -gt 0){throw ('Task compiler private memory exceeded 24 GiB: '+($sample|ConvertTo-Json -Depth 5 -Compress))}
+   if($system.FreePhysicalMemory/1MB -lt 4 -or $system.FreeVirtualMemory/1MB -lt 10){throw ('Task build reached memory reserve: '+($sample|ConvertTo-Json -Depth 5 -Compress))}
+-  if((Get-PSDrive D).Free/1GB -lt 50 -or (Get-PSDrive C).Free/1GB -lt 50 -or (Get-PSDrive E).Free/1GB -lt 50){throw 'Task build reached disk reserve (C, D and E each 50 GiB)'}
++  if((Get-PSDrive D).Free/1GB -lt 30 -or (Get-PSDrive C).Free/1GB -lt 50 -or (Get-PSDrive E).Free/1GB -lt 30){throw 'Task build reached disk reserve (C 50 GiB; D and E each 30 GiB)'}
+   Start-Sleep -Seconds 1
+  }
+  $proc.WaitForExit();$proc.Refresh()
+--- original/run-refinements-host-tests-build12.ps1
++++ proposal-data-reserve30/run-refinements-host-tests-build12.ps1
+@@ -66,10 +66,10 @@
+     if ($system.FreePhysicalMemory / 1MB -lt 4 -or $system.FreeVirtualMemory / 1MB -lt 10) {
+         throw 'Task host tests reached the memory reserve (4 GiB physical / 10 GiB virtual).'
+     }
+-    if ((Get-PSDrive D).Free / 1GB -lt 50 -or
++    if ((Get-PSDrive D).Free / 1GB -lt 30 -or
+         (Get-PSDrive C).Free / 1GB -lt 50 -or
+-        (Get-PSDrive E).Free / 1GB -lt 50) {
+-        throw 'Task host tests reached the disk reserve (C, D and E each 50 GiB).'
++        (Get-PSDrive E).Free / 1GB -lt 30) {
++        throw 'Task host tests reached the disk reserve (C 50 GiB; D and E each 30 GiB).'
+     }
+     if ((Get-Date) -ge $deadline) { throw 'Task host tests exceeded their 45 minute bound.' }
+ }
+--- original/run-upstream-save-tests-build12.ps1
++++ proposal-data-reserve30/run-upstream-save-tests-build12.ps1
+@@ -70,10 +70,10 @@
+     if ($system.FreePhysicalMemory / 1MB -lt 4 -or $system.FreeVirtualMemory / 1MB -lt 10) {
+         throw 'Task host tests reached the memory reserve (4 GiB physical / 10 GiB virtual).'
+     }
+-    if ((Get-PSDrive D).Free / 1GB -lt 50 -or
++    if ((Get-PSDrive D).Free / 1GB -lt 30 -or
+         (Get-PSDrive C).Free / 1GB -lt 50 -or
+-        (Get-PSDrive E).Free / 1GB -lt 50) {
+-        throw 'Task host tests reached the disk reserve (C, D and E each 50 GiB).'
++        (Get-PSDrive E).Free / 1GB -lt 30) {
++        throw 'Task host tests reached the disk reserve (C 50 GiB; D and E each 30 GiB).'
+     }
+     if ((Get-Date) -ge $deadline) { throw 'Task host tests exceeded their 45 minute bound.' }
+ }

@@ -1,0 +1,149 @@
+{
+  "kind": "reconnected-resource-preflight-not-a-build",
+  "structuredTranscriptionNotOriginalBytes": true,
+  "note": "本文件是已核验回执和资源快照中必要事实的结构化转存，不是原回执字节副本。原始回执仍保留在本机构建任务目录；未转存其他项目名称或服务标识。",
+  "buildSourceCommit": "815f8303247670e44d200a6db13e683f2044981e",
+  "productionSourceEquivalence": {
+    "documentationCommit": "9004b23f65a8e3870a8c80f7fa0979ba68245352",
+    "productionCodeUnchanged": true,
+    "observedCommitDifferenceOnlyDocumentationAndEvidence": true
+  },
+  "goCacheCleanup": {
+    "command": "go clean -cache",
+    "started": "2026-11-22T16:55:02.2082187+08:00",
+    "finished": "2026-11-22T16:55:05.0423942+08:00",
+    "exitCode": 0,
+    "logicalBytesBefore": 11550138477,
+    "logicalBytesAfter": 228,
+    "systemDriveFreeGiBBefore": 39.812,
+    "systemDriveFreeGiBAfter": 50.586,
+    "observedSystemDriveFreeIncreaseGiB": 10.774,
+    "readmePreserved": true,
+    "moduleCacheCleared": false,
+    "fuzzInputsCleared": false,
+    "originalReceipt": {
+      "file": "go-cache-cleanup-20261122-result.json",
+      "bytes": 505,
+      "sha256": "4BB0BE7BD59E777E8556CA31065A461FE0DE2883298EF0778C9E993E4D11C8D3"
+    }
+  },
+  "latestPreflight": {
+    "at": "2026-11-22T17:17:02.5242639+08:00",
+    "totalPhysicalGiB": 31.816,
+    "freePhysicalGiB": 12.484,
+    "freeVirtualGiB": 38.019,
+    "disks": [
+      {
+        "drive": "C",
+        "freeBytes": 54346948608,
+        "freeGiB": 50.615
+      },
+      {
+        "drive": "D",
+        "freeBytes": 45825470464,
+        "freeGiB": 42.678
+      },
+      {
+        "drive": "E",
+        "freeBytes": 34905890816,
+        "freeGiB": 32.509
+      }
+    ],
+    "activeCompilerCount": 0,
+    "taskParentProfileActive": false,
+    "build12Started": false,
+    "servicePauseReceiptPresent": false
+  },
+  "projectBuildDirectoryAudit": {
+    "root": "E:\\BK-CAT\\.build",
+    "metadataOnly": true,
+    "followedReparsePoints": false,
+    "directDirectoryEntries": 61,
+    "completedEntityDirectories": 60,
+    "reusedCompleteMeasurements": 3,
+    "rootReparseDirectoriesExcluded": 1,
+    "skippedLinksTotal": 8,
+    "errors": 0,
+    "timedOutDirectories": 0,
+    "scanLimitSeconds": 120,
+    "elapsedSeconds": 4.063,
+    "regularFileEntries": 101297,
+    "logicalBytesNoCrossDirectoryHardlinkDeduplication": 8509299147,
+    "logicalGiB": 7.925,
+    "rootLevelRegularFilesIncluded": false,
+    "linkTargetsIncluded": false,
+    "allMeasuredContentDeclaredDeletable": false
+  },
+  "preservedCategories": [
+    "models",
+    "projects",
+    "dependencies",
+    "logs",
+    "packages",
+    "databases",
+    "emulator"
+  ],
+  "diskReserveProposal": {
+    "status": "reviewed_awaiting_user_confirmation_not_enabled",
+    "currentEffectiveReserveGiB": {
+      "C": 50,
+      "D": 50,
+      "E": 50
+    },
+    "proposedReserveGiB": {
+      "C": 50,
+      "D": 30,
+      "E": 30
+    },
+    "userConfirmationReceived": false,
+    "independentDifferenceReviewPassed": true,
+    "onlyDataDriveThresholdsAndCorrespondingMessagesChanged": true,
+    "originalScriptsUnchanged": true,
+    "candidateScriptsRemoteSynced": false,
+    "candidateScriptsExecuted": false,
+    "configurationRestored": false,
+    "unchangedGuards": {
+      "minimumPhysicalFreeGiB": 4,
+      "minimumVirtualFreeGiB": 10,
+      "maximumCompilerPrivateGiB": 24,
+      "maximumWorkingSetMiB": 2048,
+      "maximumMinutes": 45,
+      "fixedSourceAndInputHashes": true,
+      "realCompleteAndroidPackageEvidence": true,
+      "nativeLibraryAndSignatureEvidence": true,
+      "actualNativeTestInventoriesAndExecution": true,
+      "serialPrerequisiteGates": true
+    },
+    "manifestCopy": {
+      "file": "disk-reserve-proposal.json",
+      "byteForByteCopyOfLocalProposal": true,
+      "sha256": "BC46864E4B8A4B0F8E405811ED8F7AE5D6650B5897850505A1A82FF7CF14DBEA"
+    },
+    "combinedPatchCopy": {
+      "file": "disk-reserve-proposal.patch",
+      "byteForByteCopyOfLocalProposal": true,
+      "sha256": "9BD4C51909A88FD262EB820FECD8A8C391A06BDB4161518403976C38447EB378"
+    }
+  },
+  "servicePreparation": {
+    "standInClassificationGroupsCompleted": 7,
+    "failureEntryStandInTestsCompleted": true,
+    "independentReviewPassed": true,
+    "reviewBlockersFixed": 2,
+    "scriptCountSavedToLocalBuildMachine": 3,
+    "savedScriptHashesMatchLocalCopies": true,
+    "syntaxParserErrorCounts": [
+      0,
+      0,
+      0
+    ],
+    "actualServicesPaused": false,
+    "actualServiceRecoveryExecuted": false,
+    "standInResultsClaimedAsActualServiceValidation": false
+  },
+  "newApkProduced": false,
+  "hostNativeRegressionsExecuted": false,
+  "newPackageDeviceTestsExecuted": false,
+  "newPackagePerformanceVerified": false,
+  "nextRequiredUserDecision": "确认本轮 D、E 两盘各保留 30 吉比字节的空间例外；确认前每盘 50 吉比字节要求继续有效，内存守卫及真实编译和测试要求不变。"
+}
