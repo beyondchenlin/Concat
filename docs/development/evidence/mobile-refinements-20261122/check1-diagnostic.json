@@ -1,0 +1,51 @@
+{
+  "source_commit": "f067bee73d275bea1759a3d3d9d6f768817fd2f3",
+  "result": "compiler_diagnostic",
+  "fix_commit": "f9557b3f6794f0e39e15638c55b7ce373ce530d9",
+  "note": "JSON-normalized records. The generated UI check completed; the main application check failed on the two existing command variants. Full code generation and APK construction are not verified.",
+  "original_task_directory": "D:\\BK-CAT-build\\mobile-sheet-20261121",
+  "summary": {
+    "Source": "f067bee73d275bea1759a3d3d9d6f768817fd2f3",
+    "Operation": "android-source-check",
+    "Exit": "1",
+    "Failure": "E0004: existing ApplySingleMainTemplate and AddMediaClipExact commands missing from upstream command_kind log-name match",
+    "GeneratedUiCheckCompleted": true,
+    "ApkProduced": false,
+    "Samples": 629,
+    "Last": {
+      "at": "2026-11-22T11:29:37.4509979+08:00",
+      "elapsed_s": 872.7,
+      "free_physical_gib": 13.194,
+      "free_virtual_gib": 34.321,
+      "compilers": [
+        {
+          "pid": 38040,
+          "created_at": "2026-11-22T03:29:30.8542708Z",
+          "crate": "concat",
+          "working_before_trim_mib": 548.2,
+          "working_mib": 548.2,
+          "private_mib": 1270.1,
+          "cpu_s": 5.1,
+          "cap_mib": 2048,
+          "actual_max_mib": 2048,
+          "actual_flags": 6,
+          "trimmed": false,
+          "pressure_trim": null
+        }
+      ]
+    },
+    "MinimumFreePhysical": 4.883,
+    "MinimumFreeVirtual": 24.182,
+    "PeakPrivateMiB": 11541.9
+  },
+  "observed_ui_parameters": {
+    "At": "2026-11-22T11:19:57.4824290+08:00",
+    "Pid": 33876,
+    "CreatedUtc": "2026-11-22T03:19:14.0502790Z",
+    "Source": "f067bee73d275bea1759a3d3d9d6f768817fd2f3",
+    "CheckOnly": true,
+    "Emit": "dep-info,metadata",
+    "CommandLine": "\"D:\\BK-CAT-build\\android-windows-20261115\\rustup\\toolchains\\1.93.1-x86_64-pc-windows-msvc\\bin\\rustc.exe\" --crate-name concat_ui --edition=2024 crates\\concat-ui\\src\\lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata -C embed-bitcode=no -C codegen-units=256 --check-cfg cfg(docsrs,test) --check-cfg \"cfg(feature, values())\" -C metadata=d86236c7564c63ba -C extra-filename=-9116aa237513701c --out-dir D:\\BK-CAT-build\\mobile-sheet-20261121\\target\\aarch64-linux-android\\debug\\deps --target aarch64-linux-android -C linker=D:\\BK-CAT-build\\android-windows-20261115\\android-ndk-r27c\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang.exe -C strip=debuginfo -L dependency=D:\\BK-CAT-build\\mobile-sheet-20261121\\target\\aarch64-linux-android\\debug\\deps -L dependency=D:\\BK-CAT-build\\mobile-sheet-20261121\\target\\debug\\deps --extern slint=D:\\BK-CAT-build\\mobile-sheet-20261121\\target\\aarch64-linux-android\\debug\\deps\\libslint-757bb314cea14f95.rmeta -C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,--build-id=sha1 -Clink-arg=--target=aarch64-linux-android26 -L D:\\BK-CAT-build\\mobile-sheet-20261121\\target\\cargo-apk-temp-extra-link-libraries -L D:\\BK-CAT-build\\mobile-sheet-20261121\\target\\aarch64-linux-android\\debug\\build\\skia-bindings-e7d2f024636f1cc1\\out\\skia",
+    "CheckerScriptSha256": "70E371CFBD8653216355A8F6493AC6B2D03BA07A2D0680123F3E80CE6765EC83"
+  }
+}

@@ -1,0 +1,93 @@
+{
+  "recorded_source_commit": "f067bee73d275bea1759a3d3d9d6f768817fd2f3",
+  "result": "blocked_by_physical_memory_reserve",
+  "apk_produced": false,
+  "note": "These are JSON-normalized copies of the named source records, not byte-for-byte copies of the original Windows files. All original records remain in the task directory.",
+  "original_task_directory": "D:\\BK-CAT-build\\mobile-sheet-20261121",
+  "summary": {
+    "Source": "f067bee73d275bea1759a3d3d9d6f768817fd2f3",
+    "Exit": "1",
+    "Samples": 362,
+    "Last": {
+      "at": "2026-11-22T11:05:44.1625440+08:00",
+      "elapsed_s": 519,
+      "free_physical_gib": 3.991,
+      "free_virtual_gib": 24.603,
+      "compilers": [
+        {
+          "pid": 38736,
+          "created_at": "2026-11-22T02:57:14.3577782Z",
+          "crate": "concat_ui",
+          "working_before_trim_mib": 2042.7,
+          "working_mib": 2042.7,
+          "private_mib": 11367.9,
+          "cpu_s": 495.3,
+          "cap_mib": 2048,
+          "actual_max_mib": 2048,
+          "actual_flags": 6,
+          "trimmed": false,
+          "pressure_trim": null
+        }
+      ]
+    },
+    "MinimumFreePhysical": 3.991,
+    "MinimumFreeVirtual": 24.603,
+    "PeakPrivateMiB": 11367.9,
+    "OwnedProcesses": []
+  },
+  "working_set_trim_records": [
+    {
+      "pid": 38736,
+      "created_at": "2026-11-22T02:57:14.3577782Z",
+      "identity": "38736:639309130343577782",
+      "outcome": "started",
+      "before": {
+        "at": "2026-11-22T11:05:25.4140231+08:00",
+        "elapsed_s": 500.299,
+        "free_physical_gib": 5.889633,
+        "free_virtual_gib": 25.510323,
+        "working_mib": 2031.883,
+        "private_mib": 10914.012,
+        "process_exited": false,
+        "hard_boundary_reached": false
+      },
+      "after": null
+    },
+    {
+      "pid": 38736,
+      "created_at": "2026-11-22T02:57:14.3577782Z",
+      "identity": "38736:639309130343577782",
+      "outcome": "completed",
+      "before": {
+        "at": "2026-11-22T11:05:25.4140231+08:00",
+        "elapsed_s": 500.299,
+        "free_physical_gib": 5.889633,
+        "free_virtual_gib": 25.510323,
+        "working_mib": 2031.883,
+        "private_mib": 10914.012,
+        "process_exited": false,
+        "hard_boundary_reached": false
+      },
+      "after": {
+        "at": "2026-11-22T11:05:25.7429003+08:00",
+        "elapsed_s": 500.627,
+        "free_physical_gib": 5.824024,
+        "free_virtual_gib": 25.497799,
+        "working_mib": 415.941,
+        "private_mib": 10925.047,
+        "process_exited": false,
+        "hard_boundary_reached": false
+      }
+    }
+  ],
+  "observed_compiler_parameters": {
+    "At": "2026-11-22T11:00:28.0110874+08:00",
+    "Pid": 38736,
+    "CreatedUtc": "2026-11-22T02:57:14.3577780Z",
+    "CommandLine": "\"D:\\BK-CAT-build\\android-windows-20261115\\rustup\\toolchains\\1.93.1-x86_64-pc-windows-msvc\\bin\\rustc.exe\" --crate-name concat_ui --edition=2024 crates\\concat-ui\\src\\lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C codegen-units=256 --check-cfg cfg(docsrs,test) --check-cfg \"cfg(feature, values())\" -C metadata=10c2c0d0228193cc -C extra-filename=-143a0f31438034db --out-dir D:\\BK-CAT-build\\mobile-sheet-20261121\\target\\aarch64-linux-android\\debug\\deps --target aarch64-linux-android -C linker=D:\\BK-CAT-build\\android-windows-20261115\\android-ndk-r27c\\toolchains\\llvm\\prebuilt\\windows-x86_64\\bin\\clang.exe -C strip=debuginfo -L dependency=D:\\BK-CAT-build\\mobile-sheet-20261121\\target\\aarch64-linux-android\\debug\\deps -L dependency=D:\\BK-CAT-build\\mobile-sheet-20261121\\target\\debug\\deps --extern slint=D:\\BK-CAT-build\\mobile-sheet-20261121\\target\\aarch64-linux-android\\debug\\deps\\libslint-d09ee8ff83b6b680.rmeta -C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,--build-id=sha1 -Clink-arg=--target=aarch64-linux-android26 -L D:\\BK-CAT-build\\mobile-sheet-20261121\\target\\cargo-apk-temp-extra-link-libraries -L D:\\BK-CAT-build\\mobile-sheet-20261121\\target\\aarch64-linux-android\\debug\\build\\skia-bindings-e7d2f024636f1cc1\\out\\skia",
+    "Source": "f067bee73d275bea1759a3d3d9d6f768817fd2f3",
+    "UiOptLevel": 0,
+    "UiCodegenUnits": 256,
+    "CompilerScriptSha256": "6AA9F1124E35BF2F877CFED3DFFCC210EC40E97A6D2E824FE6B417147A093AB9"
+  }
+}
