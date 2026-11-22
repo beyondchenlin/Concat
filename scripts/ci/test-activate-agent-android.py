@@ -12,6 +12,7 @@ import itertools
 import json
 import math
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -398,13 +399,17 @@ class DriverFailures(unittest.TestCase):
         self.assertEqual(activation.current_messages(text, "415"), ["Concat 0.2.10 starting"])
 
     def test_no_install_and_unpaired_activation_are_rejected_before_device_work(self):
+        # Resolve the selected shell before CreateProcess searches System32:
+        # Windows also ships a bash.exe WSL launcher, even without a distro.
+        bash = shutil.which("bash")
+        self.assertIsNotNone(bash, "the smoke argument checks require Bash")
         with tempfile.TemporaryDirectory() as directory:
             apk = Path(directory) / "placeholder.apk"
             apk.write_bytes(b"only argument validation runs")
             out = Path(directory) / "no-device-work"
             for arguments in (["--require-agent", "--no-install", "--wait", "60"],
                               ["--wait", "60"], ["--require-agent", "--wait", "1"]):
-                result = subprocess.run(["bash", str(HERE / "smoke-android.sh"),
+                result = subprocess.run([bash, str(HERE / "smoke-android.sh"),
                     "--out", str(out), "--activate-agent-ui", *arguments, str(apk)],
                     capture_output=True, text=True, timeout=3, check=False)
                 self.assertEqual(result.returncode, 2, result.stderr)
