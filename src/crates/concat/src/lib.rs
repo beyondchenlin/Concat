@@ -441,7 +441,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: Smoke) -> Result<(), slint:
     // The package trials and card generator use the shared DX12 device.
     // Let the first window surface configure before starting them on Windows.
     #[cfg(target_os = "windows")]
-    if smoke {
+    if smoke != Smoke::No {
         studio.reload_packages(false);
         studio.watch_packages();
         studio.host.monitor.warm_shaders();
@@ -2777,7 +2777,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: Smoke) -> Result<(), slint:
     // A Windows window loads user packages only after its surface is ready.
     // Opening sooner would skip custom-effect migrations and request a preview
     // against the built-ins alone. Smoke runs load packages synchronously above.
-    let project = if defer_launch_project(cfg!(windows), smoke) {
+    let project = if defer_launch_project(cfg!(windows), smoke != Smoke::No) {
         WINDOWS_LAUNCH_PROJECT.with(|pending| *pending.borrow_mut() = project);
         None
     } else {
