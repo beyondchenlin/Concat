@@ -308,11 +308,12 @@ fn publish(
             .ok_or_else(|| "会话尚未连接。".to_owned())
             .and_then(|bridge| bridge.status()),
     );
-    if app.get_phone() && !ui.get_open() && !ui.get_busy() {
+    if !ui.get_open() && !ui.get_busy() {
         // Leave all pane borrows before reconnecting. Mutations publish only
         // after the temporary maintenance owner has actually been released.
-        let _ =
-            slint::invoke_from_event_loop(crate::embedded::resume_phone_connection_after_settings);
+        let _ = slint::invoke_from_event_loop(
+            crate::embedded::resume_assistant_connection_after_settings,
+        );
     }
 }
 
@@ -611,7 +612,7 @@ pub(crate) fn install(app: &App) {
                 app.global::<AgentSettingsUi>().set_open(false);
             }
         });
-        crate::embedded::resume_phone_connection_after_settings();
+        crate::embedded::resume_assistant_connection_after_settings();
     });
     ui.on_reload_requested(|| refresh(None, true, false));
     ui.on_channel_chosen(|index| {

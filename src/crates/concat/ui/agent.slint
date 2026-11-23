@@ -75,7 +75,7 @@ export global AgentUi {
         return false;
     }
     /// Explicit user intent; the native host owns activation and admission.
-    callback phone-open-requested();
+    callback assistant-open-requested();
     /// Desktop only: hiding the sidebar does not stop or reset a task.
     in-out property <bool> sidebar-open: true;
     changed sidebar-open => {
@@ -144,7 +144,6 @@ export global AgentUi {
     callback review-requested();
     callback continue-requested();
     callback discard-requested();
-    callback connect-requested();
     // The native session owns these values; the page cannot set authority.
     in property <int> tool-mode: 0;
     in property <bool> tool-connected: false;
@@ -445,7 +444,7 @@ export component AgentChat inherits Rectangle {
         || AgentUi.status.error != "" || AgentUi.status.missing != ""
         || AgentUi.status.recovery-summary != ""
         || (!root.helping && (AgentUi.status.can-review || AgentUi.status.can-continue
-            || (!root.phone && AgentUi.status.can-connect) || AgentUi.status.can-discard
+            || AgentUi.status.can-discard
             || AgentCallUi.can-authorize || AgentCallUi.allowed));
     private property <bool> phone-picker-open: root.phone
         && (AgentUi.suggestions-open || AgentUi.script-picker);
@@ -499,7 +498,7 @@ export component AgentChat inherits Rectangle {
     }
 
     function send-draft() {
-        let auto-connect = root.phone && AgentUi.status.can-connect
+        let auto-connect = AgentUi.status.can-connect
             && !AgentUi.status.needs-model-setup;
         if AgentUi.attachment-pending || (!AgentUi.status.can-send && !auto-connect) {
             root.send-help = true;
@@ -687,7 +686,7 @@ export component AgentChat inherits Rectangle {
                             if AgentUi.status.error == "当前工程标识尚未保存或已改变，文案操作已停止，请重新打开工程。": HorizontalLayout {
                                 spacing: 6px;
                                 Text {
-                                    text: "保存后重新打开工程，再连接智能会话。";
+                                    text: "保存后重新打开工程，再打开智能助手。";
                                     color: Theme.fg-muted; font-size: Theme.fs-sm;
                                     wrap: word-wrap; horizontal-stretch: 1;
                                 }
@@ -702,11 +701,10 @@ export component AgentChat inherits Rectangle {
                         if AgentUi.status.recovery-summary != "": Text {
                             text: AgentUi.status.recovery-summary; color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap;
                         }
-                        if !root.helping && (AgentUi.status.can-review || AgentUi.status.can-continue || (!root.phone && AgentUi.status.can-connect) || AgentUi.status.can-discard): HorizontalLayout {
+                        if !root.helping && (AgentUi.status.can-review || AgentUi.status.can-continue || AgentUi.status.can-discard): HorizontalLayout {
                             spacing: 4px; alignment: start;
                             if AgentUi.status.can-review: Button { label: "核对工程"; clicked => { AgentUi.review-requested(); } }
                             if AgentUi.status.can-continue: Button { label: "确认继续"; clicked => { AgentUi.continue-requested(); } }
-                            if !root.phone && AgentUi.status.can-connect: Button { label: "连接会话"; clicked => { AgentUi.connect-requested(); } }
                             if AgentUi.status.can-discard: Button { label: "放弃任务"; clicked => { AgentUi.discard-requested(); } }
                         }
                         if !root.helping && (AgentCallUi.can-authorize || AgentCallUi.allowed): HorizontalLayout {
@@ -805,7 +803,7 @@ export component AgentChat inherits Rectangle {
                     font-size: Theme.fs-sm; color: Theme.fg;
                     text: AgentUi.attachment-pending ? "素材正在导入，完成后即可发送。"
                         : AgentUi.status.needs-model-setup ? "发送前请设置模型渠道，并保存该渠道的凭据。"
-                        : AgentUi.status.can-connect ? root.phone ? "发送时会自动连接当前工程。" : "先连接当前工程的 Pi 会话。"
+                        : AgentUi.status.can-connect ? "发送时会自动连接当前工程。"
                         : AgentUi.status.can-continue ? "当前工程已核对，请确认打开会话。"
                         : AgentUi.status.can-review ? AgentUi.status.recovery-summary != "" ? AgentUi.status.recovery-summary : "请先核对当前工程。"
                         : AgentCallUi.can-authorize && !AgentCallUi.allowed ? AgentCallUi.usage-policy
@@ -817,7 +815,6 @@ export component AgentChat inherits Rectangle {
             HorizontalLayout {
                 alignment: start; spacing: 4px;
                 if AgentUi.status.needs-model-setup: Button { label: "配置模型"; clicked => { AgentSettingsUi.open-requested(); } }
-                if !root.phone && !AgentUi.status.needs-model-setup && AgentUi.status.can-connect: Button { label: "连接会话"; clicked => { AgentUi.connect-requested(); } }
                 if AgentUi.status.can-review && !AgentUi.status.can-continue: Button { label: "核对工程"; clicked => { AgentUi.review-requested(); } }
                 if AgentUi.status.can-continue: Button { label: "确认继续"; clicked => { AgentUi.continue-requested(); } }
                 if AgentUi.status.can-discard: Button { label: "放弃任务"; clicked => { AgentUi.discard-requested(); } }
@@ -1039,7 +1036,11 @@ export component AgentSidebar inherits Rectangle {
                 text: "Pi";
                 min-height: 32px; max-height: 32px;
                 label: "展开 Pi 助手";
-                clicked => { AgentUi.sidebar-open = true; Focus.release(); }
+                clicked => {
+                    AgentUi.sidebar-open = true;
+                    AgentUi.assistant-open-requested();
+                    Focus.release();
+                }
             }
             Rectangle { vertical-stretch: 1; }
         }

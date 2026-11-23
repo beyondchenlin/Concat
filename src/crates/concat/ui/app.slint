@@ -945,7 +945,7 @@ export component App inherits Window {
                         && !SourcePreview.open && !root.content-overlay-open;
                     clicked => {
                         AgentUi.phone-sheet-state = 1;
-                        AgentUi.phone-open-requested();
+                        AgentUi.assistant-open-requested();
                         keys.focus();
                     }
                 }

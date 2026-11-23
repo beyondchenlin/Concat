@@ -65,8 +65,7 @@ pub(crate) fn install(app: &App) -> slint::Timer {
         });
         embedded::show_ui_error(result);
     });
-    agent_ui.on_connect_requested(|| embedded::show_ui_error(embedded::connect_from_ui()));
-    agent_ui.on_phone_open_requested(|| {
+    agent_ui.on_assistant_open_requested(|| {
         #[cfg(all(
             any(target_os = "windows", target_os = "android"),
             not(feature = "bk-cat-native-probe")
@@ -1730,7 +1729,7 @@ pub(crate) mod tests {
                     agent.set_phone_sheet_state(0);
                     let opened = Rc::new(Cell::new(0));
                     let observed = Rc::clone(&opened);
-                    agent.on_phone_open_requested(move || observed.set(observed.get() + 1));
+                    agent.on_assistant_open_requested(move || observed.set(observed.get() + 1));
                     let initial = bounds(chat);
                     assert!(
                         (initial.x - 12.).abs() < 1.,
@@ -1786,7 +1785,7 @@ pub(crate) mod tests {
                     agent.set_phone_sheet_state(0);
                     let opened = Rc::new(Cell::new(0));
                     let observed = Rc::clone(&opened);
-                    agent.on_phone_open_requested(move || observed.set(observed.get() + 1));
+                    agent.on_assistant_open_requested(move || observed.set(observed.get() + 1));
                     // Keep the finger inside the actual window while the
                     // chip's requested bounds cross its two outer edges.
                     let bottom_right = drag_to(chat, slint::LogicalPosition::new(599., 899.));

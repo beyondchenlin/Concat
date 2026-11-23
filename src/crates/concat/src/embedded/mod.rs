@@ -83,7 +83,7 @@ struct EncodedCommand {
 const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const LOAD_TIMEOUT_MESSAGE: &str = "聊天运行组件未在限定时间内完成加载。请通过系统提供的更新渠道更新网页组件，重启应用后重试；手动剪辑仍可使用。";
 const SEND_WAIT_TIMEOUT_MESSAGE: &str =
-    "等待聊天会话就绪超时，本次消息未发送，草稿已保留；请重新连接并核对会话。";
+    "等待聊天会话就绪超时，本次消息未发送，草稿已保留；请重新打开助手并核对会话。";
 
 fn load_failure_message(code: &str) -> Option<&'static str> {
     match code {
@@ -141,15 +141,19 @@ type Factory = dyn Fn(Arc<RuntimeResources>, RuntimeCallbacks) -> Result<Box<dyn
     + Send
     + Sync;
 static FACTORY: OnceLock<Box<Factory>> = OnceLock::new();
-// Set only during a real native project switch. No idle reconnect polling.
-static REOPEN_AFTER_PROJECT_SWITCH: AtomicBool = AtomicBool::new(false);
 // Android updates this before retiring the platform and on actual Activity
 // resume. A queued UI callback must re-read it instead of trusting an old event.
 static PLATFORM_FOREGROUND: AtomicBool = AtomicBool::new(true);
 thread_local! {
     // One visible assistant's connection intent, bound to the current native
     // project. It waits for actual close/release, never for a polling timer.
-    static PHONE_CONNECTION_REQUEST: std::cell::Cell<Option<u64>> = const {
+    static ASSISTANT_CONNECTION_REQUEST: std::cell::Cell<Option<u64>> = const {
+        std::cell::Cell::new(None)
+    };
+    // Visibility is not user intent: the desktop rail starts expanded and
+    // startup settings inspection publishes without the user opening it.
+    // Stop/project changes clear this marker before any queued event runs.
+    static ASSISTANT_ACTIVE_SESSION: std::cell::Cell<Option<u64>> = const {
         std::cell::Cell::new(None)
     };
 }
@@ -450,17 +454,6 @@ impl EmbeddedRuntime {
                         finish_runtime_view(&mut view, result);
                     }
                     runtime.publish();
-                    if REOPEN_AFTER_PROJECT_SWITCH.swap(false, Ordering::AcqRel) {
-                        let _ = slint::invoke_from_event_loop(|| {
-                            let mut opened = false;
-                            Shell::with(|shell, _| {
-                                opened = shell.studio.borrow().session.is_some();
-                            });
-                            if opened {
-                                show_ui_error(connect_from_ui());
-                            }
-                        });
-                    }
                     break;
                 }
                 if runtime.revoked.load(Ordering::Acquire) {
@@ -1804,7 +1797,7 @@ impl EmbeddedRuntime {
             if claim_waiting {
                 resume_waiting_from_ui(&component);
             }
-            finish_phone_connection();
+            finish_assistant_connection();
         });
     }
 }
@@ -1991,23 +1984,22 @@ pub(crate) fn submit_script_generation(instruction: String, rewrite: bool) -> Re
 
 fn start_first_chat_from_send(input: &str) -> Result<(), String> {
     // A new send after an explicit stop is fresh intent, not replay of the
-    // cancelled task. Phone users never need a separate connection control.
+    // cancelled task. Neither surface needs a separate connection control.
     #[cfg(all(
         any(target_os = "windows", target_os = "android"),
         not(feature = "bk-cat-native-probe")
     ))]
     {
-        let mut reconnect_phone = false;
+        let mut reconnect = false;
         Shell::with(|shell, app| {
-            reconnect_phone = app.get_phone()
-                && app.global::<crate::ui::AgentUi>().get_phone_sheet_state() > 0
+            reconnect = assistant_is_visible(&app)
                 && shell
                     .embedded
                     .borrow()
                     .as_ref()
                     .is_some_and(|runtime| runtime.revoked.load(Ordering::Acquire));
         });
-        if reconnect_phone {
+        if reconnect {
             activate_from_user_intent();
         }
     }
@@ -2259,7 +2251,8 @@ pub(crate) fn stop_from_ui() {
 
 // The same fail-closed stop is used when a user revokes an active model grant.
 fn stop_current_task(shell: &Shell, app: &crate::ui::App) {
-    PHONE_CONNECTION_REQUEST.with(|pending| pending.set(None));
+    ASSISTANT_CONNECTION_REQUEST.with(|pending| pending.set(None));
+    ASSISTANT_ACTIVE_SESSION.with(|active| active.set(None));
     shell.agent_pane.borrow_mut().readiness.calls_authorized = false;
     shell.studio.borrow_mut().script.cancel_generation();
     if let Some(runtime) = shell.embedded.borrow().as_ref() {
@@ -2346,15 +2339,17 @@ fn stop_project_runtime(bridge: &Arc<AgentBridge>, runtime: Option<&EmbeddedRunt
 }
 
 /// First use stays silent on desktop and Android. Phone project switches also
-/// wait for new user intent; desktop keeps its existing handoff-and-reopen flow.
-/// The existing native owner is never replaced until actual platform close.
+/// wait for new user intent; an active desktop assistant follows the new project.
+/// Handoff uses the same cancellable, session-bound request as explicit opening,
+/// so a late platform-close event cannot reconnect after the user has stopped.
 pub(crate) fn project_opened() {
-    PHONE_CONNECTION_REQUEST.with(|pending| pending.set(None));
+    ASSISTANT_CONNECTION_REQUEST.with(|pending| pending.set(None));
+    let previously_active = ASSISTANT_ACTIVE_SESSION.with(|active| active.replace(None));
     let mut previous = None;
     let mut connect_now = false;
     Shell::with(|shell, app| {
-        let path = match shell.studio.borrow().session.as_ref() {
-            Some(session) => session.path().to_owned(),
+        let (path, session_id) = match shell.studio.borrow().session.as_ref() {
+            Some(session) => (session.path().to_owned(), session.session_id()),
             None => return,
         };
         let manual_phone = app.get_phone() && !cfg!(feature = "bk-cat-native-probe");
@@ -2387,36 +2382,22 @@ pub(crate) fn project_opened() {
                     && (bound == Some(path.as_str())
                         || (bound.is_none() && view.snapshot.is_none()))
                 {
+                    ASSISTANT_ACTIVE_SESSION.with(|active| active.set(previously_active));
                     return;
                 }
                 if app.get_phone() {
-                    // A new project starts with its native editor visible. This
-                    // changes presentation only; the existing owner still retires
-                    // through the confirmed platform-close path below.
+                    // A new phone project starts with its native editor visible.
+                    // Ownership still retires through actual platform close.
                     let ui = app.global::<crate::ui::AgentUi>();
                     ui.set_phone_sheet_state(0);
                     ui.set_phone_script(false);
                 }
-                if manual_phone {
-                    REOPEN_AFTER_PROJECT_SWITCH.store(false, Ordering::Release);
-                    if !view.closed {
-                        previous = Some(runtime);
-                    }
-                    // Merely opening this project must not create a replacement
-                    // component, including when the old owner finishes later.
-                    return;
+                if !manual_phone && previously_active.is_some() {
+                    ASSISTANT_ACTIVE_SESSION.with(|active| active.set(Some(session_id)));
+                    ASSISTANT_CONNECTION_REQUEST.with(|pending| pending.set(Some(session_id)));
                 }
                 if !view.closed {
-                    REOPEN_AFTER_PROJECT_SWITCH.store(true, Ordering::Release);
                     previous = Some(runtime);
-                } else if shell.agent.borrow().as_ref().is_some_and(|agent| {
-                    agent
-                        .status()
-                        .is_ok_and(|status| status.phase == concat_agent::Phase::Released)
-                }) {
-                    connect_now = true;
-                } else {
-                    REOPEN_AFTER_PROJECT_SWITCH.store(true, Ordering::Release);
                 }
             }
         }
@@ -2426,6 +2407,8 @@ pub(crate) fn project_opened() {
     }
     if connect_now {
         show_ui_error(connect_from_ui());
+    } else {
+        finish_assistant_connection();
     }
 }
 
@@ -2466,7 +2449,17 @@ pub(crate) fn connect_from_ui() -> Result<(), String> {
             };
             let dirs = shell.studio.borrow().host.dirs.clone();
             let runtime = EmbeddedRuntime::start(&dirs, Arc::clone(&bridge))?;
-            PHONE_CONNECTION_REQUEST.with(|pending| pending.set(None));
+            ASSISTANT_CONNECTION_REQUEST.with(|pending| pending.set(None));
+            ASSISTANT_ACTIVE_SESSION.with(|active| {
+                active.set(
+                    shell
+                        .studio
+                        .borrow()
+                        .session
+                        .as_ref()
+                        .map(|session| session.session_id()),
+                );
+            });
             *shell.agent.borrow_mut() = Some(Arc::clone(&bridge));
             shell.studio.borrow_mut().host.agent = Some(bridge);
             *shell.embedded.borrow_mut() = Some(runtime);
@@ -2495,17 +2488,16 @@ pub(crate) fn connect_from_ui() -> Result<(), String> {
 ))]
 pub(crate) fn start_for_window() {}
 
-/// Opening the phone assistant, editing a draft or visiting the script workspace
+/// Opening either assistant, editing a draft or visiting the script workspace
 /// is explicit user intent to connect. It never grants model or edit authority.
-/// Desktop retains its first-use behavior; a phone opens a fresh connection
-/// after retirement as well, without restoring any stopped submission.
+/// Both surfaces wait for the same real destruction/ownership handoff before
+/// replacing a retired component, without restoring any stopped submission.
 #[cfg(all(
     any(target_os = "windows", target_os = "android"),
     not(feature = "bk-cat-native-probe")
 ))]
 pub(crate) fn activate_from_user_intent() {
-    let mut should_connect = false;
-    Shell::with(|shell, app| {
+    Shell::with(|shell, _| {
         let Some(session_id) = shell
             .studio
             .borrow()
@@ -2515,17 +2507,19 @@ pub(crate) fn activate_from_user_intent() {
         else {
             return;
         };
-        if app.get_phone() {
-            PHONE_CONNECTION_REQUEST.with(|pending| pending.set(Some(session_id)));
-        } else {
-            should_connect =
-                shell.embedded.borrow().is_none() && shell.agent_pane.borrow().error.is_empty();
-        }
+        ASSISTANT_ACTIVE_SESSION.with(|active| active.set(Some(session_id)));
+        ASSISTANT_CONNECTION_REQUEST.with(|pending| pending.set(Some(session_id)));
     });
-    if should_connect {
-        show_ui_error(connect_from_ui());
+    finish_assistant_connection();
+}
+
+fn assistant_is_visible(app: &crate::ui::App) -> bool {
+    let ui = app.global::<crate::ui::AgentUi>();
+    if app.get_phone() {
+        ui.get_phone_sheet_state() > 0
+    } else {
+        ui.get_sidebar_open()
     }
-    finish_phone_connection();
 }
 
 /// Called only by the native Android Activity observer. Foreground restoration
@@ -2551,35 +2545,33 @@ pub fn platform_foreground_changed(foreground: bool) {
                 .as_ref()
                 .is_some_and(|runtime| runtime.foreground_reconnect.load(Ordering::Acquire));
             if lifecycle_retired && let Some(session) = shell.studio.borrow().session.as_ref() {
-                PHONE_CONNECTION_REQUEST.with(|pending| pending.set(Some(session.session_id())));
+                ASSISTANT_CONNECTION_REQUEST
+                    .with(|pending| pending.set(Some(session.session_id())));
             }
         });
-        finish_phone_connection();
+        finish_assistant_connection();
     });
 }
 
-/// Settings completion/closing is another foreground assistant action. The
-/// maintenance worker has already released its temporary owner before calling
-/// this; never activate an unopened manual editor or a desktop workspace.
-pub(crate) fn resume_phone_connection_after_settings() {
+/// Resume only an assistant already used in this native project. A settings
+/// read at startup is not user intent, even with a visible desktop rail. The
+/// maintenance worker releases its owner before publishing completion.
+pub(crate) fn resume_assistant_connection_after_settings() {
     Shell::with(|shell, app| {
-        if app.get_phone()
-            && app.global::<crate::ui::AgentUi>().get_phone_sheet_state() > 0
+        if assistant_is_visible(&app)
             && let Some(session) = shell.studio.borrow().session.as_ref()
+            && ASSISTANT_ACTIVE_SESSION.with(|active| active.get()) == Some(session.session_id())
         {
-            PHONE_CONNECTION_REQUEST.with(|pending| pending.set(Some(session.session_id())));
+            ASSISTANT_CONNECTION_REQUEST.with(|pending| pending.set(Some(session.session_id())));
         }
     });
-    finish_phone_connection();
+    finish_assistant_connection();
 }
 
-fn finish_phone_connection() {
-    let Some(requested_session) = PHONE_CONNECTION_REQUEST.with(|pending| pending.get()) else {
+fn finish_assistant_connection() {
+    let Some(requested_session) = ASSISTANT_CONNECTION_REQUEST.with(|pending| pending.get()) else {
         return;
     };
-    if !PLATFORM_FOREGROUND.load(Ordering::Acquire) {
-        return;
-    }
     let mut should_connect = false;
     Shell::with(|shell, app| {
         let current_session = shell
@@ -2588,11 +2580,14 @@ fn finish_phone_connection() {
             .session
             .as_ref()
             .map(|s| s.session_id());
-        if !app.get_phone()
-            || app.global::<crate::ui::AgentUi>().get_phone_sheet_state() == 0
+        if (!assistant_is_visible(&app) && !cfg!(feature = "bk-cat-native-probe"))
             || current_session != Some(requested_session)
+            || ASSISTANT_ACTIVE_SESSION.with(|active| active.get()) != Some(requested_session)
         {
-            PHONE_CONNECTION_REQUEST.with(|pending| pending.set(None));
+            ASSISTANT_CONNECTION_REQUEST.with(|pending| pending.set(None));
+            return;
+        }
+        if app.get_phone() && !PLATFORM_FOREGROUND.load(Ordering::Acquire) {
             return;
         }
         let settings = app.global::<crate::ui::AgentSettingsUi>();
@@ -2609,7 +2604,7 @@ fn finish_phone_connection() {
                 if !runtime.revoked.load(Ordering::Acquire) {
                     // Repeated taps reuse a loading/ready connection. An old
                     // owner that is actually draining retains the one intent.
-                    PHONE_CONNECTION_REQUEST.with(|pending| pending.set(None));
+                    ASSISTANT_CONNECTION_REQUEST.with(|pending| pending.set(None));
                 }
                 return;
             }
@@ -2623,7 +2618,7 @@ fn finish_phone_connection() {
         }
         // Consume before creation. A failed replacement reports its actual
         // failure once; published error events cannot form a reconnect loop.
-        PHONE_CONNECTION_REQUEST.with(|pending| pending.set(None));
+        ASSISTANT_CONNECTION_REQUEST.with(|pending| pending.set(None));
         should_connect = true;
     });
     if should_connect {
@@ -3728,7 +3723,7 @@ mod tests {
             // Slint's event proxy is process-global. Keep this actual Shell
             // test isolated even under cargo test's shared-process runner. Both
             // production window surfaces exercise the same owner and send path.
-            for surface in ["desktop", "phone"] {
+            for surface in ["desktop", "desktop-first-send", "phone"] {
                 let output_dir = std::env::temp_dir().join(format!(
                     "bk-cat-startup-{surface}-ui-output-{}",
                     random_capability().unwrap()
@@ -3957,7 +3952,9 @@ mod tests {
                     proxy: Proxy(Arc::clone(&jobs)),
                 }))
                 .unwrap();
-                let phone = std::env::var(CHILD).unwrap() == "phone";
+                let surface = std::env::var(CHILD).unwrap();
+                let phone = surface == "phone";
+                let first_send_only = surface == "desktop-first-send";
                 let app = crate::ui::App::new().unwrap();
                 app.set_phone(phone);
                 app.window().set_size(slint::LogicalSize::new(
@@ -4094,6 +4091,11 @@ mod tests {
                 pump(&jobs, || {
                     !app.global::<crate::ui::AgentSettingsUi>().get_busy()
                 });
+                resume_assistant_connection_after_settings();
+                pump(&jobs, || true);
+                assert!(shell.embedded.borrow().is_none(),
+                    "initial settings publication must keep even a visible desktop rail silent");
+                assert!(callbacks.lock().unwrap().is_empty());
                 {
                     let mut pane = shell.agent_pane.borrow_mut();
                     // Credential availability is a fixture fact. The actual next
@@ -4108,6 +4110,22 @@ mod tests {
                 }
                 let agent = app.global::<crate::ui::AgentUi>();
                 agent.set_composer_mode(0);
+                if !phone && !first_send_only {
+                    click_accessible_control(&app, "收起 Pi 助手");
+                    assert!(shell.embedded.borrow().is_none());
+                    click_accessible_control(&app, "展开 Pi 助手");
+                    let opened = shell.embedded.borrow().clone().unwrap();
+                    assert_eq!(callbacks.lock().unwrap().len(), 1);
+                    assert!(!opened.view().task_running);
+                    assert!(opened.waiting.lock().unwrap().is_none());
+                    assert!(opened.submission.lock().unwrap().is_none());
+                    assert!(posted.lock().unwrap().is_empty());
+                    assert!(!shell.agent_pane.borrow().readiness.calls_authorized);
+                    click_accessible_control(&app, "收起 Pi 助手");
+                    click_accessible_control(&app, "展开 Pi 助手");
+                    assert_eq!(callbacks.lock().unwrap().len(), 1);
+                    assert_eq!(shell.embedded.borrow().as_ref().unwrap().component(), opened.component());
+                }
                 if phone {
                     let clip = {
                         let mut studio = shell.studio.borrow_mut();
@@ -4226,9 +4244,14 @@ mod tests {
                     );
                     agent.set_phone_sheet_state(2);
                 } else {
-                    assert!(submit_chat_from_ui("停止后不能偷偷重连".into(), false).is_err());
-                    assert_eq!(callbacks.lock().unwrap().len(), 1);
-                    connect_from_ui().unwrap();
+                    resume_assistant_connection_after_settings();
+                    pump(&jobs, || true);
+                    assert_eq!(callbacks.lock().unwrap().len(), 1,
+                        "a late settings event after explicit stop must not reconnect");
+                    click_accessible_control(&app, "收起 Pi 助手");
+                    click_accessible_control(&app, "展开 Pi 助手");
+                    assert_eq!(callbacks.lock().unwrap().len(), 2,
+                        "a fresh desktop open reconnects without a separate control");
                 }
                 let runtime = shell.embedded.borrow().clone().unwrap();
                 let draft = "\u{1}".repeat(200_000);
@@ -4605,39 +4628,90 @@ mod tests {
                     click_accessible_control(&app, "打开智能助手");
                     assert_eq!(callbacks.lock().unwrap().len(), count + 1);
                     replacement = shell.embedded.borrow().clone().unwrap();
-                    // Real model-settings close callback reconnects only after
-                    // its dialog is gone; no separate connection button exists.
-                    let settings = app.global::<crate::ui::AgentSettingsUi>();
-                    settings.set_open(true);
-                    let count = callbacks.lock().unwrap().len();
-                    replacement.stop();
-                    (callbacks.lock().unwrap().last().unwrap().closed)(
-                        "Windows runtime closed".into(),
-                    );
-                    pump(&jobs, || replacement.view().closed);
-                    resume_phone_connection_after_settings();
-                    assert_eq!(callbacks.lock().unwrap().len(), count,
-                        "an open settings dialog must not compete with maintenance");
-                    settings.invoke_close_requested();
-                    assert!(!settings.get_open());
-                    assert_eq!(callbacks.lock().unwrap().len(), count + 1);
-                    replacement = shell.embedded.borrow().clone().unwrap();
-                    replacement.stop();
-                    (callbacks.lock().unwrap().last().unwrap().closed)(
-                        "Windows runtime closed".into(),
-                    );
-                    pump(&jobs, || replacement.view().closed && agent.get_status().can_connect);
-                    agent.set_draft("停止后明确发送新消息".into());
-                    click_accessible_control(&app, "发送");
-                    assert_eq!(callbacks.lock().unwrap().len(), count + 2,
-                        "a new send also connects without reopening the assistant");
-                    replacement = shell.embedded.borrow().clone().unwrap();
-                    assert!(replacement.waiting.lock().unwrap().is_some());
-                    assert!(!replacement.view().task_running);
                 }
+                // Real model-settings close callback reconnects only after
+                // its dialog is gone; no separate connection button exists.
+                let settings = app.global::<crate::ui::AgentSettingsUi>();
+                settings.set_open(true);
+                let count = callbacks.lock().unwrap().len();
                 replacement.stop();
+                (callbacks.lock().unwrap().last().unwrap().closed)(
+                    "Windows runtime closed".into(),
+                );
+                pump(&jobs, || replacement.view().closed);
+                resume_assistant_connection_after_settings();
+                assert_eq!(callbacks.lock().unwrap().len(), count,
+                    "an open settings dialog must not compete with maintenance");
+                settings.invoke_close_requested();
+                assert!(!settings.get_open());
+                assert_eq!(callbacks.lock().unwrap().len(), count + 1);
+                replacement = shell.embedded.borrow().clone().unwrap();
+                replacement.stop();
+                (callbacks.lock().unwrap().last().unwrap().closed)(
+                    "Windows runtime closed".into(),
+                );
+                pump(&jobs, || replacement.view().closed && agent.get_status().can_connect);
+                agent.set_draft("停止后明确发送新消息".into());
+                click_accessible_control(&app, "发送");
+                assert_eq!(callbacks.lock().unwrap().len(), count + 2,
+                    "a new send also connects without reopening the assistant");
+                replacement = shell.embedded.borrow().clone().unwrap();
+                assert!(replacement.waiting.lock().unwrap().is_some());
+                assert!(!replacement.view().task_running);
+                let reopen = || {
+                    if phone {
+                        click_accessible_control(&app, "收起智能助手");
+                        click_accessible_control(&app, "打开智能助手");
+                    } else {
+                        click_accessible_control(&app, "收起 Pi 助手");
+                        click_accessible_control(&app, "展开 Pi 助手");
+                    }
+                };
+                for cancel in [false, true] {
+                    let retired = Arc::clone(&replacement);
+                    let count = callbacks.lock().unwrap().len();
+                    let draft = agent.get_draft();
+                    stop_from_ui();
+                    reopen();
+                    assert_eq!(callbacks.lock().unwrap().len(), count,
+                        "opening during retirement must await actual platform destruction");
+                    assert_eq!(retired.bridge.status().unwrap().phase, concat_agent::Phase::Draining);
+                    if cancel {
+                        stop_from_ui();
+                    }
+                    (callbacks.lock().unwrap().last().unwrap().closed)("Windows runtime closed".into());
+                    pump(&jobs, || retired.view().closed);
+                    pump(&jobs, || true);
+                    if cancel {
+                        resume_assistant_connection_after_settings();
+                        pump(&jobs, || true);
+                        assert_eq!(callbacks.lock().unwrap().len(), count,
+                            "stop cancels a pending open, including late close/settings events");
+                        reopen();
+                    }
+                    pump(&jobs, || callbacks.lock().unwrap().len() == count + 1);
+                    replacement = shell.embedded.borrow().clone().unwrap();
+                    assert!(replacement.waiting.lock().unwrap().is_none());
+                    assert!(replacement.submission.lock().unwrap().is_none());
+                    assert!(!replacement.view().task_running);
+                    assert!(!shell.agent_pane.borrow().readiness.calls_authorized);
+                    assert_eq!(agent.get_draft(), draft, "reconnection never replays the stopped draft");
+                }
+                // A queued desktop project handoff must be cancellable before
+                // its old platform-close publication reaches the UI loop.
+                let third = concat_host::projects::create(
+                    root.to_str().unwrap(), "Third", 64, 64, 30, 1, [0, 0, 0, 255],
+                ).unwrap();
+                let count = callbacks.lock().unwrap().len();
+                shell.studio.borrow_mut().open_project(third).unwrap();
+                pump(&jobs, || replacement.revoked.load(Ordering::Acquire));
+                stop_from_ui();
                 (callbacks.lock().unwrap().last().unwrap().closed)("Windows runtime closed".into());
                 pump(&jobs, || replacement.view().closed);
+                resume_assistant_connection_after_settings();
+                pump(&jobs, || true);
+                assert_eq!(callbacks.lock().unwrap().len(), count,
+                    "a stopped project handoff cannot resurrect from its delayed close event");
                 shell.studio.borrow_mut().close_project().unwrap();
                 app.hide().unwrap();
                 // Shell's thread-local owner drops at thread exit; the surrounding
@@ -4822,7 +4896,7 @@ mod tests {
                 let reviews = std::rc::Rc::new(std::cell::Cell::new(0));
                 let received = std::rc::Rc::clone(&connects);
                 app.global::<crate::ui::AgentUi>()
-                    .on_connect_requested(move || received.set(received.get() + 1));
+                    .on_assistant_open_requested(move || received.set(received.get() + 1));
                 let received = std::rc::Rc::clone(&reviews);
                 app.global::<crate::ui::AgentUi>()
                     .on_review_requested(move || received.set(received.get() + 1));
@@ -4966,11 +5040,11 @@ mod tests {
                     assert_eq!(agent.get_status().error, error);
                     agent.set_draft("恢复前不能直接执行".into());
                     click_accessible_control(&app, "发送");
-                    // The phone has no manual connection button. This fixture
-                    // has no installed Shell; exercise the retained desktop
-                    // connection callback directly. Phone reconnection is
-                    // covered with an actual Shell in the startup test above.
-                    agent.invoke_connect_requested();
+                    // Neither surface has a manual connection button. This
+                    // fixture has no Shell; exercise the shared open callback.
+                    // Both surfaces' reconnection is covered with a real Shell
+                    // and actual open controls in the startup test above.
+                    agent.invoke_assistant_open_requested();
                     assert_eq!(connects.get(), index + 1);
 
                     let replacement = AgentBridge::acquire(
