@@ -340,6 +340,13 @@ fn the_line_is_drawn_through_the_points_and_sixteen_steps_along_each_bend() {
 
 #[test]
 fn the_presets_are_listed_by_their_english_names() {
+    let _language = crate::i18n::language_lock();
+    let previous = crate::i18n::current();
+    let dirs = concat_host::AppDirs::under(&std::env::temp_dir().join(format!(
+        "bkcut-speed-preset-language-{}",
+        crate::embedded::random_capability().unwrap()
+    )));
+    crate::i18n::select(crate::i18n::ENGLISH, &dirs);
     assert_eq!(
         preset_labels(),
         vec![
@@ -351,9 +358,21 @@ fn the_presets_are_listed_by_their_english_names() {
             "Flash out"
         ]
     );
+    let english_points: Vec<_> = (0..6)
+        .map(|index| preset_by_index(index).unwrap())
+        .collect();
+    crate::i18n::select(crate::i18n::startup_locale(None), &dirs);
+    assert_eq!(crate::i18n::current(), "zh-Hans");
+    assert_eq!(
+        preset_labels(),
+        vec!["蒙太奇", "英雄", "子弹", "跳切", "闪入", "闪出"]
+    );
     for index in 0..6 {
-        assert_eq!(preset_index(&preset_by_index(index).unwrap()), index);
+        let points = preset_by_index(index).unwrap();
+        assert_eq!(points, english_points[index as usize]);
+        assert_eq!(preset_index(&points), index);
     }
+    crate::i18n::select(&previous, &dirs);
     assert!(preset_by_index(6).is_none());
     assert!(preset_by_index(-1).is_none());
     let mut shaped = preset_by_index(2).unwrap();

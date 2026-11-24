@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use concat::embedded::{PlatformHost, RuntimeCallbacks, RuntimeResources};
+use concat_agent::transport::MAX_BRIDGE_FRAME_BYTES;
 use jni::objects::{JClass, JString};
 use jni::{Env, JavaVM, jni_sig, jni_str, sys};
 use slint::android::AndroidApp;
@@ -27,6 +28,31 @@ struct HostState {
 }
 
 impl HostState {
+    fn request_close(&self) {
+        // Reject any JNI callback before the Android UI thread processes close.
+        // Java then emits stopping -> destroys the view -> emits closed.
+        self.accepting.store(false, Ordering::Release);
+        if self.closed.load(Ordering::Acquire) {
+            return;
+        }
+        let result = super::java::with_runtime_class(&self.app, |env, _, class| {
+            let id = env.new_string(&self.instance)?;
+            env.call_static_method(
+                class,
+                jni_str!("close"),
+                jni_sig!("(Ljava/lang/String;)V"),
+                &[(&id).into()],
+            )?;
+            Ok(())
+        });
+        if result.is_err() {
+            // No closed acknowledgement: the common dispatcher retains the
+            // revoked storage owner. Never release on a timeout or JNI error.
+            self.stopping("Android runtime could not acknowledge close".into());
+            log::error!("Android runtime teardown failed; ownership retained");
+        }
+    }
+
     fn stopping(&self, reason: String) {
         self.accepting.store(false, Ordering::Release);
         if !self.stopping_notified.swap(true, Ordering::AcqRel) {
@@ -134,7 +160,7 @@ impl PlatformHost for AndroidHost {
         if !self.state.accepting.load(Ordering::Acquire) {
             return Err("Android runtime is no longer active".into());
         }
-        if message.len() > 4 * 1024 * 1024 {
+        if message.len() > MAX_BRIDGE_FRAME_BYTES {
             return Err("Android runtime message exceeds its bound".into());
         }
         super::java::with_runtime_class(&self.state.app, |env, _, class| {
@@ -152,29 +178,7 @@ impl PlatformHost for AndroidHost {
     }
 
     fn close(&self) {
-        // Reject any JNI callback before the Android UI thread processes close.
-        // Java then emits stopping -> destroys the view -> emits closed.
-        self.state.accepting.store(false, Ordering::Release);
-        if self.state.closed.load(Ordering::Acquire) {
-            return;
-        }
-        let result = super::java::with_runtime_class(&self.state.app, |env, _, class| {
-            let id = env.new_string(&self.state.instance)?;
-            env.call_static_method(
-                class,
-                jni_str!("close"),
-                jni_sig!("(Ljava/lang/String;)V"),
-                &[(&id).into()],
-            )?;
-            Ok(())
-        });
-        if result.is_err() {
-            // No closed acknowledgement: the common dispatcher retains the
-            // revoked storage owner. Never release on a timeout or JNI error.
-            self.state
-                .stopping("Android runtime could not acknowledge close".into());
-            log::error!("Android runtime teardown failed; ownership retained");
-        }
+        self.state.request_close();
     }
 }
 
@@ -274,9 +278,17 @@ unsafe extern "system" fn runtime_message(
     message: sys::jstring,
 ) {
     receive(instance, message, |state, message| {
-        if state.accepting.load(Ordering::Acquire) && message.len() <= 4 * 1024 * 1024 {
-            (state.callbacks.message)(message);
+        if !state.accepting.load(Ordering::Acquire) {
+            return;
         }
+        if message.len() > MAX_BRIDGE_FRAME_BYTES {
+            // A missing reply would leave the original runtime waiting forever.
+            // Revoke now; common teardown still requires Java's real close ack.
+            state.stopping("runtime.protocolViolation".into());
+            state.request_close();
+            return;
+        }
+        (state.callbacks.message)(message);
     });
 }
 

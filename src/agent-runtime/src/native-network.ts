@@ -4,7 +4,11 @@ import { RuntimeRefused } from "./gate.ts";
 import type { NativeWireClient } from "./native-wire.ts";
 import type { OwnerLease } from "./ports.ts";
 
-const MAX_BODY_BYTES = 1024 * 1024;
+// Keep these per-request bounds aligned with concat-agent::transport.
+// They include full persisted history; they are not cumulative task budgets.
+const MAX_BODY_BYTES = 16 * 1024 * 1024;
+// The native envelope reserves another 64 KiB for its channel, IDs and handles.
+const MAX_OPEN_BYTES = 2 * MAX_BODY_BYTES;
 const MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 const MAX_CHUNK_BYTES = 64 * 1024;
 const REQUEST_HEADERS = new Set(["accept", "content-type", "anthropic-version", "anthropic-beta"]);
@@ -29,7 +33,7 @@ export async function nativeNetworkFetch(
   const open = {
     method: "network.open", ...owner, networkPermit, url: request.url, methodName: request.method, headers, body,
   };
-  if (new TextEncoder().encode(JSON.stringify(open)).byteLength > 1536 * 1024) {
+  if (new TextEncoder().encode(JSON.stringify(open)).byteLength > MAX_OPEN_BYTES) {
     throw new RuntimeRefused("serialized model request exceeds the native message limit");
   }
   const opened = object(await wire.call(open, request.signal));

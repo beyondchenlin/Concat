@@ -121,3 +121,36 @@ test("native cancelled terminal receipt rejects the response body instead of rep
     assert.ok(f.sent.some((frame) => frame.payload.method === "network.cancel"));
   } finally { f.wire.close(); }
 });
+
+
+test("full compaction history passes the real script network and wire adapters unchanged", async () => {
+  const body = JSON.stringify({ model: "recorded-model", messages: [{ role: "user", content: "history context ".repeat(250000) }], stream: true, max_tokens: 4096 });
+  assert.ok(Buffer.byteLength(body) > 3602209);
+  const f = fixture((frame) => frame.payload.method === "network.open"
+    ? { streamId: "large-history", status: 200, headers: [] }
+    : { chunk: "", done: true });
+  try {
+    const response = await f.ports.network.fetch(lease, "same-task-permit", "https://model.invalid/v1/chat/completions", {
+      method: "POST", body, headers: { "content-type": "application/json", authorization: "Bearer excluded" },
+    });
+    assert.equal(await response.text(), "");
+    const frame = f.sent.find((frame) => frame.payload.method === "network.open");
+    assert.equal(frame.payload.body, body);
+    assert.equal(frame.payload.ownerHandle, lease.handle);
+    assert.equal(frame.payload.networkPermit, "same-task-permit");
+    assert.deepEqual(frame.payload.headers, [["content-type", "application/json"]]);
+    assert.ok(Buffer.byteLength(JSON.stringify(frame)) < 2 * 16 * 1024 * 1024 + 64 * 1024);
+  } finally { f.wire.close(); }
+});
+
+test("request and escaped-envelope byte bounds still refuse before the native wire", async () => {
+  const f = fixture(() => { throw new Error("oversize data cannot reach native"); });
+  try {
+    for (const body of ["x".repeat(16 * 1024 * 1024 + 1), "\u0001".repeat(6 * 1024 * 1024)]) {
+      await assert.rejects(f.ports.network.fetch(lease, "same-task-permit", "https://model.invalid/v1/chat/completions", {
+        method: "POST", body,
+      }), /native message limit/);
+    }
+    assert.equal(f.sent.length, 0);
+  } finally { f.wire.close(); }
+});

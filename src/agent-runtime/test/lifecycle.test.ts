@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { AgentRuntime } from "../src/runtime.ts";
 import { ExecutionGate } from "../src/gate.ts";
 import { guardedDatabase, guardedStorage, NativeMcpTransport } from "../src/native-adapters.ts";
-import type { ExecutionGrant, NativePorts, OwnerLease, PiEngine, PiEngineFactory, SchedulingAction } from "../src/ports.ts";
+import type { ExecutionGrant, NativePorts, OwnerLease, PiEngine, PiEngineFactory, SchedulingAction, RecoverySnapshot } from "../src/ports.ts";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -17,7 +17,7 @@ function deferred<T>() {
 function fixture() {
   const log: string[] = [];
   const lease: OwnerLease = { storageId: "store", generation: "1", handle: "native-capability" };
-  const snapshot = { snapshotId: "snapshot", projectSession: "7", projectRevision: "41", sessionRevision: "9", schemaVersion: 2, hasInterruptedWork: false };
+  const snapshot: RecoverySnapshot = { snapshotId: "snapshot", projectSession: "7", projectRevision: "41", sessionRevision: "9", schemaVersion: 2, hasInterruptedWork: false };
   let listener: (() => void) | undefined;
   let held = false;
   const ports: NativePorts = {
@@ -53,7 +53,7 @@ function fixture() {
 
 const actions: SchedulingAction[] = [
   "createConversation", "submit", "waitSubmission", "abortSubmission", "resume", "abortTask", "signal",
-  "waitForTask", "waitForIdle", "compact", "abortConversation", "resetConversation", "nativeSubmit", "nativeWait",
+  "waitForTask", "waitForIdle", "compact", "abortConversation", "resetConversation", "nativeSubmit", "nativeResume", "nativeWait",
 ];
 
 test("startup only acquires ownership and reads recovery; every scheduling entry stays closed", async () => {
@@ -97,7 +97,7 @@ test("stale approval and discard without native conversation scope never open wr
   await f.runtime.start();
   await assert.rejects(f.runtime.confirmRecovery({ ...f.approval, snapshotId: "old" }), /snapshot/);
   assert.deepEqual(f.log, ["acquire", "read-recovery"]);
-  await assert.rejects(f.runtime.confirmRecovery({ ...f.approval, decision: "discard" }), /原生明确放弃授权/);
+  await assert.rejects(f.runtime.confirmRecovery({ ...f.approval, decision: "discard" }), /agent.errorRecoverySnapshotMissing/);
   assert.deepEqual(f.log, ["acquire", "read-recovery", "confirm", "revoke", "release"]);
   assert.equal(f.runtime.phase, "closed", "an invalid already-issued grant must be revoked too");
 });
@@ -116,7 +116,7 @@ test("discard rejects invalid scope and mixed model authority before opening the
       return { generation: "1", snapshotId: "snapshot", allowInitializeEmptyStore: false, discardConversationIds: ids, ...extra } as ExecutionGrant;
     };
     await f.runtime.start();
-    await assert.rejects(f.runtime.confirmRecovery({ ...f.approval, decision }), /原生放弃授权/);
+    await assert.rejects(f.runtime.confirmRecovery({ ...f.approval, decision }), /agent.errorRecoveryScope/);
     assert.equal(f.runtime.phase, "closed");
     assert.deepEqual(f.log, ["acquire", "read-recovery", "confirm", "revoke", "release"]);
   }
@@ -421,4 +421,114 @@ test("concurrent MCP calls keep distinct trusted invocation identities", async (
   assert.deepEqual(received, [{ taskId: 1, conversationId: 11, callId: "call-1" }, { taskId: 2, conversationId: 12, callId: "call-2" }]);
   pending.resolve(); await Promise.all([first, second]);
   await transport.close();
+});
+
+
+const resumeLanguages = { interfaceLanguage:"en", replyLanguage:"ja", contentLanguage:"fr" };
+const resumeModel = { id:"connection-old", version:"2", configurationVersion:"7", protocol:"openai-completions",
+  providerId:"custom", endpoint:"https://example.invalid/v1", model:"original-model", requestTimeoutMs:10000, maxOutputTokens:256 };
+function recoveryScope() {
+  return { taskId:"original-task",conversationId:3,submissionId:5,taskIds:[11,12],mode:"edit",
+    languages:{...resumeLanguages},modelConfiguration:{...resumeModel} };
+}
+function recoveryInput() {
+  return { ...recoveryScope(),taskIds:undefined,networkPermit:"fresh-native-permit", input:"original input",
+    nativeContext:'{"expectedSession":22,"expectedRevision":4}' };
+}
+function resumeFixture() {
+  const f = fixture(); f.snapshot.hasInterruptedWork = true; f.snapshot.hasUnfinishedPi = true;
+  f.ports.ownership.confirm = async () => ({generation:"1",snapshotId:"snapshot",allowInitializeEmptyStore:false,
+    resumeTask:recoveryScope() as ExecutionGrant["resumeTask"]});
+  const {taskIds:_taskIds,...input} = recoveryInput();
+  f.ports.recovery.resumeVerified = async () => input;
+  return f;
+}
+
+test("explicit original-task continuation remains storage-only until final native verification and retains both language snapshots", async () => {
+  const f = resumeFixture();
+  const entered = deferred<void>(); const verified = deferred<unknown>();
+  let gate:ExecutionGate | undefined;
+  f.factory.open = async (options) => {
+    gate = options.gate;
+    assert.equal(gate.phase,"activating");
+    assert.deepEqual(options.grant.resumeTask?.languages,resumeLanguages);
+    assert.throws(()=>gate!.networkPermit(f.lease),/reconciliation/);
+    return f.engine;
+  };
+  f.ports.recovery.resumeVerified = async () => { f.log.push("resume-verified"); entered.resolve(); return verified.promise; };
+  f.engine.run = async (action, input) => {
+    assert.equal(action,"nativeResume"); assert.equal(gate!.phase,"ready");
+    assert.deepEqual((input as any).languages,resumeLanguages);
+    assert.deepEqual((input as any).modelConfiguration,resumeModel);
+    assert.equal((input as any).taskId,"original-task");
+    assert.equal((input as any).networkPermit,"fresh-native-permit");
+    f.log.push(`run:${action}`);
+    return {resumed:true,taskId:"original-task",conversationId:3,submissionId:5};
+  };
+  await f.runtime.start();
+  const opening = f.runtime.confirmRecovery(f.approval); await entered.promise;
+  assert.equal(f.runtime.phase,"activating");
+  assert.throws(()=>gate!.networkPermit(f.lease),/reconciliation/);
+  await assert.rejects(f.runtime.dispatch("nativeResume",{}),/reconciliation/);
+  const {taskIds:_taskIds,...input} = recoveryInput(); verified.resolve(input);
+  assert.deepEqual(await opening,{resumed:true,taskId:"original-task",conversationId:3,submissionId:5});
+  assert.equal(f.log.filter(item=>item==="run:nativeResume").length,1);
+  assert.equal(f.log.includes("network"),false);
+  await assert.rejects(f.runtime.confirmRecovery(f.approval),/not awaiting/);
+  await f.runtime.stop();
+});
+
+test("changed original model, language or identity refuses resume before any scheduler execution", async () => {
+  for (const change of [
+    {languages:{...resumeLanguages,replyLanguage:"en"}},
+    {modelConfiguration:{...resumeModel,version:"3"}},
+    {submissionId:6}, {taskId:"different-task"},
+  ]) {
+    const f=resumeFixture();
+    const {taskIds:_taskIds,...input}=recoveryInput();
+    f.ports.recovery.resumeVerified=async()=>({...input,...change});
+    await f.runtime.start();
+    await assert.rejects(f.runtime.confirmRecovery(f.approval),/agent.errorRecoveryChanged/);
+    assert.equal(f.runtime.phase,"closed");
+    assert.equal(f.log.some(item=>item.startsWith("run:")),false);
+    assert.deepEqual(f.log.slice(-3),["revoke","engine-close","release"]);
+  }
+});
+
+test("mixed recovery scopes or premature network grants cannot open original storage", async () => {
+  for (const extra of [{discardConversationIds:[3]}, {networkPermit:"unreviewed"}, {allowInitializeEmptyStore:true}]) {
+    const f=resumeFixture();
+    f.ports.ownership.confirm=async()=>({generation:"1",snapshotId:"snapshot",allowInitializeEmptyStore:false,
+      resumeTask:recoveryScope(),...extra}) as ExecutionGrant;
+    await f.runtime.start();
+    await assert.rejects(f.runtime.confirmRecovery(f.approval),/agent.errorRecoveryScope/);
+    assert.equal(f.log.includes("engine-open"),false);
+    assert.equal(f.log.includes("network"),false);
+    assert.equal(f.runtime.phase,"closed");
+  }
+});
+
+test("native reconciliation of operation facts alone opens a clean session without inventing an original task", async () => {
+  const f=fixture(); f.snapshot.hasInterruptedWork=true; f.snapshot.hasUnfinishedPi=false;
+  f.ports.ownership.confirm=async()=>({generation:"1",snapshotId:"snapshot",allowInitializeEmptyStore:false,reconciledOperations:true});
+  await f.runtime.start();
+  assert.equal(await f.runtime.confirmRecovery(f.approval),undefined);
+  assert.equal(f.runtime.phase,"ready");
+  assert.equal(f.log.some(item=>item.startsWith("run:")),false);
+  assert.equal(f.log.includes("network"),false);
+  await f.runtime.stop();
+});
+
+
+test("current-project-only review never opens Pi or becomes ready and requires retirement before another decision",async()=>{
+  const f=fixture();f.snapshot.hasInterruptedWork=true;f.snapshot.hasUnfinishedPi=true;
+  f.ports.ownership.confirm=async()=>({generation:"1",snapshotId:"snapshot",allowInitializeEmptyStore:false,
+    reconciledOperations:true,reviewedOnly:true,remainingOtherOperations:2});
+  await f.runtime.start();
+  assert.deepEqual(await f.runtime.confirmRecovery({...f.approval,decision:"review"}),{reviewed:true,remainingOtherOperations:2});
+  assert.equal(f.runtime.phase,"recovery");assert.equal(f.log.includes("engine-open"),false);
+  await assert.rejects(f.runtime.dispatch("nativeSubmit",{}),/reconciliation/);
+  await assert.rejects(f.runtime.confirmRecovery({...f.approval,decision:"review"}),/not awaiting/);
+  assert.equal(f.log.includes("network"),false);
+  await f.runtime.stop();assert.deepEqual(f.log.slice(-2),["revoke","release"]);
 });

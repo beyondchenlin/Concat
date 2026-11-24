@@ -9,8 +9,9 @@
 //! and most people never ask for all three. Each is fetched the first time a
 //! feature needs one.
 //!
-//! Every model Concat offers is mirrored onto a release of its own
-//! repository, and the mirror is what a download asks for first. Upstream -
+//! BK CUT first tries a verified ModelScope copy for models catalogued
+//! there. An explicit saved source choice takes precedence. Every model is
+//! also mirrored onto the upstream project's release. Upstream -
 //! the third party the mirror was filled from - is the second try and
 //! nothing more: a model the editor offers should not stop existing because
 //! somebody else moved a path, and the bytes that arrive should be the bytes
@@ -85,12 +86,95 @@ pub fn hf_mirror(url: &str) -> Option<String> {
         .map(|rest| format!("{HF_MIRROR_HOST}{rest}"))
 }
 
+/// ModelScope copies whose Git LFS object IDs and sizes match the model
+/// manifest exactly. Each URL pins the observed repository commit; no URL
+/// is inferred from an arbitrary upstream name. See docs/MODELSCOPE_DOWNLOADS.md.
+const MODELSCOPE_SOURCES: &[(&str, &str)] = &[
+    (
+        "slimsam-77-encoder.onnx",
+        "https://modelscope.cn/api/v1/models/Xenova/slimsam-77-uniform/repo?Revision=4c8131c2e433e9fa683a1bd0ee40521774996126&FilePath=onnx%2Fvision_encoder.onnx",
+    ),
+    (
+        "slimsam-77-decoder.onnx",
+        "https://modelscope.cn/api/v1/models/Xenova/slimsam-77-uniform/repo?Revision=4c8131c2e433e9fa683a1bd0ee40521774996126&FilePath=onnx%2Fprompt_encoder_mask_decoder.onnx",
+    ),
+    (
+        "chatterbox-turbo-tokenizer.json",
+        "https://modelscope.cn/api/v1/models/ResembleAI/chatterbox-turbo-ONNX/repo?Revision=ccb873afb4591f6b0a52cf9e52ef938e05e8f8f2&FilePath=tokenizer.json",
+    ),
+    (
+        "chatterbox-turbo-embed_tokens_quantized.onnx",
+        "https://modelscope.cn/api/v1/models/ResembleAI/chatterbox-turbo-ONNX/repo?Revision=ccb873afb4591f6b0a52cf9e52ef938e05e8f8f2&FilePath=onnx%2Fembed_tokens_quantized.onnx",
+    ),
+    (
+        "chatterbox-turbo-language_model_quantized.onnx",
+        "https://modelscope.cn/api/v1/models/ResembleAI/chatterbox-turbo-ONNX/repo?Revision=ccb873afb4591f6b0a52cf9e52ef938e05e8f8f2&FilePath=onnx%2Flanguage_model_quantized.onnx",
+    ),
+    (
+        "chatterbox-turbo-speech_encoder_quantized.onnx",
+        "https://modelscope.cn/api/v1/models/ResembleAI/chatterbox-turbo-ONNX/repo?Revision=ccb873afb4591f6b0a52cf9e52ef938e05e8f8f2&FilePath=onnx%2Fspeech_encoder_quantized.onnx",
+    ),
+    (
+        "chatterbox-turbo-conditional_decoder_quantized.onnx",
+        "https://modelscope.cn/api/v1/models/ResembleAI/chatterbox-turbo-ONNX/repo?Revision=ccb873afb4591f6b0a52cf9e52ef938e05e8f8f2&FilePath=onnx%2Fconditional_decoder_quantized.onnx",
+    ),
+    (
+        "chatterbox-turbo-embed_tokens_quantized.onnx_data",
+        "https://modelscope.cn/api/v1/models/ResembleAI/chatterbox-turbo-ONNX/repo?Revision=ccb873afb4591f6b0a52cf9e52ef938e05e8f8f2&FilePath=onnx%2Fembed_tokens_quantized.onnx_data",
+    ),
+    (
+        "chatterbox-turbo-conditional_decoder_quantized.onnx_data",
+        "https://modelscope.cn/api/v1/models/ResembleAI/chatterbox-turbo-ONNX/repo?Revision=ccb873afb4591f6b0a52cf9e52ef938e05e8f8f2&FilePath=onnx%2Fconditional_decoder_quantized.onnx_data",
+    ),
+    (
+        "chatterbox-turbo-speech_encoder_quantized.onnx_data",
+        "https://modelscope.cn/api/v1/models/ResembleAI/chatterbox-turbo-ONNX/repo?Revision=ccb873afb4591f6b0a52cf9e52ef938e05e8f8f2&FilePath=onnx%2Fspeech_encoder_quantized.onnx_data",
+    ),
+    (
+        "chatterbox-turbo-language_model_quantized.onnx_data",
+        "https://modelscope.cn/api/v1/models/ResembleAI/chatterbox-turbo-ONNX/repo?Revision=ccb873afb4591f6b0a52cf9e52ef938e05e8f8f2&FilePath=onnx%2Flanguage_model_quantized.onnx_data",
+    ),
+    (
+        "ggml-tiny.en.bin",
+        "https://modelscope.cn/api/v1/models/cjc1887415157/whisper.cpp/repo?Revision=ac12dbec310c2fd6e67398e808c40d80210ce4d0&FilePath=ggml-tiny.en.bin",
+    ),
+    (
+        "ggml-tiny.bin",
+        "https://modelscope.cn/api/v1/models/cjc1887415157/whisper.cpp/repo?Revision=ac12dbec310c2fd6e67398e808c40d80210ce4d0&FilePath=ggml-tiny.bin",
+    ),
+    (
+        "ggml-base.en.bin",
+        "https://modelscope.cn/api/v1/models/cjc1887415157/whisper.cpp/repo?Revision=ac12dbec310c2fd6e67398e808c40d80210ce4d0&FilePath=ggml-base.en.bin",
+    ),
+    (
+        "ggml-base.bin",
+        "https://modelscope.cn/api/v1/models/cjc1887415157/whisper.cpp/repo?Revision=ac12dbec310c2fd6e67398e808c40d80210ce4d0&FilePath=ggml-base.bin",
+    ),
+    (
+        "ggml-small.en.bin",
+        "https://modelscope.cn/api/v1/models/cjc1887415157/whisper.cpp/repo?Revision=ac12dbec310c2fd6e67398e808c40d80210ce4d0&FilePath=ggml-small.en.bin",
+    ),
+    (
+        "ggml-small.bin",
+        "https://modelscope.cn/api/v1/models/cjc1887415157/whisper.cpp/repo?Revision=ac12dbec310c2fd6e67398e808c40d80210ce4d0&FilePath=ggml-small.bin",
+    ),
+];
+
+/// A verified ModelScope source. Unmapped models retain their existing
+/// sources rather than receiving a guessed URL or a different model.
+pub fn modelscope(file: &str) -> Option<String> {
+    MODELSCOPE_SOURCES
+        .iter()
+        .find(|(candidate, _)| *candidate == file)
+        .map(|(_, url)| (*url).to_owned())
+}
+
 /// Which source a download tries first. The rest still follow: a
 /// preference is where to look first, never the only place to look.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum SourcePreference {
     /// Concat's mirror, then Hugging Face, then upstream, then hf-mirror.
-    #[default]
+    /// Kept as an explicit legacy choice, independent of the new default.
     Auto,
     /// Concat's own release first.
     Mirror,
@@ -102,16 +186,20 @@ pub enum SourcePreference {
     /// A base URL of one's own, with the model's file name appended: a
     /// corporate mirror, a self-hosted copy.
     Custom,
+    /// Verified ModelScope files first; known sources for unlisted models.
+    #[default]
+    ModelScope,
 }
 
 impl SourcePreference {
     /// Every preference, in the order a menu lists them.
-    pub const ALL: [SourcePreference; 5] = [
+    pub const ALL: [SourcePreference; 6] = [
         SourcePreference::Auto,
         SourcePreference::Mirror,
         SourcePreference::HfMirror,
         SourcePreference::Upstream,
         SourcePreference::Custom,
+        SourcePreference::ModelScope,
     ];
 
     /// The name a preferences file stores.
@@ -122,10 +210,12 @@ impl SourcePreference {
             SourcePreference::HfMirror => "hf-mirror",
             SourcePreference::Upstream => "upstream",
             SourcePreference::Custom => "custom",
+            SourcePreference::ModelScope => "modelscope",
         }
     }
 
-    /// The preference a stored name means; `Auto` for one nobody stores.
+    /// The preference a stored name means. Missing/invalid values use
+    /// ModelScope; all former explicit names keep their exact meaning.
     pub fn parse(name: &str) -> Self {
         Self::ALL
             .into_iter()
@@ -136,7 +226,7 @@ impl SourcePreference {
 
 /// The preference in force, and the base URL a custom one points at.
 static PREFERENCE: std::sync::RwLock<(SourcePreference, String)> =
-    std::sync::RwLock::new((SourcePreference::Auto, String::new()));
+    std::sync::RwLock::new((SourcePreference::ModelScope, String::new()));
 
 /// Sets where downloads look first. From the window, when the preference
 /// is read from disk and whenever it is changed.
@@ -177,6 +267,7 @@ fn sources_for(
     custom_base: &str,
 ) -> Vec<String> {
     let github = mirror(file);
+    let modelscope = modelscope(file);
     let hugging_face = (!HF_REPO.is_empty())
         .then(|| format!("https://huggingface.co/{HF_REPO}/resolve/main/{file}"));
     let custom = (!custom_base.is_empty()).then(|| format!("{custom_base}/{file}"));
@@ -200,12 +291,14 @@ fn sources_for(
         SourcePreference::HfMirror => hf_mirrored.iter().cloned().for_each(&mut push),
         SourcePreference::Upstream => push(upstream.to_owned()),
         SourcePreference::Custom => custom.iter().cloned().for_each(&mut push),
+        SourcePreference::ModelScope => modelscope.iter().cloned().for_each(&mut push),
     }
     push(github);
     hugging_face.iter().cloned().for_each(&mut push);
     push(upstream.to_owned());
     hf_mirrored.iter().cloned().for_each(&mut push);
     custom.iter().cloned().for_each(&mut push);
+    modelscope.iter().cloned().for_each(&mut push);
     ordered
 }
 
@@ -300,13 +393,42 @@ pub fn fetch(
     if let Some(chosen) = take_supplied(file) {
         return adopt(&chosen, file, partial, sha256, cancel, cancelled, progress);
     }
+    fetch_sources(
+        file,
+        sources(file, upstream),
+        partial,
+        estimate,
+        sha256,
+        cancel,
+        cancelled,
+        progress,
+    )
+}
+
+/// The production retry loop, also exercised with local HTTP sources in
+/// tests so a failed preferred source cannot silently disable fallback.
+fn fetch_sources(
+    file: &str,
+    urls: Vec<String>,
+    partial: &Path,
+    estimate: u64,
+    sha256: &str,
+    cancel: &AtomicBool,
+    cancelled: &str,
+    progress: &mut dyn FnMut(u64, u64),
+) -> Result<(u64, u64), String> {
     let mut missed: Vec<(String, Missed)> = Vec::new();
-    for url in sources(file, upstream) {
+    for url in urls {
         match attempt(&url, partial, estimate, cancel, cancelled, progress) {
             Ok(totals) => {
                 verify(partial, sha256).inspect_err(|_| {
                     let _ = std::fs::remove_file(partial);
                 })?;
+                // Report the host, never a custom URL's path, query or
+                // embedded credentials. This also makes real-source
+                // verification distinguish the preferred host from a fallback.
+                let host = source_host(&url);
+                log::info!("models: verified {file} from {host}");
                 return Ok(totals);
             }
             Err(miss) => {
@@ -359,6 +481,19 @@ pub fn fetch(
         hosts.join(", "),
         cause.describe(),
     ))
+}
+
+/// A source's hostname for diagnostic receipts, with credentials and any
+/// URL parameters omitted even when a custom source was supplied.
+fn source_host(url: &str) -> &str {
+    url.split_once("://")
+        .map_or("", |(_, rest)| rest)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .rsplit('@')
+        .next()
+        .unwrap_or_default()
 }
 
 /// Installs the person's own copy of `file` as if it had been downloaded:
@@ -667,7 +802,7 @@ mod tests {
     fn a_hugging_face_upstream_is_also_offered_through_hf_mirror() {
         let upstream = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin";
         let list = sources_for("ggml-tiny.bin", upstream, SourcePreference::Auto, "");
-        assert_eq!(list.len(), 3);
+        assert_eq!(list.len(), 4);
         assert_eq!(list[1], upstream);
         assert_eq!(
             list[2],
@@ -676,7 +811,7 @@ mod tests {
         // and first, when that is the preference
         let list = sources_for("ggml-tiny.bin", upstream, SourcePreference::HfMirror, "");
         assert!(list[0].starts_with("https://hf-mirror.com/"));
-        assert_eq!(list.len(), 3);
+        assert_eq!(list.len(), 4);
         assert_eq!(hf_mirror("https://github.com/x/y"), None);
     }
 
@@ -708,7 +843,121 @@ mod tests {
         for preference in SourcePreference::ALL {
             assert_eq!(SourcePreference::parse(preference.name()), preference);
         }
-        assert_eq!(SourcePreference::parse("nonsense"), SourcePreference::Auto);
+        assert_eq!(
+            SourcePreference::parse("nonsense"),
+            SourcePreference::ModelScope
+        );
+        assert_eq!(SourcePreference::parse(""), SourcePreference::ModelScope);
+        assert_eq!(SourcePreference::default(), SourcePreference::ModelScope);
+        assert_eq!(SourcePreference::parse("auto"), SourcePreference::Auto);
+    }
+
+    #[test]
+    fn modelscope_leads_only_for_verified_files_and_keeps_legacy_choices() {
+        let file = "ggml-tiny.bin";
+        let upstream = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin";
+        let expected = modelscope(file).expect("a verified mirror");
+        assert!(expected.contains("Revision=ac12dbec310c2fd6e67398e808c40d80210ce4d0"));
+        let list = sources_for(file, upstream, SourcePreference::ModelScope, "");
+        assert_eq!(list.first(), Some(&expected));
+        assert_eq!(list.iter().filter(|url| **url == expected).count(), 1);
+        assert_eq!(list[1], mirror(file));
+        assert_eq!(list[2], upstream);
+        assert_eq!(
+            sources_for(file, upstream, SourcePreference::Mirror, "")[0],
+            mirror(file)
+        );
+        assert_eq!(
+            sources_for(file, upstream, SourcePreference::Upstream, "")[0],
+            upstream
+        );
+        assert_eq!(
+            sources_for(
+                file,
+                upstream,
+                SourcePreference::Custom,
+                "https://my.example"
+            )[0],
+            "https://my.example/ggml-tiny.bin"
+        );
+        assert!(modelscope("unknown.onnx").is_none());
+        assert!(modelscope("../ggml-tiny.bin").is_none());
+        let fallback = sources_for(
+            "unknown.onnx",
+            "https://up.example/model",
+            SourcePreference::ModelScope,
+            "",
+        );
+        assert_eq!(
+            fallback,
+            vec![
+                mirror("unknown.onnx"),
+                "https://up.example/model".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unreachable_preferred_source_falls_back_and_checks_the_bytes() {
+        use sha2::{Digest, Sha256};
+        use std::io::{Read, Write};
+        let body = b"verified fallback model".to_vec();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let address = listener.local_addr().expect("an address");
+        let served = body.clone();
+        let server = std::thread::spawn(move || {
+            for (index, stream) in listener.incoming().take(2).enumerate() {
+                let mut stream = stream.expect("a connection");
+                let mut request = [0u8; 4096];
+                let request_bytes = stream.read(&mut request).expect("a request");
+                assert!(request_bytes > 0, "a non-empty request");
+                let (status, data): (&str, &[u8]) = if index == 0 {
+                    ("404 Not Found", b"")
+                } else {
+                    ("200 OK", &served)
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    data.len()
+                )
+                .expect("headers");
+                stream.write_all(data).expect("body");
+            }
+        });
+        let folder = tempfile::tempdir().expect("a folder");
+        let partial = folder.path().join("fallback.part");
+        let cancel = AtomicBool::new(false);
+        let digest = hex(&Sha256::digest(&body));
+        let totals = fetch_sources(
+            "fallback-test.bin",
+            vec![
+                format!("http://{address}/missing"),
+                format!("http://{address}/model"),
+            ],
+            &partial,
+            0,
+            &digest,
+            &cancel,
+            "stopped",
+            &mut |_, _| {},
+        )
+        .expect("the next verified source succeeds");
+        assert_eq!(totals, (body.len() as u64, body.len() as u64));
+        assert_eq!(std::fs::read(partial).expect("the model"), body);
+        server.join().expect("server finished");
+    }
+
+    #[test]
+    fn source_receipts_do_not_disclose_custom_url_credentials() {
+        assert_eq!(
+            source_host("https://user:secret@example.com/file?token=secret#more"),
+            "example.com"
+        );
+        assert_eq!(
+            source_host("https://example.com?token=secret"),
+            "example.com"
+        );
     }
 
     #[test]

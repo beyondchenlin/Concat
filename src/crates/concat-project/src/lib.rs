@@ -28,6 +28,7 @@ mod consolidate_tests;
 pub mod doc;
 pub mod editor;
 pub mod guard;
+pub mod initial_format;
 pub mod model;
 pub mod placement;
 pub mod runs;

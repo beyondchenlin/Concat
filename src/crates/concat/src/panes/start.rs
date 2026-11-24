@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use concat_host::projects;
 
 use crate::i18n::{t, tf};
+use crate::panes::import_progress::ImportJob;
 use crate::platform;
 use crate::studio::{
     ASPECTS, RATES, SIZES, Studio, custom_frame, custom_rate, fps_of, frame_size, home_folder,
@@ -21,6 +22,20 @@ use crate::ui::StartData;
 pub enum StartMsg {
     /// Put up the sheet a new project is described on.
     Compose,
+    /// New from files, including standalone audio and items outside Photos.
+    ComposeFiles,
+    CancelImport,
+    Prepared {
+        request: u64,
+        epoch: u64,
+        results: Vec<Result<concat_host::media::MediaSummary, String>>,
+    },
+    DraftReady {
+        request: u64,
+        epoch: u64,
+        result: Result<projects::ProjectInfo, String>,
+        imports: Vec<Result<concat_host::media::MediaSummary, String>>,
+    },
     /// Take it down, keeping what was typed for next time.
     Dismiss,
     NameEdited(String),
@@ -97,7 +112,7 @@ pub fn shown<'a>(
 /// The official site, which the guides and the developer docs are pages of.
 const SITE: &str = "https://concat.standalones.org";
 /// The repository: the code, the issues, the releases.
-pub const REPOSITORY: &str = "https://github.com/jub0t/Concat";
+pub const REPOSITORY: &str = "https://github.com/beyondchenlin/Concat";
 
 /// Where each of the launch screen's links goes, by the name the screen
 /// sends. One table, so a moved page is one line here. Every address is a
@@ -110,17 +125,14 @@ pub fn link(name: &str) -> Option<String> {
         "first-edit" => format!("{SITE}/guides/first-edit/"),
         "report" => format!("{SITE}/guides/report-a-problem/"),
         "github" => REPOSITORY.to_owned(),
-        // The gradient card: this version's "What's new" post on the
-        // website's blog, the polished telling of its release notes.
-        "news" => format!(
-            "{SITE}/blog/whats-new-in-{}/",
-            env!("CARGO_PKG_VERSION").replace('.', "-")
-        ),
+        // This development build must not claim an upstream release as
+        // this product's change history or assume a published product tag.
+        "news" => format!("{REPOSITORY}/releases"),
         // The invite the README carries.
         "discord" => "https://discord.gg/DVuPfpXfqP".to_owned(),
-        // The notes for the release this build is, under the tag the
-        // release workflow pushes.
-        "release-notes" => format!("{REPOSITORY}/releases/tag/v{}", env!("CARGO_PKG_VERSION")),
+        // Product releases, including development builds with no published
+        // matching tag. Upstream learning and licence links remain separate.
+        "release-notes" => format!("{REPOSITORY}/releases"),
         _ => return None,
     })
 }
@@ -148,6 +160,8 @@ pub struct StartPane {
     /// every project before it had.
     pub canvas: [u8; 4],
     pub busy: bool,
+    request: u64,
+    import_job: Option<ImportJob>,
     pub error: String,
     /// The projects' search, as typed; empty shows them all.
     pub query: String,
@@ -174,6 +188,8 @@ impl Default for StartPane {
             custom_rate: (30, 1),
             canvas: [0, 0, 0, 255],
             busy: false,
+            request: 0,
+            import_job: None,
             error: String::new(),
             query: String::new(),
             sort: SORT_RECENT,
@@ -187,7 +203,7 @@ impl Default for StartPane {
 /// from the first launch and not only from the first project.
 fn default_location() -> String {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    let desktop = dirs::desktop_dir();
+    let desktop = dirs::document_dir();
     #[cfg(any(target_os = "android", target_os = "ios"))]
     let desktop = None;
     let location = location_on(std::env::consts::OS, desktop, home_folder);
@@ -215,8 +231,14 @@ fn location_on(os: &str, desktop: Option<PathBuf>, home: impl Fn(&str) -> String
         "android" => home("Concat"),
         "ios" => home("Documents/Concat"),
         _ => desktop
-            .map(|desktop| desktop.join("Concat").to_string_lossy().into_owned())
-            .unwrap_or_else(|| home("Desktop/Concat")),
+            .map(|desktop| {
+                desktop
+                    .join("BK CUT")
+                    .join("Projects")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .unwrap_or_else(|| home("Documents/BK CUT/Projects")),
     }
 }
 
@@ -229,6 +251,7 @@ fn untitled() -> String {
 
 /// Whether `name` is one this sheet made up rather than one somebody
 /// typed: "Untitled project", or that with a number after it.
+#[cfg(test)]
 fn is_untitled(name: &str) -> bool {
     let untitled = untitled();
     let name = name.trim();
@@ -244,6 +267,7 @@ fn is_untitled(name: &str) -> bool {
 /// is not `taken`. A second new project in the same place used to be
 /// refused as "already exists" until it was renamed by hand.
 /// https://github.com/jub0t/Concat/issues/151
+#[cfg(test)]
 fn first_free_untitled(taken: impl Fn(&str) -> bool) -> String {
     let untitled = untitled();
     std::iter::once(untitled.clone())
@@ -252,20 +276,125 @@ fn first_free_untitled(taken: impl Fn(&str) -> bool) -> String {
         .expect("the numbers do not run out")
 }
 
+/// A late successful creation is an unused candidate, never a reason to
+/// replace the project explicitly chosen while its directory was being made.
+fn remember_unopened(info: projects::ProjectInfo) {
+    crate::host::spawn(
+        move || projects::drafts::remember_unopened(&info),
+        |studio, _, _, result| {
+            if let Err(error) = result {
+                studio.notify(&error, true);
+            }
+        },
+    );
+}
+
 impl StartPane {
     /// Applies one message. The studio is the rest of the window; while
     /// this runs the studio's copy of the pane is a blank it must not read.
     pub fn update(&mut self, msg: StartMsg, studio: &mut Studio) {
         match msg {
-            StartMsg::Compose => {
-                self.composing = true;
-                // A name somebody typed is kept for next time; one this
-                // sheet made up moves on past the folders already there.
-                if is_untitled(&self.name) {
-                    self.name = self.free_untitled();
+            StartMsg::Compose => self.compose(studio, false),
+            StartMsg::ComposeFiles => self.compose(studio, true),
+            StartMsg::CancelImport => {
+                if self.import_job.is_some() {
+                    self.retire_request();
+                    self.dropped.clear();
+                    studio.notify(&t("import.cancelled"), false);
+                }
+            }
+            StartMsg::Prepared {
+                request,
+                epoch,
+                results,
+            } => {
+                if request != self.request {
+                    return;
+                }
+                self.busy = false;
+                if epoch != crate::host::project_epoch() {
+                    return;
+                }
+                if results.iter().any(Result::is_ok) {
+                    if let Some(job) = self.import_job.take() {
+                        job.finish();
+                    }
+                    self.begin_draft(studio, results);
+                } else if !results.is_empty() {
+                    if let Some(job) = self.import_job.take() {
+                        job.finish();
+                    }
+                    let errors = results
+                        .into_iter()
+                        .filter_map(Result::err)
+                        .map(|error| crate::host::probe_error(&error))
+                        .collect::<Vec<_>>();
+                    studio.notify(&errors.join("\n"), true);
+                } else if let Some(job) = self.import_job.take() {
+                    job.finish();
+                }
+            }
+            StartMsg::DraftReady {
+                request,
+                epoch,
+                result,
+                imports,
+            } => {
+                if request != self.request {
+                    if let Ok(info) = result {
+                        remember_unopened(info);
+                    }
+                    return;
+                }
+                self.busy = false;
+                if epoch != crate::host::project_epoch() {
+                    if let Ok(info) = result {
+                        remember_unopened(info);
+                    }
+                    return;
+                }
+                if let Some(job) = self.import_job.take() {
+                    job.finish();
+                }
+                match result.and_then(|info| {
+                    let path = info.path.clone();
+                    match studio.open_project(info.clone()) {
+                        Ok(()) => Ok(path),
+                        Err(error) => {
+                            remember_unopened(info);
+                            Err(error)
+                        }
+                    }
+                }) {
+                    Ok(path) => {
+                        self.composing = false;
+                        self.error.clear();
+                        studio.prefs.last_project_location = Some(self.location.clone());
+                        studio.prefs.empty_draft_path = Some(path);
+                        studio.prefs.save(&studio.host.dirs);
+                        if !imports.is_empty() {
+                            studio.handle(crate::panes::Msg::Media(
+                                crate::panes::media_bin::MediaMsg::InitialImported(imports),
+                            ));
+                        }
+                        let dropped = std::mem::take(&mut self.dropped);
+                        if !dropped.is_empty() {
+                            studio.handle(crate::panes::Msg::Media(
+                                crate::panes::media_bin::MediaMsg::Import(dropped),
+                            ));
+                        }
+                    }
+                    Err(error) => {
+                        self.error = error.clone();
+                        // The new-project defaults remain editable in Settings.
+                        // A failed create must not expose the retired setup form.
+                        self.composing = false;
+                        studio.notify(&error, true);
+                    }
                 }
             }
             StartMsg::Dismiss => {
+                self.retire_request();
                 self.composing = false;
                 // The notice belongs to the attempt it reported on, not to
                 // the next time the sheet comes up; and so do the files
@@ -316,9 +445,13 @@ impl StartPane {
                 );
             }
             StartMsg::FolderChosen(folder) => self.location = folder,
-            StartMsg::Create => self.create(studio),
+            StartMsg::Create => self.begin_draft(studio, Vec::new()),
             StartMsg::Open => self.open(),
-            StartMsg::OpenChosen(folder) => Self::open_chosen(&folder, &self.location, studio),
+            StartMsg::OpenChosen(folder) => {
+                self.retire_request();
+                self.dropped.clear();
+                Self::open_chosen(&folder, &self.location, studio);
+            }
             StartMsg::ImportCapcut => {
                 let title = t("start.importCapcut");
                 let drafts = concat_host::capcut::drafts_folder()
@@ -335,6 +468,8 @@ impl StartPane {
             // does: the sheet is down while a card is pressed, and a notice
             // inside it would go unseen.
             StartMsg::OpenRecent(path) => {
+                self.retire_request();
+                self.dropped.clear();
                 // A folder that has gone says so in words, not as the
                 // manifest file it could not read.
                 if !projects::is_project(Path::new(&path)) {
@@ -393,13 +528,12 @@ impl StartPane {
     /// anything else is media, and puts up the new-project sheet with the
     /// files waiting to go into the project it makes.
     fn dropped_on(&mut self, paths: Vec<PathBuf>, studio: &mut Studio) {
-        if self.busy {
-            return;
-        }
+        // An explicit project always wins over a pending automatic draft.
         if let Some(folder) = paths
             .iter()
             .find(|path| projects::is_project(path) || concat_host::capcut::is_draft(path))
         {
+            self.retire_request();
             self.dropped.clear();
             self.composing = false;
             Self::open_chosen(folder, &self.location, studio);
@@ -416,52 +550,198 @@ impl StartPane {
                 self.dropped.push(path);
             }
         }
-        if !self.composing {
+        if !self.busy && !self.composing {
             self.update(StartMsg::Compose, studio);
         }
     }
 
-    /// Makes the project the sheet describes and opens it. The sheet comes
-    /// down with the project open behind it; a failure leaves it up, with
-    /// the reason in its notice.
-    fn create(&mut self, studio: &mut Studio) {
-        let name = self.name.trim().to_owned();
-        let name = if name.is_empty() {
-            self.free_untitled()
-        } else {
-            name
-        };
-        let (width, height) = self.frame();
-        let (num, den) = self.rate();
-        if self.location.trim().is_empty() {
-            self.error = t("start.chooseWhereProjectFolder");
+    pub(crate) fn retire_imports(&mut self) {
+        platform::cancel_file_pick();
+        self.retire_request();
+        self.dropped.clear();
+        self.composing = false;
+    }
+
+    fn retire_request(&mut self) {
+        if let Some(job) = self.import_job.take() {
+            job.cancel();
+        }
+        self.request = self.request.wrapping_add(1);
+        self.busy = false;
+    }
+
+    /// The normal entry: a desk enters a persistent draft; a phone first
+    /// selects and validates sources without creating a project.
+    fn compose(&mut self, studio: &mut Studio, files: bool) {
+        if self.busy {
             return;
         }
-        let opened = projects::create(&self.location, &name, width, height, num, den, self.canvas)
-            .inspect_err(|error| {
-                log::error!(
-                    "project: making {name} failed: {error}; the new-project sheet stays up"
-                );
-            })
-            .and_then(|info| studio.open_project(info));
-        self.busy = false;
-        match opened {
-            Ok(()) => {
-                studio.prefs.last_project_location = Some(self.location.clone());
-                studio.prefs.save(&studio.host.dirs);
-                self.composing = false;
-                self.error.clear();
-                // What was dropped to start it goes in, the way an import
-                // does: probed on a worker, with its own notice.
-                let dropped = std::mem::take(&mut self.dropped);
-                if !dropped.is_empty() {
-                    studio.handle(crate::panes::Msg::Media(
-                        crate::panes::media_bin::MediaMsg::Import(dropped),
-                    ));
+        self.error.clear();
+        if platform::phone() {
+            self.busy = true;
+            self.request = self.request.wrapping_add(1);
+            let request = self.request;
+            let epoch = crate::host::project_epoch();
+            let title = t("lib.importMedia");
+            let visual: &[&str] = &["mp4", "jpg", "png"];
+            platform::pick_files_async(
+                &title,
+                if files { None } else { Some(("Media", visual)) },
+                move |picked| {
+                    crate::host::on_ui(move |studio, _, _| {
+                        if studio.start.request != request || crate::host::project_epoch() != epoch
+                        {
+                            return;
+                        }
+                        let paths = match picked.accept() {
+                            Ok(Some(paths)) => paths,
+                            Ok(None) => {
+                                studio.start.busy = false;
+                                return;
+                            }
+                            Err(error) => {
+                                studio.start.busy = false;
+                                studio.notify(&crate::platform::pick_error_message(&error), true);
+                                return;
+                            }
+                        };
+                        let failures =
+                            crate::panes::media_bin::take_platform_import_failures(&paths);
+                        if paths.is_empty() && failures.is_empty() {
+                            studio.start.busy = false;
+                            return;
+                        }
+                        let job = ImportJob::new(paths.len());
+                        studio.start.import_job = Some(job.clone());
+                        crate::host::spawn_long(
+                            move || {
+                                let mut results = Vec::with_capacity(paths.len() + failures.len());
+                                for (index, path) in paths.iter().enumerate() {
+                                    if job.cancelled() {
+                                        return Vec::new();
+                                    }
+                                    results
+                                        .push(concat_host::media::probe(&path.to_string_lossy()));
+                                    if job.cancelled() {
+                                        return Vec::new();
+                                    }
+                                    job.progress(index + 1, paths.len());
+                                }
+                                results.extend(failures.into_iter().map(Err));
+                                results
+                            },
+                            move |studio, _, _, results| {
+                                studio.handle(crate::panes::Msg::Start(StartMsg::Prepared {
+                                    request,
+                                    epoch,
+                                    results,
+                                }));
+                            },
+                        );
+                    });
+                },
+            );
+            return;
+        }
+        if studio
+            .session
+            .as_ref()
+            .is_some_and(|session| session.is_unused_draft())
+            && !studio.script.has_user_work()
+            && !agent_has_user_work()
+        {
+            studio.on_start = false;
+            let dropped = std::mem::take(&mut self.dropped);
+            if !dropped.is_empty() {
+                studio.handle(crate::panes::Msg::Media(
+                    crate::panes::media_bin::MediaMsg::Import(dropped),
+                ));
+            }
+            return;
+        }
+        if studio.session.is_none()
+            && let Some(path) = studio.prefs.empty_draft_path.clone()
+            && projects::drafts::reusable(&path)
+        {
+            match studio.open_project_at(&path) {
+                Ok(()) => {
+                    self.composing = false;
+                    let dropped = std::mem::take(&mut self.dropped);
+                    if !dropped.is_empty() {
+                        studio.handle(crate::panes::Msg::Media(
+                            crate::panes::media_bin::MediaMsg::Import(dropped),
+                        ));
+                    }
+                    return;
+                }
+                Err(error) => {
+                    studio.notify(&error, true);
+                    return;
                 }
             }
-            Err(error) => self.error = error,
         }
+        self.location = effective_location(studio);
+        self.begin_draft(studio, Vec::new());
+    }
+
+    fn begin_draft(
+        &mut self,
+        studio: &mut Studio,
+        imports: Vec<Result<concat_host::media::MediaSummary, String>>,
+    ) {
+        if self.busy {
+            return;
+        }
+        if platform::phone() && imports.is_empty() {
+            self.compose(studio, true);
+            return;
+        }
+        if platform::phone() || self.location.trim().is_empty() {
+            self.location = effective_location(studio);
+        }
+        self.busy = true;
+        self.composing = false;
+        self.request = self.request.wrapping_add(1);
+        let request = self.request;
+        let epoch = crate::host::project_epoch();
+        let location = self.location.clone();
+        let defaults = studio.prefs.new_project_defaults.clone();
+        let base = format!("{} {}", untitled(), local_stamp());
+        crate::host::spawn(
+            move || {
+                if let Some(info) = projects::drafts::take_unopened(
+                    &location,
+                    defaults.video(),
+                    defaults.match_media,
+                )? {
+                    return Ok(info);
+                }
+                let mut number = 1_u64;
+                let name = loop {
+                    let candidate = if number == 1 {
+                        base.clone()
+                    } else {
+                        format!("{base} {number}")
+                    };
+                    if !Path::new(&location)
+                        .join(projects::folder_name(&candidate))
+                        .exists()
+                    {
+                        break candidate;
+                    }
+                    number += 1;
+                };
+                projects::create_draft(&location, &name, defaults.video(), defaults.match_media)
+            },
+            move |studio, _, _, result| {
+                studio.handle(crate::panes::Msg::Start(StartMsg::DraftReady {
+                    request,
+                    epoch,
+                    result,
+                    imports,
+                }));
+            },
+        );
     }
 
     /// Opens a project folder that already exists.
@@ -540,6 +820,7 @@ impl StartPane {
     /// The first untitled name with no folder of that name where the sheet
     /// says the project goes. Any folder counts, not only a project: a new
     /// project is not made inside something that is already there.
+    #[cfg(test)]
     fn free_untitled(&self) -> String {
         let location = self.location.trim();
         if location.is_empty() {
@@ -617,6 +898,72 @@ impl StartPane {
     }
 }
 
+/// Mobile roots remain the installed application's existing persistent mapping.
+pub(crate) fn effective_location(studio: &Studio) -> String {
+    if platform::phone() {
+        return default_location();
+    }
+    studio
+        .prefs
+        .new_project_defaults
+        .location
+        .clone()
+        .or_else(|| studio.prefs.project_location().map(str::to_owned))
+        .unwrap_or_else(default_location)
+}
+
+fn agent_has_user_work() -> bool {
+    let mut has_work = false;
+    crate::host::Shell::with(|shell, _| {
+        has_work = shell
+            .agent_pane
+            .try_borrow()
+            .map_or(true, |pane| pane.has_user_work());
+    });
+    has_work
+}
+
+fn local_stamp() -> String {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetLocalTime(value: *mut [u16; 8]);
+        }
+        let mut value = [0_u16; 8];
+        // SYSTEMTIME is eight consecutive WORD values owned by this call.
+        unsafe {
+            GetLocalTime(&mut value);
+        }
+        return format!(
+            "{:04}{:02}{:02}-{:02}{:02}{:02}",
+            value[0], value[1], value[3], value[4], value[5], value[6]
+        );
+    }
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "macos"))]
+    {
+        let seconds = unsafe { libc::time(std::ptr::null_mut()) };
+        let mut value = std::mem::MaybeUninit::<libc::tm>::uninit();
+        if !unsafe { libc::localtime_r(&seconds, value.as_mut_ptr()) }.is_null() {
+            let value = unsafe { value.assume_init() };
+            return format!(
+                "{:04}{:02}{:02}-{:02}{:02}{:02}",
+                value.tm_year + 1900,
+                value.tm_mon + 1,
+                value.tm_mday,
+                value.tm_hour,
+                value.tm_min,
+                value.tm_sec
+            );
+        }
+    }
+    #[allow(unreachable_code)]
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|time| time.as_secs().to_string())
+        .unwrap_or_else(|_| "0".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,9 +982,12 @@ mod tests {
         assert_eq!(location_on("android", None, home), "/home/Concat");
         assert_eq!(
             PathBuf::from(location_on("macos", desktop(), home)),
-            Path::new("/desk").join("Concat")
+            Path::new("/desk").join("BK CUT").join("Projects")
         );
-        assert_eq!(location_on("linux", None, home), "/home/Desktop/Concat");
+        assert_eq!(
+            location_on("linux", None, home),
+            "/home/Documents/BK CUT/Projects"
+        );
     }
 
     /// The next untitled name skips every folder already there, and starts
@@ -703,7 +1053,7 @@ mod tests {
     }
 
     /// Every link the launch screen sends goes somewhere, and the release
-    /// notes are this build's tag.
+    /// notes point to the product history, including unpublished dev builds.
     #[test]
     fn every_link_has_an_address() {
         for name in [
@@ -722,7 +1072,7 @@ mod tests {
         }
         assert_eq!(
             link("release-notes").unwrap(),
-            format!("{REPOSITORY}/releases/tag/v{}", env!("CARGO_PKG_VERSION"))
+            format!("{REPOSITORY}/releases")
         );
         assert_eq!(link("nowhere"), None);
     }

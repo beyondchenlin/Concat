@@ -111,6 +111,10 @@ impl Fixture {
     fn request(&self) -> ModelRequest {
         let channel = self.snapshot.active().unwrap();
         let (suffix, body) = match channel.protocol {
+            ModelProtocol::GoogleGenerativeAi => (
+                "/models/fixture-model:streamGenerateContent?alt=sse",
+                json!({"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"maxOutputTokens":128}}),
+            ),
             ModelProtocol::OpenAiCompletions => (
                 "/chat/completions",
                 json!({"model":"fixture-model","messages":[{"role":"user","content":"hello"}],"stream":true,"max_completion_tokens":128}),
@@ -386,9 +390,9 @@ fn rejects_full_destination_and_fee_escalations_without_limiting_task_requests()
 fn redirect_and_error_bodies_never_forward_credentials_or_provider_error_text() {
     for (status, expected) in [
         (307, "模型服务要求跳转，已拒绝向其他目的地转发凭据。"),
-        (401, "模型服务未接受当前密钥（401）。"),
-        (402, "模型账户余额或计费额度不足（402）。"),
-        (403, "模型服务拒绝当前账户或模型访问权限（403）。"),
+        (401, "agent.errorAuthentication"),
+        (402, "agent.errorBilling"),
+        (403, "agent.errorAccess"),
         (429, "模型服务额度或速率限制，任务已停止且未自动重试。"),
         (500, "模型服务返回失败状态，任务未完成且未自动重试。"),
     ] {
@@ -1018,6 +1022,7 @@ fn admits_all_reviewed_native_tools_without_admitting_extra_tools() {
         ModelProtocol::OpenAiCompletions,
         ModelProtocol::OpenAiResponses,
         ModelProtocol::AnthropicMessages,
+        ModelProtocol::GoogleGenerativeAi,
     ] {
         let listener = listener();
         let fixture = Fixture::new(&listener, protocol);
@@ -1026,6 +1031,9 @@ fn admits_all_reviewed_native_tools_without_admitting_extra_tools() {
                 names
                     .iter()
                     .map(|name| match protocol {
+                        ModelProtocol::GoogleGenerativeAi => json!({"functionDeclarations":[{
+                            "name":name,"description":"Reviewed native tool","parametersJsonSchema":{"type":"object","properties":{}}
+                        }]}),
                         ModelProtocol::OpenAiCompletions => json!({
                             "type": "function",
                             "function": {
@@ -1080,6 +1088,9 @@ fn admits_all_reviewed_native_tools_without_admitting_extra_tools() {
                 );
                 start_response(&mut socket);
                 let terminal = match protocol {
+                    ModelProtocol::GoogleGenerativeAi => event(
+                        json!({"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}),
+                    ),
                     ModelProtocol::OpenAiCompletions => b"data: [DONE]\n\n".to_vec(),
                     ModelProtocol::OpenAiResponses => event(json!({"type":"response.completed"})),
                     ModelProtocol::AnthropicMessages => event(json!({"type":"message_stop"})),
@@ -1159,4 +1170,72 @@ fn original_responses_and_anthropic_shapes_admit_only_registered_local_tools() {
         assert!(drain(&fixture.network, stream_id(&head)).1.is_none());
         server.join().unwrap();
     }
+}
+
+#[test]
+fn complete_large_history_reaches_the_real_native_transport_without_truncation() {
+    let listener = listener();
+    let fixture = Fixture::new(&listener, ModelProtocol::OpenAiCompletions);
+    let mut request = fixture.request();
+    let mut body: Value = serde_json::from_str(&request.body).unwrap();
+    let content = "history context ".repeat(250_000);
+    body["messages"][0]["content"] = json!(content);
+    request.body = body.to_string();
+    assert!(
+        request.body.len() > 3_602_209,
+        "cover the observed automatic-compaction request"
+    );
+    assert!(request.body.len() < concat_agent::network::MAX_REQUEST_BYTES);
+    let expected = body.clone();
+    let server = std::thread::spawn(move || {
+        let mut socket = accept(&listener);
+        let captured = read_request(&mut socket);
+        assert_eq!(
+            captured.body, expected,
+            "the complete original history survives native validation and HTTP"
+        );
+        assert_eq!(
+            captured.headers["authorization"],
+            format!("Bearer {TEST_SECRET}")
+        );
+        start_response(&mut socket);
+        chunk(&mut socket, &text_event("history accepted")).unwrap();
+        chunk(&mut socket, b"data: [DONE]\n\n").unwrap();
+        finish(&mut socket);
+    });
+    let head = fixture.network.open(request).unwrap();
+    let (response, error) = drain(&fixture.network, stream_id(&head));
+    assert!(error.is_none(), "{error:?}");
+    assert!(
+        String::from_utf8(response)
+            .unwrap()
+            .contains("history accepted")
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn large_requests_keep_destination_model_output_and_absolute_size_checks() {
+    let listener = listener();
+    let fixture = Fixture::new(&listener, ModelProtocol::OpenAiCompletions);
+    let mut original: Value = serde_json::from_str(&fixture.request().body).unwrap();
+    original["messages"][0]["content"] = json!("history ".repeat(160_000));
+    for changed in ["destination", "model", "output"] {
+        let mut request = fixture.request();
+        let mut body = original.clone();
+        match changed {
+            "destination" => request.url.push_str("/unapproved"),
+            "model" => body["model"] = json!("unapproved-model"),
+            _ => body["max_completion_tokens"] = json!(129),
+        }
+        request.body = body.to_string();
+        assert!(request.body.len() > 1024 * 1024);
+        assert!(fixture.network.open(request).is_err(), "{changed}");
+    }
+    let mut oversized = fixture.request();
+    oversized.body = " ".repeat(concat_agent::network::MAX_REQUEST_BYTES + 1);
+    assert!(fixture.network.open(oversized).is_err());
+    assert!(
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+    );
 }

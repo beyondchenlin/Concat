@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { SqliteDatabase } from "@earendil-works/chord/sqlite";
+import type { NativeRecoveryScope, NativeResumeInput } from "./commands.ts";
 
 /** Opaque native authority, not an authority constructed by JavaScript. */
 export interface OwnerLease {
@@ -17,11 +18,12 @@ export interface RecoverySnapshot {
   readonly sessionRevision: string;
   readonly schemaVersion: number | "empty";
   readonly hasInterruptedWork: boolean;
+  readonly hasUnfinishedPi?: boolean;
 }
 
 export interface RecoveryApproval {
   readonly snapshotId: string;
-  readonly decision: "continue" | "discard";
+  readonly decision: "continue" | "discard" | "review";
   /** Issued by the native user action, never by a model tool. */
   readonly approvalId: string;
 }
@@ -35,6 +37,12 @@ export interface ExecutionGrant {
   /** Issued only by an explicit native discard action after project identity,
    * location, journal and binding reconciliation. Never a model permission. */
   readonly discardConversationIds?: readonly number[];
+  /** Explicit native continuation of one verified original submission. */
+  readonly resumeTask?: NativeRecoveryScope;
+  readonly reviewedOnly?: true;
+  readonly remainingOtherOperations?: number;
+  /** Receipt review changed no project bytes and grants no model call. */
+  readonly reconciledOperations?: boolean;
 }
 
 /** Original Pi ToolExecutionApi identity, never read from model arguments. */
@@ -69,6 +77,8 @@ export interface NativePorts {
     /** Consume the explicit discard authorization only after original Pi
      * settles. Native rechecks project/bindings/journal and all live counts. */
     discardVerified(lease: OwnerLease, signal: AbortSignal): Promise<void>;
+    /** Final native revalidation after the paused original store was opened. */
+    resumeVerified?(lease: OwnerLease, signal: AbortSignal): Promise<NativeResumeInput>;
   };
   readonly sqlite: {
     /**
@@ -107,7 +117,7 @@ export type RuntimePhase = "new" | "acquiring" | "recovery" | "activating" | "re
 export type SchedulingAction =
   | "createConversation" | "submit" | "waitSubmission" | "abortSubmission"
   | "resume" | "abortTask" | "signal" | "waitForTask" | "waitForIdle"
-  | "compact" | "abortConversation" | "resetConversation" | "nativeSubmit" | "nativeWait";
+  | "compact" | "abortConversation" | "resetConversation" | "nativeSubmit" | "nativeResume" | "nativeWait";
 
 export interface PiEngine {
   inspect(): Promise<unknown>;

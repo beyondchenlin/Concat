@@ -173,6 +173,59 @@ public final class BKCatRuntimePolicyTest {
                 "a replacement cannot reset the previous request");
         pass("a fresh explicit component is independent of every retired request");
 
+        BKCatRuntimePolicy capacityPolicy = new BKCatRuntimePolicy();
+        check(capacityPolicy.beginDocument(BKCatRuntimePolicy.DOCUMENT), "large-history document");
+        String largeHistory = "h".repeat(6 * 1024 * 1024);
+        check(capacityPolicy.canMessage(BKCatRuntimePolicy.DOCUMENT, largeHistory),
+                "history larger than the previous platform limit is admitted");
+        check(!capacityPolicy.canMessage("https://foreign.test", largeHistory),
+                "larger histories do not relax document identity");
+        check(BKCatRuntimePolicy.MAX_MESSAGE_CHARS == 33_619_968,
+                "same UTF-8 envelope limit as the native Rust bridge");
+        pass("large history preserves the platform origin and byte bounds");
+
+        BKCatRuntimePolicy.MessageBudget byteBudget = new BKCatRuntimePolicy.MessageBudget(6);
+        BKCatRuntimePolicy.Reservation firstBytes = byteBudget.reserve(BKCatRuntimePolicy.messageBytes("中"));
+        BKCatRuntimePolicy.Reservation secondBytes = byteBudget.reserve(3);
+        check(firstBytes != null && secondBytes != null, "exact byte budget fits");
+        check(byteBudget.reserve(1) == null, "full queue refuses more bytes");
+        check(byteBudget.reserve(Integer.MAX_VALUE) == null, "addition cannot overflow");
+        check(byteBudget.reserve(-1) == null, "invalid encoded frame cannot reserve");
+        firstBytes.close(); firstBytes.close();
+        check(byteBudget.reserve(4) == null, "double close cannot create byte capacity");
+        BKCatRuntimePolicy.Reservation releasedBytes = byteBudget.reserve(3);
+        check(releasedBytes != null, "delivery or rejected UI post releases its bytes");
+        releasedBytes.close(); secondBytes.close();
+        try (BKCatRuntimePolicy.Reservation allBytes = byteBudget.reserve(6)) {
+            check(allBytes != null, "all resources available after queue drains");
+        }
+        pass("queue byte reservations release once on every terminal path");
+
+        BKCatRuntimePolicy.MessageBudget concurrentBytes = new BKCatRuntimePolicy.MessageBudget(2);
+        CountDownLatch reserved = new CountDownLatch(8);
+        CountDownLatch releaseBytes = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger admitted = new java.util.concurrent.atomic.AtomicInteger();
+        Thread[] byteWorkers = new Thread[8];
+        for (int i = 0; i < byteWorkers.length; i++) {
+            byteWorkers[i] = new Thread(() -> {
+                BKCatRuntimePolicy.Reservation bytes = concurrentBytes.reserve(1);
+                if (bytes != null) admitted.incrementAndGet();
+                reserved.countDown();
+                try { releaseBytes.await(); }
+                catch (InterruptedException error) { throw new AssertionError(error); }
+                finally { if (bytes != null) bytes.close(); }
+            });
+            byteWorkers[i].start();
+        }
+        reserved.await();
+        check(admitted.get() == 2, "concurrent producers cannot overbook byte capacity");
+        releaseBytes.countDown();
+        for (Thread worker : byteWorkers) worker.join();
+        try (BKCatRuntimePolicy.Reservation emptyAgain = concurrentBytes.reserve(2)) {
+            check(emptyAgain != null, "concurrent completion releases all bytes");
+        }
+        pass("concurrent producers preserve the aggregate queue byte bound");
+
         System.out.println("Android host policy: " + cases + " cases passed");
     }
 }

@@ -376,3 +376,82 @@ fn exact_media_command_round_trips_through_the_real_wire_shape() {
     wrong["kind"] = "image".into();
     assert!(serde_json::from_value::<Command>(wrong).is_err());
 }
+
+#[test]
+fn guarded_first_visual_matches_only_the_native_computed_format() {
+    let mut project = seeded().project().clone();
+    crate::initial_format::initialize(&mut project, true);
+    project.media[0].width = Some(1080);
+    project.media[0].height = Some(1920);
+    project.media[0].frame_rate_fraction = Some("30000/1001".into());
+    let mut editor = Editor::from_project(project.clone());
+    let command = media("T1", ExactMediaKind::Video, 0.0, 0.0, 2.0);
+    assert!(
+        editor
+            .apply_guarded(command.clone(), &HashSet::from(["T1".into()]))
+            .is_err()
+    );
+    assert_eq!(editor.project(), &project);
+    assert!(!editor.can_undo());
+    editor.apply_guarded(command, &HashSet::new()).unwrap();
+    let after = editor.project().clone();
+    assert_eq!(
+        (after.active().video.width, after.active().video.height),
+        (1080, 1920)
+    );
+    assert_eq!(after.active().video.rate_den, 1001);
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &project);
+    assert!(!editor.can_undo());
+    let mut forged = after.clone();
+    forged.active_mut().video.width = 720;
+    assert!(matches!(
+        super::check_effects(&project, &forged, &HashSet::new()),
+        Err(GuardError::UnsupportedEffect)
+    ));
+    let mut forged = after;
+    forged.extra.get_mut(crate::initial_format::FIELD).unwrap()["source"] = "model".into();
+    assert!(matches!(
+        super::check_effects(&project, &forged, &HashSet::new()),
+        Err(GuardError::UnsupportedEffect)
+    ));
+}
+
+#[test]
+fn first_hdr_visual_is_admitted_only_with_native_colour_and_format() {
+    let mut before = seeded().project().clone();
+    crate::initial_format::initialize(&mut before, true);
+    before.media[0].width = Some(1080);
+    before.media[0].height = Some(1920);
+    before.media[0].frame_rate_fraction = Some("30000/1001".into());
+    before.media[0].color_space = crate::model::ColorSpace::Pq;
+    let mut editor = Editor::from_project(before.clone());
+    editor
+        .apply_guarded(
+            media("T1", ExactMediaKind::Video, 0.0, 0.0, 2.0),
+            &HashSet::new(),
+        )
+        .unwrap();
+    let after = editor.project().clone();
+    assert_eq!(
+        after.active().video.color_space,
+        crate::model::ColorSpace::Hlg
+    );
+    assert_eq!(
+        (after.active().video.width, after.active().video.height),
+        (1080, 1920)
+    );
+    assert_eq!(after.active().video.rate_den, 1001);
+    for forged_colour in [crate::model::ColorSpace::Sdr, crate::model::ColorSpace::Pq] {
+        let mut forged = after.clone();
+        forged.active_mut().video.color_space = forged_colour;
+        assert!(matches!(
+            super::check_final_effects(&before, &forged, &HashSet::new(), false),
+            Err(GuardError::UnsupportedEffect)
+        ));
+    }
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &before);
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &after);
+}

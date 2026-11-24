@@ -45,10 +45,13 @@ use windows::{
 };
 
 use super::RuntimeResources;
+use concat_agent::transport::{
+    ByteBudget, ByteReservation, MAX_BRIDGE_FRAME_BYTES, MAX_QUEUED_FRAME_BYTES,
+};
 
 const ENTRY: &str = "https://bk-cat.invalid/index.html";
 const ORIGIN: &str = "https://bk-cat.invalid";
-const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
+const MAX_FRAME_BYTES: usize = MAX_BRIDGE_FRAME_BYTES;
 const MAX_PENDING_FRAMES: usize = 128;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 const CSP: &str = "default-src 'none'; script-src 'self'; connect-src 'none'; frame-src 'none'; worker-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
@@ -70,6 +73,7 @@ struct Shared {
     stopping_notified: AtomicBool,
     thread_id: AtomicU32,
     on_stopping: Arc<dyn Fn(String) + Send + Sync>,
+    pending_bytes: ByteBudget,
 }
 
 impl Shared {
@@ -79,6 +83,7 @@ impl Shared {
             stopping_notified: AtomicBool::new(false),
             thread_id: AtomicU32::new(0),
             on_stopping,
+            pending_bytes: ByteBudget::new(MAX_QUEUED_FRAME_BYTES),
         }
     }
 
@@ -103,6 +108,11 @@ impl Shared {
     }
 }
 
+struct QueuedFrame {
+    text: String,
+    _bytes: ByteReservation,
+}
+
 /// A Send + Sync command handle, never a cross-thread COM pointer.
 ///
 /// Starting this handle does not claim the page or model is ready. Initialisation
@@ -110,7 +120,7 @@ impl Shared {
 /// own readiness. Neither posting nor closing waits for the native UI thread.
 pub struct WindowsRuntime {
     shared: Arc<Shared>,
-    outgoing: SyncSender<String>,
+    outgoing: SyncSender<QueuedFrame>,
 }
 
 impl WindowsRuntime {
@@ -122,8 +132,16 @@ impl WindowsRuntime {
         if self.shared.stopping.load(Ordering::Acquire) {
             return Err("the Windows runtime has closed".to_owned());
         }
+        let bytes = self
+            .shared
+            .pending_bytes
+            .reserve(message.len())
+            .ok_or("the Windows runtime message queue is full or closed")?;
         self.outgoing
-            .try_send(message.to_owned())
+            .try_send(QueuedFrame {
+                text: message.to_owned(),
+                _bytes: bytes,
+            })
             .map_err(|_| "the Windows runtime message queue is full or closed".to_owned())?;
         self.shared.wake();
         Ok(())
@@ -178,7 +196,7 @@ pub fn spawn(
                 run(resources, on_message, &thread_state, incoming)
             }));
             let reason = match result {
-                Ok(Ok(())) => "Windows runtime closed".to_owned(),
+                Ok(Ok(())) => "lifecycle.windowsClosed".to_owned(),
                 Ok(Err(error)) => error.0,
                 Err(_) => "Windows runtime thread failed".to_owned(),
             };
@@ -218,7 +236,7 @@ impl HiddenWindow {
             CreateWindowExW(
                 WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
                 w!("STATIC"),
-                w!("BK CAT controlled runtime"),
+                w!("BK CUT controlled runtime"),
                 WS_POPUP | WS_DISABLED,
                 0,
                 0,
@@ -255,7 +273,7 @@ impl<T> RevokeBeforeDrop<T> {
 }
 impl<T> Drop for RevokeBeforeDrop<T> {
     fn drop(&mut self) {
-        self.shared.notify_stopping("Windows runtime stopping");
+        self.shared.notify_stopping("lifecycle.windowsStopping");
     }
 }
 
@@ -269,7 +287,7 @@ impl Drop for Controller {
 
 fn pump(shared: &Shared) -> Result<(), String> {
     if shared.stopping.load(Ordering::Acquire) {
-        return Err("Windows runtime closed".to_owned());
+        return Err("lifecycle.windowsClosed".to_owned());
     }
     let mut message = MSG::default();
     // Bound each turn so a noisy document cannot starve close/revocation.
@@ -289,7 +307,7 @@ fn pump(shared: &Shared) -> Result<(), String> {
             }
         }
         if shared.stopping.load(Ordering::Acquire) {
-            return Err("Windows runtime closed".to_owned());
+            return Err("lifecycle.windowsClosed".to_owned());
         }
     }
     // The bounded wait also handles a close racing thread queue creation.
@@ -341,7 +359,7 @@ fn run(
     resources: Arc<RuntimeResources>,
     on_message: Arc<dyn Fn(String) + Send + Sync>,
     shared: &Arc<Shared>,
-    incoming: Receiver<String>,
+    incoming: Receiver<QueuedFrame>,
 ) -> Result<(), HostError> {
     // Covers startup failures before any controller exists. Controller wrappers
     // independently revoke earlier when an actual browser is being destroyed.
@@ -480,7 +498,7 @@ fn run(
                             .to_owned()
                             .into());
                     }
-                    view.PostWebMessageAsString(&HSTRING::from(message))?;
+                    view.PostWebMessageAsString(&HSTRING::from(message.text.as_str()))?;
                 }
             }
         }
@@ -937,6 +955,40 @@ mod tests {
             assert_eq!(style & WS_VISIBLE.0, 0);
             assert_ne!(extended & WS_EX_NOACTIVATE.0, 0);
         }
+    }
+
+    #[test]
+    fn aggregate_delivery_bytes_are_released_on_dequeue_and_rejected_send() {
+        let (outgoing, incoming) = mpsc::sync_channel(1);
+        let host = WindowsRuntime {
+            shared: Arc::new(Shared::new(Arc::new(|_| {}))),
+            outgoing,
+        };
+        host.post_message("{}").unwrap();
+        assert!(host.post_message("{}").is_err());
+        let remaining = host
+            .shared
+            .pending_bytes
+            .reserve(MAX_QUEUED_FRAME_BYTES - 2)
+            .unwrap();
+        assert!(host.shared.pending_bytes.reserve(1).is_none());
+        drop(remaining);
+        drop(incoming.try_recv().unwrap());
+        let full = host
+            .shared
+            .pending_bytes
+            .reserve(MAX_QUEUED_FRAME_BYTES)
+            .unwrap();
+        assert!(host.post_message("{}").is_err());
+        drop(full);
+        host.post_message("{}").unwrap();
+        drop(incoming);
+        assert!(
+            host.shared
+                .pending_bytes
+                .reserve(MAX_QUEUED_FRAME_BYTES)
+                .is_some()
+        );
     }
 
     #[test]

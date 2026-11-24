@@ -30,6 +30,11 @@
 # upstreams are pinned to a commit rather than `main`, so the bytes the
 # fallback fetches are the bytes the digest names.
 
+# Verified ModelScope URLs are optional per model. They are pinned to an
+# observed repository commit and checked against the same SHA-256 as upstream.
+# An absent mapping is not a missing model: the existing sources remain usable.
+# See docs/MODELSCOPE_DOWNLOADS.md for coverage and verification evidence.
+
 # The release every model is mirrored on.
 release = "models-v1"
 
@@ -62,6 +67,7 @@ bytes = 23276014
 sha256 = "9f8433273a6750b587779baa0cf5508111001bf7e7acfcf585d370139fd366d0"
 licence = "Apache-2.0"
 upstream = "https://huggingface.co/Xenova/slimsam-77-uniform/resolve/5850ab45f587c112167512ffef949107115e26a0/onnx/vision_encoder.onnx"
+modelscope = "https://modelscope.cn/api/v1/models/Xenova/slimsam-77-uniform/repo?Revision=4c8131c2e433e9fa683a1bd0ee40521774996126&FilePath=onnx%2Fvision_encoder.onnx"
 
 [[model]]
 id = "cutout-brush-decoder"
@@ -71,6 +77,7 @@ bytes = 16557892
 sha256 = "f4514391764fbd56e08e119060d874ecd7d52994bfb1968af159e12d4943b5bb"
 licence = "Apache-2.0"
 upstream = "https://huggingface.co/Xenova/slimsam-77-uniform/resolve/5850ab45f587c112167512ffef949107115e26a0/onnx/prompt_encoder_mask_decoder.onnx"
+modelscope = "https://modelscope.cn/api/v1/models/Xenova/slimsam-77-uniform/repo?Revision=4c8131c2e433e9fa683a1bd0ee40521774996126&FilePath=onnx%2Fprompt_encoder_mask_decoder.onnx"
 
 # Enhance's restoration model. In the cutout family because the family is
 # the engine table a row is checked against, and this one lives in the
@@ -125,6 +132,7 @@ bytes = 3562272
 sha256 = "3f04e34bea22f9144d1a19151154095bc9ce0430bf421304f5797e716288a906"
 licence = "MIT"
 upstream = "https://huggingface.co/ResembleAI/chatterbox-turbo-ONNX/resolve/d21799bd0354adb85e348b8a0442a8405110a2cf/tokenizer.json"
+modelscope = "https://modelscope.cn/api/v1/models/ResembleAI/chatterbox-turbo-ONNX/repo?Revision=ccb873afb4591f6b0a52cf9e52ef938e05e8f8f2&FilePath=tokenizer.json"
 
 [[model]]
 id = "chatterbox-turbo-embed_tokens_quantized.onnx"
@@ -134,6 +142,7 @@ bytes = 2887
 sha256 = "0efe1bc01c2c48a98425a74444fd9887924d887f922c2722a6ec961ebb9e1db6"
 licence = "MIT"
 upstream = "https://huggingface.co/ResembleAI/chatterbox-turbo-ONNX/resolve/d21799bd0354adb85e348b8a0442a8405110a2cf/onnx/embed_tokens_quantized.onnx"
+modelscope = "https://modelscope.cn/api/v1/models/ResembleAI/chatterbox-turbo-ONNX/repo?Revision=ccb873afb4591f6b0a52cf9e52ef938e05e8f8f2&FilePath=onnx%2Fembed_tokens_quantized.onnx"
 
 [[model]]
 id = "chatterbox-turbo-language_model_quantized.onnx"
@@ -143,6 +152,7 @@ bytes = 279670
 sha256 = "0b40581277e30b7034331ec8c3ad47ed71d321f015b387a95221e54e2fcbfde8"
 licence = "MIT"
 upstream = "https://huggingface.co/ResembleAI/chatterbox-turbo-ONNX/resolve/d21799bd0354adb85e348b8a0442a8405110a2cf/onnx/language_model_quantized.onnx"
+modelscope = "https://modelscope.cn/api/v1/models/ResembleAI/chatterbox-turbo-ONNX/repo?Revision=ccb873afb4591f6b0a52cf9e52ef938e05e8f8f2&FilePath=onnx%2Flanguage_model_quantized.onnx"
 
 [[model]]
 id = "chatterbox-turbo-speech_encoder_quantized.onnx"
@@ -152,6 +162,7 @@ bytes = 1205728
 sha256 = "5b6f15870a43cf97892df86fc550a0ef4763522d527cde72b2a4316f80a34de4"
 licence = "MIT"
 upstream = "https://huggingface.co/ResembleAI/chatterbox-turbo-ONNX/resolve/d21799bd0354adb85e348b8a0442a8405110a2cf/onnx/speech_encoder_quantized.onnx"
+modelscope = "https://modelscope.cn/api/v1/models/ResembleAI/chatterbox-turbo-ONNX/repo?Revision=ccb873afb4591f6b0a52cf9e52ef938e05e8f8f2&FilePath=onnx%2Fspeech_encoder_quantized.onnx"
 
 [[model]]
 id = "chatterbox-turbo-conditional_decoder_quantized.onnx"
@@ -161,6 +172,7 @@ bytes = 2202035
 sha256 = "2af3b150196d9d559cd3c91e03da80eb27a466032369dc2b57ea729cddad3ebb"
 licence = "MIT"
 upstream = "https://huggingface.co/ResembleAI/chatterbox-turbo-ONNX/resolve/d21799bd0354adb85e348b8a0442a8405110a2cf/onnx/conditional_decoder_quantized.onnx"
+modelscope = "https://modelscope.cn/api/v1/models/ResembleAI/chatterbox-turbo-ONNX/repo?Revision=ccb873afb4591f6b0a52cf9e52ef938e05e8f8f2&FilePath=onnx%2Fconditional_decoder_quantized.onnx"
 
 [[model]]
 id = "chatterbox-turbo-embed_tokens_quantized.onnx_data"
@@ -170,6 +182,7 @@ bytes = 67297376
 sha256 = "9025d04c124899823124b1d7bb7069b1f535fb8a6c2d88f97520eb6fecced986"
 licence = "MIT"
 upstream = "https://huggingface.co/ResembleAI/chatterbox-turbo-ONNX/resolve/d21799bd0354adb85e348b8a0442a8405110a2cf/onnx/embed_tokens_quantized.onnx_data"
+modelscope = "https://modelscope.cn/api/v1/models/ResembleAI/chatterbox-turbo-ONNX/repo?Revision=ccb873afb4591f6b0a52cf9e52ef938e05e8f8f2&FilePath=onnx%2Fembed_tokens_quantized.onnx_data"
 
 [[model]]
 id = "chatterbox-turbo-conditional_decoder_quantized.onnx_data"
@@ -179,6 +192,7 @@ bytes = 326548688
 sha256 = "4918ca09e05e41d2b4aa1ace6201d1cd911ffc58a42801002bab177d495cfe0a"
 licence = "MIT"
 upstream = "https://huggingface.co/ResembleAI/chatterbox-turbo-ONNX/resolve/d21799bd0354adb85e348b8a0442a8405110a2cf/onnx/conditional_decoder_quantized.onnx_data"
+modelscope = "https://modelscope.cn/api/v1/models/ResembleAI/chatterbox-turbo-ONNX/repo?Revision=ccb873afb4591f6b0a52cf9e52ef938e05e8f8f2&FilePath=onnx%2Fconditional_decoder_quantized.onnx_data"
 
 [[model]]
 id = "chatterbox-turbo-speech_encoder_quantized.onnx_data"
@@ -188,6 +202,7 @@ bytes = 354676576
 sha256 = "d59861fb55e806fbeee731da9d4f8ff819fb5735de5d15e262d902594ee4dbb6"
 licence = "MIT"
 upstream = "https://huggingface.co/ResembleAI/chatterbox-turbo-ONNX/resolve/d21799bd0354adb85e348b8a0442a8405110a2cf/onnx/speech_encoder_quantized.onnx_data"
+modelscope = "https://modelscope.cn/api/v1/models/ResembleAI/chatterbox-turbo-ONNX/repo?Revision=ccb873afb4591f6b0a52cf9e52ef938e05e8f8f2&FilePath=onnx%2Fspeech_encoder_quantized.onnx_data"
 
 [[model]]
 id = "chatterbox-turbo-language_model_quantized.onnx_data"
@@ -197,6 +212,7 @@ bytes = 367962860
 sha256 = "ec9945df36cb5d131d46688f2609fd715fbfcb0b8ee9681af5c84118de2d55a2"
 licence = "MIT"
 upstream = "https://huggingface.co/ResembleAI/chatterbox-turbo-ONNX/resolve/d21799bd0354adb85e348b8a0442a8405110a2cf/onnx/language_model_quantized.onnx_data"
+modelscope = "https://modelscope.cn/api/v1/models/ResembleAI/chatterbox-turbo-ONNX/repo?Revision=ccb873afb4591f6b0a52cf9e52ef938e05e8f8f2&FilePath=onnx%2Flanguage_model_quantized.onnx_data"
 
 # ── Transcription ────────────────────────────────────────────────────────
 # src/crates/concat-speech/src/transcribe.rs. whisper.cpp's GGML
@@ -210,6 +226,7 @@ bytes = 77704715
 sha256 = "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f"
 licence = "MIT"
 upstream = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.en.bin"
+modelscope = "https://modelscope.cn/api/v1/models/cjc1887415157/whisper.cpp/repo?Revision=ac12dbec310c2fd6e67398e808c40d80210ce4d0&FilePath=ggml-tiny.en.bin"
 
 [[model]]
 id = "whisper-tiny"
@@ -219,6 +236,7 @@ bytes = 77691713
 sha256 = "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21"
 licence = "MIT"
 upstream = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.bin"
+modelscope = "https://modelscope.cn/api/v1/models/cjc1887415157/whisper.cpp/repo?Revision=ac12dbec310c2fd6e67398e808c40d80210ce4d0&FilePath=ggml-tiny.bin"
 
 [[model]]
 id = "whisper-base.en"
@@ -228,6 +246,7 @@ bytes = 147964211
 sha256 = "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002"
 licence = "MIT"
 upstream = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.en.bin"
+modelscope = "https://modelscope.cn/api/v1/models/cjc1887415157/whisper.cpp/repo?Revision=ac12dbec310c2fd6e67398e808c40d80210ce4d0&FilePath=ggml-base.en.bin"
 
 [[model]]
 id = "whisper-base"
@@ -237,6 +256,7 @@ bytes = 147951465
 sha256 = "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"
 licence = "MIT"
 upstream = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.bin"
+modelscope = "https://modelscope.cn/api/v1/models/cjc1887415157/whisper.cpp/repo?Revision=ac12dbec310c2fd6e67398e808c40d80210ce4d0&FilePath=ggml-base.bin"
 
 [[model]]
 id = "whisper-small.en"
@@ -246,6 +266,7 @@ bytes = 487614201
 sha256 = "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d"
 licence = "MIT"
 upstream = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small.en.bin"
+modelscope = "https://modelscope.cn/api/v1/models/cjc1887415157/whisper.cpp/repo?Revision=ac12dbec310c2fd6e67398e808c40d80210ce4d0&FilePath=ggml-small.en.bin"
 
 [[model]]
 id = "whisper-small"
@@ -255,3 +276,4 @@ bytes = 487601967
 sha256 = "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"
 licence = "MIT"
 upstream = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small.bin"
+modelscope = "https://modelscope.cn/api/v1/models/cjc1887415157/whisper.cpp/repo?Revision=ac12dbec310c2fd6e67398e808c40d80210ce4d0&FilePath=ggml-small.bin"

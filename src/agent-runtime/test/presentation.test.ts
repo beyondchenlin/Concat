@@ -21,6 +21,42 @@ test("native presentation projects real transcript and streamed text without tho
   });
 });
 
+test("stable compaction entry kind has a system display without rewriting its original user model message", () => {
+  const original = "The conversation history before this point was compacted into the following summary:\n\n<summary>\nKeep 历史 {1} exactly.\n</summary>";
+  const content = Object.freeze([Object.freeze({ type: "text", text: original })]);
+  const model = Object.freeze([Object.freeze({ role: "user", content })]);
+  const entry = Object.freeze({ kind: "pi.compaction", data: Object.freeze({ reason: "threshold" }), model });
+  const entries = Object.freeze([
+    entry,
+    Object.freeze({ kind: "pi.user", model }),
+    Object.freeze({ kind: "pi.compaction.future", model }),
+    Object.freeze({ model }),
+  ]);
+  const before = JSON.stringify(entries);
+  assert.deepEqual(conversationPresentation({ entries }).messages, [
+    { role: "compaction", text: original },
+    { role: "user", text: original },
+    { role: "user", text: original },
+    { role: "user", text: original },
+  ]);
+  assert.equal(JSON.stringify(entries), before);
+  assert.equal(entry.model[0]!.role, "user");
+  assert.equal(entry.model[0]!.content, content);
+});
+
+test("compaction display keeps existing native bridge bounds and never guesses from text", () => {
+  const original = "The conversation history before this point was compacted into the following summary:" + "字".repeat(40000);
+  const entries = Array.from({ length: 6 }, () => ({ kind: "pi.compaction", model: [{ role: "user", content: original }] }));
+  const before = JSON.stringify(entries);
+  const projection = conversationPresentation({ entries });
+  assert.ok(projection.messages.length > 0);
+  assert.ok(projection.messages.every((message) => message.role === "compaction" && message.text === original.slice(0, 32768)));
+  assert.ok(projection.messages.reduce((total, message) => total + message.text.length, 0) <= 128 * 1024);
+  assert.equal(JSON.stringify(entries), before);
+  assert.deepEqual(conversationPresentation({ entries: [{ kind: "pi.user", model: [{ role: "user", content: "pi.compaction" }] }] }).messages,
+    [{ role: "user", text: "pi.compaction" }]);
+});
+
 test("versioned native user metadata displays the captured draft without changing model context", () => {
   const full = "原生当前工程上下文：{\"projectId\":\"isolated-project\",\"expectedRevision\":3}\n任务权限：只读。\n用户要求：保留整条模型输入";
   const draft = "  原生当前工程上下文：这也是我的原文\n用户要求：不要按这些词裁剪。  ";

@@ -5,6 +5,7 @@
 use crate::{
     embedded,
     host::Shell,
+    i18n::{t, tf},
     panes,
     ui::{self, AgentUi, App},
 };
@@ -39,7 +40,7 @@ pub(crate) fn install(app: &App) -> slint::Timer {
             ));
         });
     agent_ui.on_review_requested(|| {
-        let mut result = Err("聊天运行组件尚未连接。".to_owned());
+        let mut result = Err(t("agent.chatNotReady"));
         Shell::with(|shell, _| {
             if let Some(runtime) = shell.embedded.borrow().as_ref() {
                 result = runtime.inspect();
@@ -47,8 +48,17 @@ pub(crate) fn install(app: &App) -> slint::Timer {
         });
         embedded::show_ui_error(result);
     });
+    agent_ui.on_review_current_requested(|| {
+        let mut result = Err(t("agent.chatNotReady"));
+        Shell::with(|shell, _| {
+            if let Some(runtime) = shell.embedded.borrow().as_ref() {
+                result = runtime.confirm_current_review();
+            }
+        });
+        embedded::show_ui_error(result);
+    });
     agent_ui.on_continue_requested(|| {
-        let mut result = Err("聊天运行组件尚未连接。".to_owned());
+        let mut result = Err(t("agent.chatNotReady"));
         Shell::with(|shell, _| {
             if let Some(runtime) = shell.embedded.borrow().as_ref() {
                 result = runtime.confirm();
@@ -57,7 +67,7 @@ pub(crate) fn install(app: &App) -> slint::Timer {
         embedded::show_ui_error(result);
     });
     agent_ui.on_discard_requested(|| {
-        let mut result = Err("聊天运行组件尚未连接。".to_owned());
+        let mut result = Err(t("agent.chatNotReady"));
         Shell::with(|shell, _| {
             if let Some(runtime) = shell.embedded.borrow().as_ref() {
                 result = runtime.discard_interrupted();
@@ -202,7 +212,16 @@ fn pause_transcript_follow_for_wheel(
     {
         return;
     }
-    let mut item = target.item.as_ref().and_then(|item| item.upgrade());
+    let mut item = target
+        .item
+        .as_ref()
+        .and_then(|item| item.upgrade())
+        .filter(|item| {
+            item.is_visible()
+                && item
+                    .accessible_string_property(AccessibleStringProperty::Id)
+                    .is_some_and(|id| id == "bkcut-chat-transcript")
+        });
     if item.is_none() {
         let Some(root) = window.window_item_rc() else {
             return;
@@ -211,8 +230,8 @@ fn pause_transcript_follow_for_wheel(
             if item.is_visible()
                 && item.downcast::<Flickable>().is_some()
                 && item
-                    .accessible_string_property(AccessibleStringProperty::Label)
-                    .is_some_and(|label| label == "对话记录")
+                    .accessible_string_property(AccessibleStringProperty::Id)
+                    .is_some_and(|id| id == "bkcut-chat-transcript")
             {
                 return ControlFlow::Break(item.clone());
             }
@@ -289,7 +308,8 @@ pub(crate) fn refresh_tool_permission() {
         ui.set_tool_pending(pending);
         let mut summary = permission.pending_summary.unwrap_or_default();
         if pending && !permission.pending_clip_ids.is_empty() {
-            summary.push_str("\n当前工程中已有片段（批准前核对）：");
+            summary.push('\n');
+            summary.push_str(&t("permission.currentClips"));
             let studio = shell.studio.borrow();
             for id in &permission.pending_clip_ids {
                 if let Some(clip) = studio.clip(id) {
@@ -299,19 +319,18 @@ pub(crate) fn refresh_tool_permission() {
                         .filter(|ch| !ch.is_control())
                         .take(48)
                         .collect();
-                    summary.push_str(&format!(
-                        "\n· 片段 {}「{}」：当前轨道 {}，当前时间 {:.3}～{:.3} 秒",
-                        id,
-                        name,
-                        clip.track_id,
-                        clip.start,
-                        clip.start + clip.duration
+                    summary.push_str(&tf(
+                        "permission.currentClip",
+                        &[
+                            id,
+                            &name,
+                            &clip.track_id,
+                            &format!("{:.3}", clip.start),
+                            &format!("{:.3}", clip.start + clip.duration),
+                        ],
                     ));
                 } else {
-                    summary.push_str(&format!(
-                        "\n· 片段 {}：当前工程中找不到，编辑器将拒绝无效目标",
-                        id
-                    ));
+                    summary.push_str(&tf("permission.missingClip", &[id]));
                 }
             }
         }
@@ -421,6 +440,7 @@ pub(crate) mod tests {
 
     #[test]
     fn approval_pointer_and_keyboard_cannot_cross_prompt_replacement() {
+        let _language = crate::i18n::language_lock();
         // A dedicated test thread has its own software-only Slint platform;
         // no OS desktop, model, project or application Shell is opened.
         std::thread::Builder::new()
@@ -429,6 +449,7 @@ pub(crate) mod tests {
                 let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
                 slint::platform::set_platform(Box::new(NativeTestPlatform(window))).unwrap();
                 let app = App::new().unwrap();
+                crate::i18n::install(&app);
                 app.set_phone(true);
                 app.set_on_start(false);
                 app.window().set_size(slint::LogicalSize::new(600., 800.));
@@ -444,7 +465,7 @@ pub(crate) mod tests {
                 agent.on_tool_decision_requested(move |id, approved| {
                     received.borrow_mut().push((id.to_string(), approved));
                 });
-                let approve = rendered_button(&app, "批准本次");
+                let approve = rendered_button(&app, crate::i18n::t("agent.approveOnce").as_str());
                 let press = || {
                     app.window()
                         .dispatch_event(WindowEvent::PointerMoved { position: approve });
@@ -462,7 +483,7 @@ pub(crate) mod tests {
 
                 press();
                 agent.set_tool_request_id("request-b".into());
-                rendered_button(&app, "批准本次");
+                rendered_button(&app, crate::i18n::t("agent.approveOnce").as_str());
                 release();
                 assert!(
                     decisions.borrow().is_empty(),
@@ -478,7 +499,7 @@ pub(crate) mod tests {
                 app.window()
                     .dispatch_event(WindowEvent::KeyPressed { text: " ".into() });
                 agent.set_tool_request_id("request-c".into());
-                rendered_button(&app, "批准本次");
+                rendered_button(&app, crate::i18n::t("agent.approveOnce").as_str());
                 app.window()
                     .dispatch_event(WindowEvent::KeyPressRepeated { text: " ".into() });
                 app.window()
@@ -494,7 +515,7 @@ pub(crate) mod tests {
                 assert_eq!(&*decisions.borrow(), &[("request-c".into(), true)]);
                 decisions.borrow_mut().clear();
                 agent.set_tool_request_id("request-d".into());
-                rendered_button(&app, "批准本次");
+                rendered_button(&app, crate::i18n::t("agent.approveOnce").as_str());
                 app.window()
                     .dispatch_event(WindowEvent::KeyPressed { text: "\n".into() });
                 app.window()
@@ -502,7 +523,7 @@ pub(crate) mod tests {
                 assert_eq!(&*decisions.borrow(), &[("request-d".into(), true)]);
                 decisions.borrow_mut().clear();
 
-                let deny = rendered_button(&app, "拒绝");
+                let deny = rendered_button(&app, crate::i18n::t("agent.reject").as_str());
                 app.window()
                     .dispatch_event(WindowEvent::PointerMoved { position: deny });
                 app.window().dispatch_event(WindowEvent::PointerPressed {
@@ -562,12 +583,14 @@ pub(crate) mod tests {
 
     #[test]
     fn preview_timecode_commits_integer_frames_and_does_not_seek_back_on_refocus() {
+        let _language = crate::i18n::language_lock();
         std::thread::Builder::new()
             .stack_size(32 << 20)
             .spawn(|| {
                 let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
                 slint::platform::set_platform(Box::new(NativeTestPlatform(window))).unwrap();
                 let app = App::new().unwrap();
+                crate::i18n::install(&app);
                 app.set_phone(false);
                 app.set_on_start(false);
                 app.window().set_size(slint::LogicalSize::new(1100., 800.));
@@ -715,7 +738,6 @@ pub(crate) mod tests {
 
     mod chat_transcript {
         use super::*;
-        #[cfg(not(target_os = "android"))]
         use slint::private_unstable_api::re_exports::ItemRc;
         use slint::private_unstable_api::re_exports::{
             AccessibleRole, AccessibleStringProperty, Flickable,
@@ -769,7 +791,8 @@ pub(crate) mod tests {
             slint::slint! {
                 import { AgentChat, AgentUi } from "../../ui/agent.slint";
                 import { ResizeBox } from "../../ui/primitives/resize-box.slint";
-                export { AgentUi }
+                import { I18n } from "../../ui/i18n.slint";
+                export { AgentUi, I18n }
                 export component TightApprovalWindow inherits Window {
                     in-out property <bool> phone;
                     in-out property <bool> fixed-only;
@@ -798,7 +821,8 @@ pub(crate) mod tests {
             slint::slint! {
                 import { PhoneAgentSheet } from "../../ui/phone/agent-sheet.slint";
                 import { AgentUi } from "../../ui/agent.slint";
-                export { AgentUi }
+                import { I18n } from "../../ui/i18n.slint";
+                export { AgentUi, I18n }
                 export component PhoneApprovalWindow inherits Window {
                     in-out property <length> keyboard-inset;
                     preferred-width: 320px; preferred-height: 640px;
@@ -840,7 +864,10 @@ pub(crate) mod tests {
             let root = WindowInner::from_pub(window).window_item_rc().unwrap();
             let mut matches = Vec::new();
             root.visit_descendants::<()>(|item| {
-                if item.accessible_role() == role
+                // Slint checks clipping/visibility from the root through every
+                // ancestor, including still-mounted hidden panels.
+                if item.is_visible()
+                    && item.accessible_role() == role
                     && item
                         .accessible_string_property(AccessibleStringProperty::Label)
                         .is_some_and(|value| value == label)
@@ -872,11 +899,7 @@ pub(crate) mod tests {
                 if ancestor.borrow().as_ref().clips_children()
                     && ancestor
                         .visit_descendants(|child| {
-                            if child.accessible_role() == role
-                                && child
-                                    .accessible_string_property(AccessibleStringProperty::Label)
-                                    .is_some_and(|value| value == label)
-                            {
+                            if child == item {
                                 ControlFlow::Break(())
                             } else {
                                 ControlFlow::Continue(())
@@ -933,8 +956,11 @@ pub(crate) mod tests {
 
         #[cfg(not(target_os = "android"))]
         fn drag_composer(window: &slint::Window, delta_y: f32) {
-            let box_bounds =
-                fully_visible_control(window, "对话输入区域", AccessibleRole::Groupbox);
+            let box_bounds = fully_visible_control(
+                window,
+                crate::i18n::t("agent.inputRegion").as_str(),
+                AccessibleRole::Groupbox,
+            );
             // The production ResizeBox has a 16px corner grip. Its absolute
             // position follows the measured allocated box, never its preference.
             let position = slint::LogicalPosition::new(
@@ -973,12 +999,36 @@ pub(crate) mod tests {
         #[cfg(not(target_os = "android"))]
         fn approval_controls(window: &slint::Window) -> [Bounds; 6] {
             render_window(window);
-            let reject = fully_visible_control(window, "拒绝", AccessibleRole::Button);
-            let approve = fully_visible_control(window, "批准本次", AccessibleRole::Button);
-            let stop = fully_visible_control(window, "停止", AccessibleRole::Button);
-            let input = fully_visible_control(window, "对话输入区域", AccessibleRole::Groupbox);
-            let details = fully_visible_control(window, "剪辑操作详情", AccessibleRole::List);
-            let history = fully_visible_control(window, "对话记录", AccessibleRole::List);
+            let reject = fully_visible_control(
+                window,
+                crate::i18n::t("agent.reject").as_str(),
+                AccessibleRole::Button,
+            );
+            let approve = fully_visible_control(
+                window,
+                crate::i18n::t("agent.approveOnce").as_str(),
+                AccessibleRole::Button,
+            );
+            let stop = fully_visible_control(
+                window,
+                crate::i18n::t("agent.stop").as_str(),
+                AccessibleRole::Button,
+            );
+            let input = fully_visible_control(
+                window,
+                crate::i18n::t("agent.inputRegion").as_str(),
+                AccessibleRole::Groupbox,
+            );
+            let details = fully_visible_control(
+                window,
+                crate::i18n::t("agent.editDetails").as_str(),
+                AccessibleRole::List,
+            );
+            let history = fully_visible_control(
+                window,
+                crate::i18n::t("agent.transcript").as_str(),
+                AccessibleRole::List,
+            );
             assert!(
                 (reject.y - approve.y).abs() < 1. && reject.x + reject.width <= approve.x + 1.,
                 "both decisions must occupy one non-overlapping row"
@@ -1004,11 +1054,31 @@ pub(crate) mod tests {
         #[cfg(not(target_os = "android"))]
         fn phone_approval_controls(window: &slint::Window) -> [Bounds; 5] {
             render_window(window);
-            let reject = fully_visible_control(window, "拒绝", AccessibleRole::Button);
-            let approve = fully_visible_control(window, "批准本次", AccessibleRole::Button);
-            let stop = fully_visible_control(window, "停止", AccessibleRole::Button);
-            let input = fully_visible_control(window, "对话输入区域", AccessibleRole::Groupbox);
-            let content = fully_visible_control(window, "对话记录", AccessibleRole::List);
+            let reject = fully_visible_control(
+                window,
+                crate::i18n::t("agent.reject").as_str(),
+                AccessibleRole::Button,
+            );
+            let approve = fully_visible_control(
+                window,
+                crate::i18n::t("agent.approveOnce").as_str(),
+                AccessibleRole::Button,
+            );
+            let stop = fully_visible_control(
+                window,
+                crate::i18n::t("agent.stop").as_str(),
+                AccessibleRole::Button,
+            );
+            let input = fully_visible_control(
+                window,
+                crate::i18n::t("agent.inputRegion").as_str(),
+                AccessibleRole::Groupbox,
+            );
+            let content = fully_visible_control(
+                window,
+                crate::i18n::t("agent.transcript").as_str(),
+                AccessibleRole::List,
+            );
             assert!(reject.height >= 43.9 && approve.height >= 43.9 && stop.height >= 43.9);
             assert!((reject.y - approve.y).abs() < 1. && reject.x + reject.width <= approve.x + 1.);
             assert!(
@@ -1039,7 +1109,8 @@ pub(crate) mod tests {
 
         fn message(body: &str) -> ui::AgentMessageData {
             ui::AgentMessageData {
-                author: "模型".into(),
+                role: ui::AgentMessageRole::Assistant,
+                author: crate::i18n::t("agent.model").as_str().into(),
                 body: body.into(),
                 preview: body.into(),
                 collapsible: false,
@@ -1057,6 +1128,7 @@ pub(crate) mod tests {
                 }))
                 .unwrap();
                 let app = App::new().unwrap();
+                crate::i18n::install(&app);
                 let weak = app.as_weak();
                 app.global::<ui::Focus>().on_release(move || {
                     if let Some(app) = weak.upgrade() {
@@ -1136,7 +1208,9 @@ pub(crate) mod tests {
                     if item.is_visible()
                         && item
                             .accessible_string_property(AccessibleStringProperty::Label)
-                            .is_some_and(|label| label == "对话记录")
+                            .is_some_and(|label| {
+                                label == crate::i18n::t("agent.transcript").as_str()
+                            })
                         && let Some(flick) = item.downcast::<Flickable>()
                     {
                         let geometry = item.geometry();
@@ -1178,7 +1252,9 @@ pub(crate) mod tests {
                         && item.downcast::<Flickable>().is_some()
                         && item
                             .accessible_string_property(AccessibleStringProperty::Label)
-                            .is_some_and(|label| label == "对话记录")
+                            .is_some_and(|label| {
+                                label == crate::i18n::t("agent.transcript").as_str()
+                            })
                     {
                         item.visit_descendants::<()>(|entry| {
                             // Keep text clipped by the transcript: its actual
@@ -1237,7 +1313,7 @@ pub(crate) mod tests {
                 drag_composer(self.app.window(), 100.);
                 let input = fully_visible_control(
                     self.app.window(),
-                    "对话输入区域",
+                    crate::i18n::t("agent.inputRegion").as_str(),
                     AccessibleRole::Groupbox,
                 );
                 assert!(
@@ -1314,9 +1390,12 @@ pub(crate) mod tests {
             fn wheel_details(&self, delta_y: f32) {
                 use slint::winit_030::winit::dpi::PhysicalPosition;
                 use slint::winit_030::winit::event::MouseScrollDelta;
-                let position =
-                    fully_visible_control(self.app.window(), "剪辑操作详情", AccessibleRole::List)
-                        .center();
+                let position = fully_visible_control(
+                    self.app.window(),
+                    crate::i18n::t("agent.editDetails").as_str(),
+                    AccessibleRole::List,
+                )
+                .center();
                 let scale = f64::from(self.app.window().scale_factor());
                 let before = self.app.global::<AgentUi>().get_native_scroll_up_pending();
                 pause_transcript_follow_for_native_wheel(
@@ -1515,10 +1594,88 @@ pub(crate) mod tests {
             }
 
             fn click_role(&self, label: &str, role: AccessibleRole) {
+                self.click_role_with_anchor(label, role, None);
+            }
+
+            fn click_script_picker(&self) {
+                self.click_role_with_anchor(
+                    crate::i18n::t("script.openWorkspace").as_str(),
+                    AccessibleRole::Button,
+                    Some(crate::i18n::t("script.closePicker").as_str()),
+                );
+            }
+
+            fn click_role_with_anchor(
+                &self,
+                label: &str,
+                role: AccessibleRole,
+                anchor_label: Option<&str>,
+            ) {
                 self.render();
-                let root = WindowInner::from_pub(self.app.window())
+                let mut root = WindowInner::from_pub(self.app.window())
                     .window_item_rc()
                     .unwrap();
+                if let Some(anchor_label) = anchor_label {
+                    let mut anchors = Vec::new();
+                    root.visit_descendants::<()>(|item| {
+                        if item.is_visible()
+                            && item.accessible_role() == AccessibleRole::Button
+                            && item
+                                .accessible_string_property(AccessibleStringProperty::Label)
+                                .is_some_and(|value| value == anchor_label)
+                        {
+                            anchors.push(item.clone());
+                        }
+                        ControlFlow::Continue(())
+                    });
+                    assert_eq!(anchors.len(), 1, "one actual picker anchor: {anchor_label}");
+                    let anchor = anchors.pop().unwrap();
+                    let contains = |parent: &ItemRc, child: &ItemRc| {
+                        parent
+                            .visit_descendants(|item| {
+                                if item == child {
+                                    ControlFlow::Break(())
+                                } else {
+                                    ControlFlow::Continue(())
+                                }
+                            })
+                            .is_some()
+                    };
+                    // The phone header also legitimately opens Writing. Use
+                    // the nearest real container that owns the picker's close
+                    // button and its own open button, never a label ordinal,
+                    // guessed coordinate or replacement accessibility name.
+                    let mut scope = root.clone();
+                    root.visit_descendants::<()>(|candidate| {
+                        if contains(candidate, &anchor)
+                            && contains(&scope, candidate)
+                            && candidate
+                                .visit_descendants(|item| {
+                                    if item.is_visible()
+                                        && item.accessible_role() == role
+                                        && item
+                                            .accessible_string_property(
+                                                AccessibleStringProperty::Label,
+                                            )
+                                            .is_some_and(|value| value == label)
+                                    {
+                                        ControlFlow::Break(())
+                                    } else {
+                                        ControlFlow::Continue(())
+                                    }
+                                })
+                                .is_some()
+                        {
+                            scope = candidate.clone();
+                        }
+                        ControlFlow::Continue(())
+                    });
+                    assert!(
+                        scope != root,
+                        "the picker must have its own actual container"
+                    );
+                    root = scope;
+                }
                 let mut points = Vec::new();
                 root.visit_descendants::<()>(|item| {
                     if item.is_visible()
@@ -1574,7 +1731,9 @@ pub(crate) mod tests {
                         && item.downcast::<TextInput>().is_some()
                         && item
                             .accessible_string_property(AccessibleStringProperty::Label)
-                            .is_some_and(|value| value == "对话输入")
+                            .is_some_and(|value| {
+                                value == crate::i18n::t("agent.chatInput").as_str()
+                            })
                     {
                         // ResizeBox's visible grip center is 2px past the
                         // input's right edge, at its padded bottom edge.
@@ -1636,7 +1795,11 @@ pub(crate) mod tests {
 
             fn bounds(chat: &Chat) -> Bounds {
                 chat.render();
-                fully_visible_control(chat.app.window(), "打开智能助手", AccessibleRole::Button)
+                fully_visible_control(
+                    chat.app.window(),
+                    crate::i18n::t("agent.phoneOpen").as_str(),
+                    AccessibleRole::Button,
+                )
             }
 
             fn assert_position(actual: Bounds, x: f32, y: f32) {
@@ -1723,6 +1886,7 @@ pub(crate) mod tests {
 
             #[test]
             fn defaults_left_follows_theme_and_keeps_a_free_position_after_opening() {
+                let _language = crate::i18n::language_lock();
                 with_chat(|chat| {
                     let app = chat.app.clone_strong();
                     let agent = app.global::<AgentUi>();
@@ -1767,18 +1931,19 @@ pub(crate) mod tests {
                     release(chat, position);
                     assert_eq!(agent.get_phone_sheet_state(), 1);
                     assert_eq!(opened.get(), 1);
-                    chat.click("收起智能助手");
+                    chat.click(crate::i18n::t("agent.collapseAssistant").as_str());
                     assert_eq!(agent.get_phone_sheet_state(), 0);
                     assert_position(bounds(chat), placed.x, placed.y);
-                    chat.click("打开智能助手");
+                    chat.click(crate::i18n::t("agent.phoneOpen").as_str());
                     assert_eq!(opened.get(), 2);
-                    chat.click("收起智能助手");
+                    chat.click(crate::i18n::t("agent.collapseAssistant").as_str());
                     assert_position(bounds(chat), placed.x, placed.y);
                 });
             }
 
             #[test]
             fn clamps_both_axes_and_cancels_pointer_or_resize_without_opening() {
+                let _language = crate::i18n::language_lock();
                 with_chat(|chat| {
                     let app = chat.app.clone_strong();
                     let agent = app.global::<AgentUi>();
@@ -1818,7 +1983,7 @@ pub(crate) mod tests {
                     release(chat, start);
                     assert_eq!(agent.get_phone_sheet_state(), 0);
                     assert_eq!(opened.get(), 0, "resize must cancel the in-flight press");
-                    chat.click("打开智能助手");
+                    chat.click(crate::i18n::t("agent.phoneOpen").as_str());
                     assert_eq!(agent.get_phone_sheet_state(), 1);
                     assert_eq!(
                         opened.get(),
@@ -1831,6 +1996,7 @@ pub(crate) mod tests {
 
         #[test]
         fn script_picker_opens_the_correct_native_workspace_and_preserves_the_draft() {
+            let _language = crate::i18n::language_lock();
             with_chat(|chat| {
                 let app = chat.app.clone_strong();
                 let agent = app.global::<AgentUi>();
@@ -1840,7 +2006,7 @@ pub(crate) mod tests {
                     .on_open_requested(move || observed.set(observed.get() + 1));
                 agent.set_draft("保留尚未发送的剪辑要求".into());
                 agent.set_script_picker(true);
-                chat.click("打开文案页");
+                chat.click_script_picker();
                 chat.render();
                 assert_eq!(opened.get(), 1);
                 assert!(!agent.get_script_picker());
@@ -1848,7 +2014,7 @@ pub(crate) mod tests {
                 assert_eq!(agent.get_phone_sheet_state(), 2);
                 assert_eq!(agent.get_view(), ui::AgentView::Editor);
                 assert_eq!(agent.get_draft(), "保留尚未发送的剪辑要求");
-                chat.click("返回智能对话");
+                chat.click(crate::i18n::t("agent.phoneChat").as_str());
                 assert!(!agent.get_phone_script());
                 assert_eq!(agent.get_draft(), "保留尚未发送的剪辑要求");
 
@@ -1857,7 +2023,7 @@ pub(crate) mod tests {
                 agent.set_sidebar_open(true);
                 agent.set_view(ui::AgentView::Chat);
                 agent.set_script_picker(true);
-                chat.click("打开文案页");
+                chat.click_script_picker();
                 assert_eq!(opened.get(), 2);
                 assert_eq!(agent.get_view(), ui::AgentView::Script);
                 assert!(!agent.get_phone_script());
@@ -1867,6 +2033,7 @@ pub(crate) mod tests {
 
         #[test]
         fn phone_back_dismisses_transient_choices_after_the_header_restores_root_focus() {
+            let _language = crate::i18n::language_lock();
             with_chat(|chat| {
                 let app = chat.app.clone_strong();
                 let agent = app.global::<AgentUi>();
@@ -1882,7 +2049,7 @@ pub(crate) mod tests {
                 let back = || key(char::from(slint::platform::Key::Back).to_string().into());
                 agent.set_phone_sheet_state(1);
                 agent.set_script_picker(true);
-                chat.click("展开全屏智能助手");
+                chat.click(crate::i18n::t("agent.phoneFull").as_str());
                 assert_eq!(agent.get_phone_sheet_state(), 2);
                 assert!(agent.get_script_picker());
                 back();
@@ -1891,14 +2058,17 @@ pub(crate) mod tests {
                 assert_eq!(agent.get_phone_sheet_state(), 2);
 
                 agent.set_phone_sheet_state(1);
-                chat.click_role("请求批准", AccessibleRole::Combobox);
+                chat.click_role(
+                    crate::i18n::t("agent.permissionAsk").as_str(),
+                    AccessibleRole::Combobox,
+                );
                 key(char::from(slint::platform::Key::End).to_string().into());
                 key("\n".into());
                 chat.render();
                 assert!(agent.get_phone_confirm_full_access());
                 assert_eq!(agent.get_tool_mode(), 0);
                 assert!(modes.borrow().is_empty());
-                chat.click("展开全屏智能助手");
+                chat.click(crate::i18n::t("agent.phoneFull").as_str());
                 assert_eq!(agent.get_phone_sheet_state(), 2);
                 back();
                 chat.render();
@@ -1918,6 +2088,7 @@ pub(crate) mod tests {
 
         #[test]
         fn chat_follows_streamed_content_and_viewport_reflow() {
+            let _language = crate::i18n::language_lock();
             with_chat(|chat| {
                 chat.assert_latest_visible();
                 let app = chat.app.clone_strong();
@@ -1954,6 +2125,7 @@ pub(crate) mod tests {
 
         #[test]
         fn chat_keeps_manual_history_position_during_queued_updates() {
+            let _language = crate::i18n::language_lock();
             with_chat(|chat| {
                 chat.assert_latest_visible();
                 // Queue reflow and a model replacement, then send real input
@@ -1985,6 +2157,7 @@ pub(crate) mod tests {
         #[cfg(not(target_os = "android"))]
         #[test]
         fn chat_pending_approval_stays_reachable_when_space_shrinks_and_restores() {
+            let _language = crate::i18n::language_lock();
             with_chat(|chat| {
                 chat.prepare_pending_layout("pending-resize-identity");
                 let large = approval_controls(chat.app.window());
@@ -2027,6 +2200,11 @@ pub(crate) mod tests {
                 let clock = Rc::new(Cell::new(Duration::from_secs(1)));
                 slint::platform::set_platform(Box::new(ChatPlatform { window, clock })).unwrap();
                 let app = tight_approval::TightApprovalWindow::new().unwrap();
+                    let words = app.global::<tight_approval::I18n>();
+                    words.on_lookup(|_, key| crate::i18n::t(&key).into());
+                    words.on_lookup1(|_, key, a| crate::i18n::tf(&key, &[&a]).into());
+                    words.on_lookup2(|_, key, a, b| crate::i18n::tf(&key, &[&a, &b]).into());
+                    words.set_lang(crate::i18n::current().into());
                 app.window().set_size(slint::LogicalSize::new(320., 600.));
                 let agent = app.global::<tight_approval::AgentUi>();
                 agent.set_draft("收缩后继续拖动".into());
@@ -2038,7 +2216,7 @@ pub(crate) mod tests {
                 app.show().unwrap();
                 render_window(app.window());
                 drag_composer(app.window(), 100.);
-                let requested = fully_visible_control(app.window(), "对话输入区域", AccessibleRole::Groupbox);
+                let requested = fully_visible_control(app.window(), crate::i18n::t("agent.inputRegion").as_str(), AccessibleRole::Groupbox);
                 assert!((requested.height - 150.).abs() < 1.);
                 status.busy = true;
                 status.can_send = false;
@@ -2087,6 +2265,7 @@ pub(crate) mod tests {
         #[cfg(not(target_os = "android"))]
         #[test]
         fn phone_sheet_keyboard_keeps_native_approval_and_input_fully_reachable() {
+            let _language = crate::i18n::language_lock();
             std::thread::Builder::new()
                 .stack_size(32 << 20)
                 .spawn(|| {
@@ -2094,8 +2273,17 @@ pub(crate) mod tests {
                     let clock = Rc::new(Cell::new(Duration::from_secs(1)));
                     slint::platform::set_platform(Box::new(ChatPlatform { window, clock })).unwrap();
                     let app = phone_approval::PhoneApprovalWindow::new().unwrap();
+                    let words = app.global::<phone_approval::I18n>();
+                    words.on_lookup(|_, key| crate::i18n::t(&key).into());
+                    words.on_lookup1(|_, key, a| crate::i18n::tf(&key, &[&a]).into());
+                    words.on_lookup2(|_, key, a, b| crate::i18n::tf(&key, &[&a, &b]).into());
+                    words.set_lang(crate::i18n::current().into());
                     app.window().set_size(slint::LogicalSize::new(320., 640.));
                     let agent = app.global::<phone_approval::AgentUi>();
+                    let reply_languages = crate::i18n::language_choice_labels();
+                    let reply_language = reply_languages[0].clone();
+                    agent.set_reply_languages(slint::ModelRc::new(slint::VecModel::from(reply_languages)));
+                    agent.set_reply_language_index(0);
                     agent.set_phone_sheet_state(2);
                     agent.set_draft("保留输入高度偏好和未发送草稿".into());
                     agent.set_models(slint::ModelRc::new(slint::VecModel::from(vec![
@@ -2116,27 +2304,29 @@ pub(crate) mod tests {
                     // than reproducing its half/full-height calculation.
                     let assert_sheet_edges = |level, available_bottom: f32, action: &str| {
                         render_window(app.window());
-                        let label = if level == 1 { "展开全屏智能助手" } else { "缩回半屏智能助手" };
-                        let header = control_geometry(app.window(), label, AccessibleRole::Button);
-                        fully_visible_control(app.window(), label, AccessibleRole::Button);
+                        let label = crate::i18n::t(if level == 1 { "agent.phoneFull" } else { "agent.phoneHalf" });
+                        let header = control_geometry(app.window(), &label, AccessibleRole::Button);
+                        fully_visible_control(app.window(), &label, AccessibleRole::Button);
                         assert!((header.bounds.y - header.clip.y).abs() < 1.,
                             "the title bar must start at the actual sheet surface top: {header:?}");
-                        let close = fully_visible_control(app.window(), "收起智能助手", AccessibleRole::Button);
+                        let close = fully_visible_control(app.window(), crate::i18n::t("agent.collapseAssistant").as_str(), AccessibleRole::Button);
                         let inside_header = intersection(close, header.bounds);
                         assert!(close.width >= 43.9 && close.height >= 43.9
                             && (inside_header.width - close.width).abs() < 1.
                             && (inside_header.height - close.height).abs() < 1.,
                             "the full collapse target must remain inside the top title bar: {close:?}, {header:?}");
-                        let content = fully_visible_control(app.window(), "对话记录", AccessibleRole::List);
+                        let content = fully_visible_control(app.window(), crate::i18n::t("agent.transcript").as_str(), AccessibleRole::List);
                         assert!(header.bounds.bottom() <= content.y + 1.,
                             "the transcript must start below the title bar, never cover it: {header:?}, {content:?}");
-                        let input = fully_visible_control(app.window(), "对话输入区域", AccessibleRole::Groupbox);
+                        let input = fully_visible_control(app.window(), crate::i18n::t("agent.inputRegion").as_str(), AccessibleRole::Groupbox);
                         let action = fully_visible_control(app.window(), action, AccessibleRole::Button);
                         let gap = available_bottom - action.bottom();
                         assert!(action.height >= 43.9 && (-1.0..=16.0).contains(&gap),
                             "the action row must stay at the available bottom with only its padding: bottom={available_bottom}, action={action:?}");
-                        assert!(input.bottom() <= action.y + 1. && action.y - input.bottom() <= 8.,
-                            "the input must remain directly above its reachable action row: input={input:?}, action={action:?}");
+                        let language = fully_visible_control(app.window(), reply_language.as_str(), AccessibleRole::Combobox);
+                        assert!(input.bottom() <= language.y + 1. && language.y - input.bottom() <= 8.
+                            && language.bottom() <= action.y + 1. && action.y - language.bottom() <= 8.,
+                            "input, reply language and action must remain adjacent and fully reachable: input={input:?}, language={language:?}, action={action:?}");
                     };
                     for height in [640., 800.] {
                         app.window().set_size(slint::LogicalSize::new(320., height));
@@ -2144,18 +2334,19 @@ pub(crate) mod tests {
                             for inset in [0., height - 320.] {
                                 agent.set_phone_sheet_state(level);
                                 app.set_keyboard_inset(inset);
-                                assert_sheet_edges(level, height - inset, "发送");
+                                assert_sheet_edges(level, height - inset, crate::i18n::t("agent.send").as_str());
                                 // Real pointer dispatch also detects a header
                                 // whose bounds are correct but another item
                                 // intercepts its title or collapse button.
-                                click_visible_button(app.window(), if level == 1 {
-                                    "展开全屏智能助手"
+                                let height_label = crate::i18n::t(if level == 1 {
+                                    "agent.phoneFull"
                                 } else {
-                                    "缩回半屏智能助手"
+                                    "agent.phoneHalf"
                                 });
+                                click_visible_button(app.window(), &height_label);
                                 assert_eq!(agent.get_phone_sheet_state(), 3 - level,
                                     "clicking the actual title bar must change sheet height");
-                                click_visible_button(app.window(), "收起智能助手");
+                                click_visible_button(app.window(), crate::i18n::t("agent.collapseAssistant").as_str());
                                 assert_eq!(agent.get_phone_sheet_state(), 0,
                                     "the actual header collapse button must close the sheet");
                                 assert_eq!(agent.get_draft(), "保留输入高度偏好和未发送草稿");
@@ -2189,7 +2380,7 @@ pub(crate) mod tests {
                         for inset in [0., 320.] {
                             app.set_keyboard_inset(inset);
                             let controls = phone_approval_controls(app.window());
-                            assert_sheet_edges(level, 640. - inset, "停止");
+                            assert_sheet_edges(level, 640. - inset, crate::i18n::t("agent.stop").as_str());
                             assert!(controls[2].bottom() <= 640. - inset + 1.,
                                 "the real sheet header, clipping and keyboard inset must keep stop above the keyboard");
                             if inset == 320. {
@@ -2200,7 +2391,7 @@ pub(crate) mod tests {
                             assert!(decisions.borrow().is_empty());
                         }
                     }
-                    click_visible_button(app.window(), "拒绝");
+                    click_visible_button(app.window(), crate::i18n::t("agent.reject").as_str());
                     assert_eq!(&*decisions.borrow(), &[("phone-keyboard-request".to_owned(), false)]);
                     app.set_keyboard_inset(0.);
                     assert!((phone_approval_controls(app.window())[3].height - preferred).abs() < 1.,
@@ -2215,6 +2406,7 @@ pub(crate) mod tests {
         #[cfg(not(target_os = "android"))]
         #[test]
         fn chat_phone_approval_details_drag_without_deciding_or_moving_controls() {
+            let _language = crate::i18n::language_lock();
             std::thread::Builder::new()
                 .stack_size(32 << 20)
                 .spawn(|| {
@@ -2223,6 +2415,11 @@ pub(crate) mod tests {
                     slint::platform::set_platform(Box::new(ChatPlatform { window, clock }))
                         .unwrap();
                     let app = tight_approval::TightApprovalWindow::new().unwrap();
+                    let words = app.global::<tight_approval::I18n>();
+                    words.on_lookup(|_, key| crate::i18n::t(&key).into());
+                    words.on_lookup1(|_, key, a| crate::i18n::tf(&key, &[&a]).into());
+                    words.on_lookup2(|_, key, a, b| crate::i18n::tf(&key, &[&a, &b]).into());
+                    words.set_lang(crate::i18n::current().into());
                     app.set_phone(true);
                     app.window().set_size(slint::LogicalSize::new(320., 480.));
                     let agent = app.global::<tight_approval::AgentUi>();
@@ -2265,13 +2462,13 @@ pub(crate) mod tests {
                                         .text()
                                         .apply_pin(text.as_pin_ref())
                                         .get()
-                                        == "批准当前工程的剪辑操作？"
+                                        == crate::i18n::t("agent.approveQuestion").as_str()
                                 }) || item.downcast::<ComplexText>().is_some_and(|text| {
                                     ComplexText::FIELD_OFFSETS
                                         .text()
                                         .apply_pin(text.as_pin_ref())
                                         .get()
-                                        == "批准当前工程的剪辑操作？"
+                                        == crate::i18n::t("agent.approveQuestion").as_str()
                                 });
                             if matches {
                                 positions.push(item.map_to_window(item.geometry().origin).y);
@@ -2328,9 +2525,12 @@ pub(crate) mod tests {
                             "reading must leave the visible decisions and stop in place"
                         );
                     }
-                    click_visible_button(app.window(), "拒绝");
-                    click_visible_button(app.window(), "批准本次");
-                    click_visible_button(app.window(), "停止");
+                    click_visible_button(app.window(), crate::i18n::t("agent.reject").as_str());
+                    click_visible_button(
+                        app.window(),
+                        crate::i18n::t("agent.approveOnce").as_str(),
+                    );
+                    click_visible_button(app.window(), crate::i18n::t("agent.stop").as_str());
                     assert_eq!(
                         *decisions.borrow(),
                         vec![
@@ -2354,6 +2554,7 @@ pub(crate) mod tests {
         #[cfg(not(target_os = "android"))]
         #[test]
         fn chat_pending_details_scroll_without_moving_history_and_pointer_actions_fire_once() {
+            let _language = crate::i18n::language_lock();
             for decision in [Some(true), Some(false), None] {
                 with_chat(move |chat| {
                     chat.prepare_pending_layout("pending-details-initial");
@@ -2369,11 +2570,16 @@ pub(crate) mod tests {
 
                     let (anchor, before) = chat.read_single_line_history();
                     let controls = approval_controls(chat.app.window());
-                    let title = chat.overlay_text_bounds("批准当前工程的剪辑操作？", false);
+                    let title = chat.overlay_text_bounds(
+                        crate::i18n::t("agent.approveQuestion").as_str(),
+                        false,
+                    );
                     let reading_y = chat.scroll_view().content_y;
                     chat.wheel_details(-180.);
-                    let scrolled_title =
-                        chat.overlay_text_bounds("批准当前工程的剪辑操作？", false);
+                    let scrolled_title = chat.overlay_text_bounds(
+                        crate::i18n::t("agent.approveQuestion").as_str(),
+                        false,
+                    );
                     assert!(
                         scrolled_title.y < title.y - 20.,
                         "the actual detail content must scroll: before={title:?}, after={scrolled_title:?}"
@@ -2402,7 +2608,10 @@ pub(crate) mod tests {
                     };
                     agent.set_tool_request_id(request_id.into());
                     chat.render();
-                    let reset_title = chat.overlay_text_bounds("批准当前工程的剪辑操作？", false);
+                    let reset_title = chat.overlay_text_bounds(
+                        crate::i18n::t("agent.approveQuestion").as_str(),
+                        false,
+                    );
                     assert!(
                         (reset_title.y - title.y).abs() < 1.,
                         "a new request identity must reset only the detail scroller"
@@ -2418,12 +2627,12 @@ pub(crate) mod tests {
                     let stops = Rc::new(Cell::new(0));
                     let observed = Rc::clone(&stops);
                     agent.on_stop_requested(move || observed.set(observed.get() + 1));
-                    let label = match decision {
-                        Some(true) => "批准本次",
-                        Some(false) => "拒绝",
-                        None => "停止",
-                    };
-                    click_visible_button(chat.app.window(), label);
+                    let label = crate::i18n::t(match decision {
+                        Some(true) => "agent.approveOnce",
+                        Some(false) => "agent.reject",
+                        None => "agent.stop",
+                    });
+                    click_visible_button(chat.app.window(), &label);
                     chat.advance(32);
                     chat.render();
                     if let Some(approved) = decision {
@@ -2446,6 +2655,7 @@ pub(crate) mod tests {
 
         #[test]
         fn chat_desktop_sidebar_reflows_with_window_and_reopens_within_native_layout() {
+            let _language = crate::i18n::language_lock();
             with_chat(|chat| {
                 // Capture the native workspace's real layout callback rather
                 // than deriving editor width from the assistant's preference.
@@ -2510,14 +2720,14 @@ pub(crate) mod tests {
                     .set_size(slint::LogicalSize::new(2560., 900.));
                 check_layout(chat, 840., 600.);
                 let open_editor_width = workspace.get().0;
-                chat.click("收起 Pi 助手");
+                chat.click(crate::i18n::t("agent.collapseAssistant").as_str());
                 chat.render();
                 assert!(!agent.get_sidebar_open());
                 assert!(
                     workspace.get().0 > open_editor_width,
                     "hiding the sidebar returns real space to the editor"
                 );
-                chat.click("展开 Pi 助手");
+                chat.click(crate::i18n::t("agent.expandAssistant").as_str());
                 check_layout(chat, 840., 600.);
 
                 chat.app
@@ -2526,22 +2736,23 @@ pub(crate) mod tests {
                 // The minimum desktop supports the compact native workspace;
                 // intentionally reopening the assistant must still fit it.
                 check_layout(chat, 320., 550.);
-                chat.click("收起 Pi 助手");
+                chat.click(crate::i18n::t("agent.collapseAssistant").as_str());
                 chat.render();
-                chat.click("展开 Pi 助手");
+                chat.click(crate::i18n::t("agent.expandAssistant").as_str());
                 check_layout(chat, 320., 550.);
             });
         }
 
         #[test]
         fn chat_history_screen_anchor_survives_task_status_and_progress_changes() {
+            let _language = crate::i18n::language_lock();
             with_chat(|chat| {
                 chat.desktop_layout();
                 let app = chat.app.clone_strong();
                 let agent = app.global::<AgentUi>();
                 let mut status = agent.get_status();
                 status.missing = "".into();
-                status.title = "等待输入".into();
+                status.title = crate::i18n::t("agent.idle").as_str().into();
                 status.detail = "".into();
                 agent.set_status(status.clone());
                 chat.assert_latest_visible();
@@ -2556,7 +2767,7 @@ pub(crate) mod tests {
                 status.can_send = false;
                 status.can_stop = true;
                 status.title = "正在生成回复".into();
-                status.detail = "正在接收真实模型与原生工具执行结果。".into();
+                status.detail = crate::i18n::t("agent.receiving").as_str().into();
                 agent.set_status(status.clone());
                 chat.assert_history_anchor(&anchor, before, "task start");
                 chat.assert_latest_below_view();
@@ -2575,7 +2786,7 @@ pub(crate) mod tests {
                 status.busy = false;
                 status.can_send = true;
                 status.can_stop = false;
-                status.title = "等待输入".into();
+                status.title = crate::i18n::t("agent.idle").as_str().into();
                 status.detail = "".into();
                 agent.set_status(status.clone());
                 chat.assert_history_anchor(&anchor, before, "task completion");
@@ -2598,6 +2809,7 @@ pub(crate) mod tests {
 
         #[test]
         fn chat_history_screen_anchor_survives_streamed_model_replacements() {
+            let _language = crate::i18n::language_lock();
             with_chat(|chat| {
                 chat.desktop_layout();
                 let agent = chat.app.global::<AgentUi>();
@@ -2639,6 +2851,7 @@ pub(crate) mod tests {
 
         #[test]
         fn chat_layout_clamp_does_not_resume_but_user_scroll_to_end_does() {
+            let _language = crate::i18n::language_lock();
             with_chat(|chat| {
                 chat.assert_latest_visible();
                 chat.wheel(-1200.);
@@ -2670,6 +2883,7 @@ pub(crate) mod tests {
 
         #[test]
         fn chat_send_button_restores_following_after_draft_and_status_changes() {
+            let _language = crate::i18n::language_lock();
             with_chat(|chat| {
                 chat.wheel(360.);
                 chat.render();
@@ -2692,7 +2906,7 @@ pub(crate) mod tests {
                     agent.set_status(status);
                 });
                 agent.set_draft("明确发送并恢复跟随".into());
-                chat.click("发送");
+                chat.click(crate::i18n::t("agent.send").as_str());
                 assert_eq!(&*sent.borrow(), &["明确发送并恢复跟随"]);
                 assert!(agent.get_draft().is_empty());
                 chat.append("发送之后原生发布的最新回复");
@@ -2702,6 +2916,7 @@ pub(crate) mod tests {
 
         #[test]
         fn chat_history_expansion_and_collapse_preserve_manual_reading() {
+            let _language = crate::i18n::language_lock();
             with_chat(|chat| {
                 let mut history = message(&"供逐段阅读的历史明细。\n".repeat(30));
                 history.collapsible = true;
@@ -2711,7 +2926,7 @@ pub(crate) mod tests {
                 chat.render();
                 let before = chat.scroll_view();
                 let (anchor, anchor_bounds) = chat.visible_history_anchor();
-                chat.click("展开完整内容");
+                chat.click(crate::i18n::t("agent.expand").as_str());
                 chat.render();
                 let expanded = chat.scroll_view();
                 assert!(
@@ -2732,7 +2947,7 @@ pub(crate) mod tests {
                 chat.assert_latest_below_view();
                 chat.wheel(-100_000.);
                 chat.assert_latest_visible();
-                chat.click("收起详情");
+                chat.click(crate::i18n::t("agent.collapse").as_str());
                 chat.render();
                 assert!(
                     chat.scroll_view().content_height < expanded.content_height,
@@ -2749,6 +2964,7 @@ pub(crate) mod tests {
 
         #[test]
         fn chat_drag_to_end_release_keeps_following_and_upward_drag_pauses() {
+            let _language = crate::i18n::language_lock();
             with_chat(|chat| {
                 chat.assert_latest_visible();
                 chat.wheel(80.);
@@ -2778,6 +2994,7 @@ pub(crate) mod tests {
         #[cfg(not(target_os = "android"))]
         #[test]
         fn chat_native_wheel_intent_precedes_layout_and_respects_hit_test() {
+            let _language = crate::i18n::language_lock();
             use slint::winit_030::winit::dpi::PhysicalPosition;
             use slint::winit_030::winit::event::MouseScrollDelta;
 
@@ -2934,7 +3151,7 @@ pub(crate) mod tests {
                 let sent = Rc::new(Cell::new(false));
                 let received = Rc::clone(&sent);
                 agent.on_send_requested(move |_| received.set(true));
-                chat.click("发送");
+                chat.click(crate::i18n::t("agent.send").as_str());
                 assert!(
                     sent.get(),
                     "the real send button must reach its native callback"
@@ -2948,6 +3165,7 @@ pub(crate) mod tests {
         #[cfg(not(target_os = "android"))]
         #[test]
         fn chat_nonoverflowing_wheel_keeps_following_when_content_grows() {
+            let _language = crate::i18n::language_lock();
             use slint::winit_030::winit::dpi::PhysicalPosition;
             use slint::winit_030::winit::event::MouseScrollDelta;
 
@@ -2994,6 +3212,7 @@ pub(crate) mod tests {
         #[cfg(not(target_os = "android"))]
         #[test]
         fn chat_wheel_on_covering_dialog_does_not_pause_background_following() {
+            let _language = crate::i18n::language_lock();
             use slint::winit_030::winit::dpi::PhysicalPosition;
             use slint::winit_030::winit::event::MouseScrollDelta;
 
@@ -3068,10 +3287,11 @@ pub(crate) mod tests {
                     .global::<ui::AgentSettingsUi>()
                     .set_has_saved_channel(true);
                 for (kind, title) in [
-                    (0, "模型渠道与凭据"),
-                    (1, "common.settings"),
-                    (2, "common.export"),
+                    (0, crate::i18n::t("modelSettings.title")),
+                    (1, crate::i18n::t("common.settings")),
+                    (2, crate::i18n::t("common.export")),
                 ] {
+                    let title = title.as_str();
                     chat.render();
                     // The original editor stays mounted behind the sheet.
                     // Exclude its already-visible labels by item identity,
@@ -3102,8 +3322,14 @@ pub(crate) mod tests {
                         // overflow and a visible hit inside that form; a
                         // short new-channel form fits this window and has
                         // no legitimate scrolling distance.
-                        let before = chat.overlay_text_bounds("编辑渠道", true);
-                        let last_control = chat.overlay_text_bounds("删除对应系统凭据", false);
+                        let before = chat.overlay_text_bounds(
+                            crate::i18n::t("modelSettings.connection").as_str(),
+                            true,
+                        );
+                        let last_control = chat.overlay_text_bounds(
+                            crate::i18n::t("modelSettings.deleteCredential").as_str(),
+                            false,
+                        );
                         let window_bottom = chat.app.window().size().height as f32
                             / chat.app.window().scale_factor();
                         assert!(
@@ -3116,7 +3342,10 @@ pub(crate) mod tests {
                             "the real visible label must be inside the foreground form: {before:?}"
                         );
                         wheel_on_overlay(chat, position, -160., title);
-                        let after = chat.overlay_text_bounds("编辑渠道", false);
+                        let after = chat.overlay_text_bounds(
+                            crate::i18n::t("modelSettings.connection").as_str(),
+                            false,
+                        );
                         assert!(
                             after.y < before.y - 20.,
                             "the real foreground form must still scroll: before={before:?}, after={after:?}"
@@ -3216,7 +3445,7 @@ pub(crate) mod tests {
                 ));
                 chat.app.set_relink(relink.clone());
                 chat.render();
-                chat.overlay_text_bounds("relink.missingMedia", true);
+                chat.overlay_text_bounds(crate::i18n::t("relink.missingMedia").as_str(), true);
                 wheel_on_overlay(
                     chat,
                     chat.scroll_view().bounds.center(),
@@ -3253,7 +3482,7 @@ pub(crate) mod tests {
                 chat.render();
                 let header = || {
                     let matches: Vec<_> = chat
-                        .matching_overlay_text("captions.captions", true)
+                        .matching_overlay_text(crate::i18n::t("captions.captions").as_str(), true)
                         .into_iter()
                         .filter(|bounds| bounds.y >= 40. && bounds.bottom() <= 95.)
                         .collect();

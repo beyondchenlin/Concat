@@ -37,6 +37,13 @@ export struct ExportData {
     /// "8 clips · 3 titles"
     contents: string,
     resolution: int,
+    custom-resolution: bool,
+    size-notice: string,
+    size-suggestion: string,
+    suggested-long-edge: float,
+    long-edge: float,
+    snapshot-version: string,
+    snapshot-older: bool,
     /// the resolution ladder as this project would come out at each
     /// rung - "1080 × 1920" on a 9:16 edit - with its names, and which
     /// rungs cannot be picked: every one but the timeline's own
@@ -298,6 +305,8 @@ component OutputSection inherits DialogSection {
     in property <ExportData> data;
 
     callback rate-changed(index: int);
+    callback resolution-changed(index: int);
+    callback long-edge-changed(value: float);
     callback bitrate-changed(mbps: float);
     callback codec-changed(index: int);
     callback ten-bit-changed(on: bool);
@@ -307,18 +316,30 @@ component OutputSection inherits DialogSection {
 
     DialogRow {
         label: I18n.t("export.resolution");
-        // The timeline's own size, which is the size it exports at: a
-        // 9:16 edit is 1080 × 1920. A fact, not a choice.
-        // https://github.com/jub0t/Concat/issues/109
-        HorizontalLayout {
-            alignment: end;
-            Text {
-                text: root.data.resolutions[root.data.resolution];
-                color: Theme.fg;
-                font-family: Theme.font-technical;
-                font-size: Theme.fs;
-                vertical-alignment: center;
-            }
+        Select {
+            current: root.data.resolution;
+            options: root.data.resolutions;
+            changed(index) => { root.resolution-changed(index); }
+        }
+    }
+
+    Text {
+        text: root.data.size-notice; color: Theme.fg-muted;
+        font-size: Theme.fs; wrap: word-wrap;
+    }
+    if root.data.size-suggestion != "": Button {
+        label: root.data.size-suggestion;
+        clicked => { root.long-edge-changed(root.data.suggested-long-edge); }
+    }
+
+    if root.data.custom-resolution: DialogRow {
+        label: I18n.t("export.longEdge");
+        NumberField {
+            value: root.data.long-edge;
+            minimum: 2;
+            maximum: 8192;
+            step: 2;
+            changed(value) => { root.long-edge-changed(value); }
         }
     }
 
@@ -440,10 +461,29 @@ component ExportFooter inherits VerticalLayout {
     callback cancel();
     callback reveal();
     callback again();
+    callback use-current();
 
     property <bool> running: root.data.phase == ExportPhase.running;
 
     spacing: 10px;
+
+    if root.data.snapshot-version != "": Text {
+        text: root.data.snapshot-version;
+        color: Theme.fg-muted;
+        font-size: Theme.fs-sm;
+        wrap: word-wrap;
+    }
+    if root.data.snapshot-older: Text {
+        text: I18n.t("export.snapshotOlder");
+        color: Theme.fg-muted;
+        font-size: Theme.fs-sm;
+        wrap: word-wrap;
+    }
+    if !root.running && root.data.snapshot-version != "": Button {
+        label: I18n.t("export.useCurrentProject");
+        ghost: true;
+        clicked => { root.use-current(); }
+    }
 
     // A failure says what went wrong where the action was, not in a
     // separate alert to be dismissed before you can try again.
@@ -559,7 +599,9 @@ component ExportFooter inherits VerticalLayout {
             min-width: root.narrow ? 0px : 320px;
             glyph: Glyph.export;
             label: root.data.empty ? I18n.t("export.nothingToExport")
-                : I18n.t("export.exportEstimate") + root.data.size-chosen;
+                : root.data.phase == ExportPhase.failed && root.data.snapshot-version != ""
+                    ? I18n.t("export.retrySnapshot")
+                    : I18n.t("export.exportEstimate") + root.data.size-chosen;
             enabled: !root.data.empty && root.data.name != "";
             clicked => { root.begin(); }
         }
@@ -603,6 +645,8 @@ export component ExportDialog inherits Rectangle {
     callback name-edited(name: string);
     callback browse();
     callback rate-changed(index: int);
+    callback resolution-changed(index: int);
+    callback long-edge-changed(value: float);
     callback codec-changed(index: int);
     callback ten-bit-changed(on: bool);
     callback hdr-changed(on: bool);
@@ -611,6 +655,7 @@ export component ExportDialog inherits Rectangle {
     callback cancel();
     callback reveal();
     callback again();
+    callback use-current();
 
     property <bool> running: root.data.phase == ExportPhase.running;
     /// How many columns the width holds. Three groups a column wide need
@@ -748,6 +793,8 @@ export component ExportDialog inherits Rectangle {
                             data: root.data;
                             bitrate-changed(mbps) => { root.bitrate-changed(mbps); }
                             rate-changed(index) => { root.rate-changed(index); }
+                            resolution-changed(index) => { root.resolution-changed(index); }
+                            long-edge-changed(value) => { root.long-edge-changed(value); }
                             codec-changed(index) => { root.codec-changed(index); }
                             ten-bit-changed(on) => { root.ten-bit-changed(on); }
                             hdr-changed(on) => { root.hdr-changed(on); }
@@ -788,6 +835,8 @@ export component ExportDialog inherits Rectangle {
                                 data: root.data;
                                 bitrate-changed(mbps) => { root.bitrate-changed(mbps); }
                                 rate-changed(index) => { root.rate-changed(index); }
+                            resolution-changed(index) => { root.resolution-changed(index); }
+                            long-edge-changed(value) => { root.long-edge-changed(value); }
                                 codec-changed(index) => { root.codec-changed(index); }
                                 ten-bit-changed(on) => { root.ten-bit-changed(on); }
                                 hdr-changed(on) => { root.hdr-changed(on); }
@@ -823,6 +872,8 @@ export component ExportDialog inherits Rectangle {
                                 data: root.data;
                                 bitrate-changed(mbps) => { root.bitrate-changed(mbps); }
                                 rate-changed(index) => { root.rate-changed(index); }
+                            resolution-changed(index) => { root.resolution-changed(index); }
+                            long-edge-changed(value) => { root.long-edge-changed(value); }
                                 codec-changed(index) => { root.codec-changed(index); }
                                 ten-bit-changed(on) => { root.ten-bit-changed(on); }
                                 hdr-changed(on) => { root.hdr-changed(on); }
@@ -862,6 +913,7 @@ export component ExportDialog inherits Rectangle {
                     cancel => { root.cancel(); }
                     reveal => { root.reveal(); }
                     again => { root.again(); }
+                    use-current => { root.use-current(); }
                 }
             }
         }

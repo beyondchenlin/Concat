@@ -8,13 +8,14 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use crate::i18n::{t, tf};
 use concat_agent::scripts::{
     GenerationTicket, LegacyScriptInfo, ScriptCandidate, ScriptDraft, ScriptError, ScriptSnapshot,
     ScriptStore, ScriptVersion, VersionBinding,
 };
 use concat_host::{project_identity, projects};
 use sha2::{Digest, Sha256};
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use crate::agent::project_save::NativeSnapshot;
 use crate::host::{Shell, spawn_in_project};
@@ -25,6 +26,7 @@ use crate::ui::{App, ScriptUi, ScriptVersionData};
 #[derive(Default)]
 pub struct ScriptPane {
     project_id: Option<String>,
+    content_language: String,
     project_path: Option<PathBuf>,
     root: Option<PathBuf>,
     snapshot: Option<ScriptSnapshot>,
@@ -49,6 +51,7 @@ pub struct ScriptPane {
     generation_error: String,
     published_rows: Cell<Option<HistoryRevision>>,
     published_candidates: Cell<Option<(usize, u64)>>,
+    published_locale: std::cell::RefCell<String>,
     candidate_view_revision: u64,
 }
 
@@ -75,7 +78,7 @@ impl GenerationRequest {
     pub(crate) fn bind_component_revocation(&self, signal: Arc<AtomicBool>) -> Result<(), String> {
         self.component_revoked
             .set(signal)
-            .map_err(|_| "文案生成已经绑定运行组件，不能改绑。".to_owned())
+            .map_err(|_| "script.componentBound".to_owned())
     }
 
     fn is_active(&self) -> bool {
@@ -84,6 +87,23 @@ impl GenerationRequest {
                 .component_revoked
                 .get()
                 .is_some_and(|signal| !signal.load(Ordering::Acquire))
+    }
+
+    /// Native-owned durable context. No process-local gate, path or permission
+    /// can be revived by deserializing this record.
+    pub(crate) fn recovery_snapshot(&self) -> serde_json::Value {
+        serde_json::json!({
+            "schema": 1,
+            "requestId": self.request_id,
+            "prompt": self.prompt,
+            "ticket": {
+                "projectId": self.ticket.project_id,
+                "documentId": self.ticket.document_id,
+                "revision": self.ticket.revision,
+                "editRevision": self.ticket.edit_revision,
+                "sha256": self.ticket.sha256,
+            },
+        })
     }
 
     pub(crate) fn request_id(&self) -> &str {
@@ -125,9 +145,9 @@ fn with_local_io<T>(
 ) -> Result<T, String> {
     let guard = gate
         .lock()
-        .map_err(|_| "文案本地操作已中断，无法继续保存。".to_owned())?;
+        .map_err(|_| "script.localInterrupted".to_owned())?;
     if guard.terminating {
-        return Err("工程正在结束，文案操作已停止。".into());
+        return Err("script.projectClosing".to_owned());
     }
     let result = action();
     drop(guard);
@@ -164,7 +184,7 @@ fn at_project<T>(
     project_path: &std::path::Path,
     action: impl FnOnce(&ScriptStore) -> Result<T, String>,
 ) -> Result<T, String> {
-    std::fs::create_dir_all(root).map_err(|error| format!("无法打开文案存储位置：{error}"))?;
+    std::fs::create_dir_all(root).map_err(|error| format!("script.openStorageFailed\n{error}"))?;
     concat_agent::script_locations::with_project_location(
         root,
         project_id,
@@ -178,6 +198,18 @@ fn at_project<T>(
 }
 
 impl ScriptPane {
+    /// Preserve drafts with writing, candidates, history or pending user work.
+    pub(crate) fn has_user_work(&self) -> bool {
+        !self.text.is_empty()
+            || !self.versions.is_empty()
+            || !self.candidates.is_empty()
+            || self.pending_save
+            || self.generation.is_some()
+            || self.accepted_draft.is_some()
+            || self.legacy.is_some()
+            || self.candidate_pending
+            || self.busy
+    }
     #[cfg(test)]
     pub(crate) fn disk_draft_for_test(
         root: PathBuf,
@@ -222,10 +254,10 @@ impl ScriptPane {
     /// remains the only way to abandon a refused close.
     pub fn before_close(&self) -> Result<(), String> {
         if self.is_busy() || self.pending_save {
-            return Err("文案操作尚未完成，请稍后再切换或关闭工程。".into());
+            return Err(t("script.waitClose"));
         }
         if self.dirty() {
-            return Err("文案有未保存修改，请先保存新版本或放弃本次修改。".into());
+            return Err(t("script.unsavedClose"));
         }
         Ok(())
     }
@@ -243,7 +275,7 @@ impl ScriptPane {
         let gate = Arc::clone(&self.local_io);
         let mut guard = gate
             .lock()
-            .map_err(|_| "文案本地操作已中断，无法完成结束保存。".to_owned())?;
+            .map_err(|_| t("script.closeInterrupted").to_owned())?;
         guard.terminating = true;
         if !must_preserve {
             return Ok(());
@@ -251,7 +283,7 @@ impl ScriptPane {
         let (Some(project_id), Some(root), Some(project_path)) =
             (&self.project_id, &self.root, &self.project_path)
         else {
-            return Err("当前文案缺少工程存储位置，结束保存没有完成。".into());
+            return Err(t("script.noStorage"));
         };
         // Read the real latest snapshot after every admitted local write;
         // the UI snapshot can still be waiting for a save/select callback.
@@ -267,7 +299,8 @@ impl ScriptPane {
                     .create(project_id, &self.text)
                     .map_err(storage_error)?,
             })
-        })?;
+        })
+        .map_err(|error| crate::panes::agent::localize_product_message(&error))?;
         self.accept_saved(saved);
         // Keep the gate held until the durable result has been accepted.
         drop(guard);
@@ -281,7 +314,7 @@ impl ScriptPane {
                 .checked_add(1)
                 .filter(|v| *v <= i64::MAX as u64)
             else {
-                self.error = "文案编辑次数已达到上限，请保留当前内容并重新打开。".into();
+                self.error = "script.editExhausted".to_owned();
                 return;
             };
             self.edit_revision = revision;
@@ -354,11 +387,11 @@ impl ScriptPane {
 
     fn view(&mut self, version: u64) {
         if self.is_busy() || self.dirty() {
-            self.error = "请先完成当前操作，并保存或放弃文案修改。".into();
+            self.error = "script.finishFirst".to_owned();
             return;
         }
         let Some(saved) = self.versions.iter().find(|saved| saved.version == version) else {
-            self.error = "该文案版本不在当前工程中，请重新读取。".into();
+            self.error = "script.versionMissing".to_owned();
             return;
         };
         let text = saved.content.clone();
@@ -379,7 +412,7 @@ impl ScriptPane {
         let snapshot = self
             .snapshot
             .clone()
-            .ok_or_else(|| "请先保存初版文案；空稿也可以保存，再开始生成。".to_owned())?;
+            .ok_or_else(|| "script.saveFirst".to_owned())?;
         ScriptDraft::from_editor(snapshot, self.text.clone(), self.edit_revision)
             .map_err(storage_error)
     }
@@ -394,19 +427,22 @@ impl ScriptPane {
         rewrite: bool,
     ) -> Result<GenerationRequest, String> {
         if !self.ready || self.is_busy() || self.generation.is_some() {
-            return Err("请先等待当前文案操作完成。".into());
+            return Err("script.waitOperation".to_owned());
         }
         let instruction = instruction.trim();
         if instruction.is_empty() || instruction.len() > 8192 {
-            return Err("请填写1至8192字节的文案要求。".into());
+            return Err("script.requireInstruction".to_owned());
         }
         if rewrite && self.text.trim().is_empty() {
-            return Err("请先填写需要改写的文案。".into());
+            return Err("script.requireText".to_owned());
         }
         let draft = self.editor_draft()?;
         let ticket = draft.generation_ticket();
-        let root = self.root.clone().ok_or("请重新打开文案工作区。")?;
-        let project_path = self.project_path.clone().ok_or("请重新打开文案工作区。")?;
+        let root = self.root.clone().ok_or("script.reopen".to_owned())?;
+        let project_path = self
+            .project_path
+            .clone()
+            .ok_or("script.reopen".to_owned())?;
         let request_id = crate::embedded::random_capability()?;
         let action = if rewrite {
             "改写下方文案"
@@ -426,6 +462,82 @@ impl ScriptPane {
             prompt,
             root,
             project_path,
+            gate: Arc::clone(&self.local_io),
+            active: Arc::new(AtomicBool::new(true)),
+            component_revoked: Arc::new(OnceLock::new()),
+        };
+        self.generation = Some(request.clone());
+        self.generation_error.clear();
+        self.error.clear();
+        Ok(request)
+    }
+
+    /// Rebuild only a native-verified interrupted writing request. The original
+    /// ticket remains immutable; current typing and saved versions are neither
+    /// replaced nor used to invent a new source ticket.
+    pub(crate) fn recover_generation(
+        &mut self,
+        task_id: &str,
+        session_id: u64,
+        project_revision: u64,
+        saved: &serde_json::Value,
+    ) -> Result<GenerationRequest, String> {
+        if !self.ready || self.is_busy() || self.generation.is_some() {
+            return Err("script.waitOperation".to_owned());
+        }
+        let invalid = || "script.recoveryInvalid".to_owned();
+        let string = |value: &serde_json::Value| -> Result<String, String> {
+            value
+                .as_str()
+                .filter(|v| !v.is_empty() && v.len() <= 4096)
+                .map(str::to_owned)
+                .ok_or_else(invalid)
+        };
+        if saved["schema"] != 1 || saved.as_object().is_none_or(|v| v.len() != 4) {
+            return Err(invalid());
+        }
+        let request_id = string(&saved["requestId"])?;
+        let prompt = saved["prompt"]
+            .as_str()
+            .filter(|v| !v.is_empty() && v.len() <= 32 * 1024 * 1024)
+            .ok_or_else(invalid)?
+            .to_owned();
+        let raw = &saved["ticket"];
+        if raw.as_object().is_none_or(|v| v.len() != 5) {
+            return Err(invalid());
+        }
+        let ticket = GenerationTicket {
+            project_id: string(&raw["projectId"])?,
+            document_id: string(&raw["documentId"])?,
+            revision: raw["revision"].as_u64().ok_or_else(invalid)?,
+            edit_revision: raw["editRevision"].as_u64().ok_or_else(invalid)?,
+            sha256: string(&raw["sha256"])?,
+        };
+        if request_id != task_id
+            || request_id.len() > 256
+            || request_id.chars().any(char::is_control)
+            || ticket.sha256.len() != 64
+            || !ticket
+                .sha256
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+            || self.project_id.as_deref() != Some(ticket.project_id.as_str())
+            || self
+                .snapshot
+                .as_ref()
+                .is_none_or(|current| current.document_id != ticket.document_id)
+        {
+            return Err(invalid());
+        }
+        let request = GenerationRequest {
+            request_id,
+            project_id: ticket.project_id.clone(),
+            session_id,
+            project_revision,
+            ticket,
+            prompt,
+            root: self.root.clone().ok_or_else(invalid)?,
+            project_path: self.project_path.clone().ok_or_else(invalid)?,
             gate: Arc::clone(&self.local_io),
             active: Arc::new(AtomicBool::new(true)),
             component_revoked: Arc::new(OnceLock::new()),
@@ -499,7 +611,7 @@ impl ScriptPane {
             .editor_draft()
             .is_ok_and(|current| current.generation_ticket() == before)
         {
-            self.error = "接受候选期间正文已修改，当前手稿已保留；候选仍可查看。".into();
+            self.error = "script.acceptChanged".to_owned();
             return;
         }
         self.text = draft.text().to_owned();
@@ -533,8 +645,7 @@ impl ScriptPane {
                     self.viewed_candidate = Some(candidate.candidate_id.clone());
                     self.generation_error.clear();
                 } else {
-                    self.generation_error =
-                        "模型调用已停止；停止前已开始保存的候选已保留，手稿没有改动。".into();
+                    self.generation_error = "script.stopped".to_owned();
                 }
                 if !self
                     .candidates
@@ -546,37 +657,58 @@ impl ScriptPane {
                 self.candidate_view_revision = self.candidate_view_revision.wrapping_add(1);
             }
             Err(error) if same_document => {
-                self.generation_error = format!("候选未确认保存完成；当前手稿没有改动：{error}");
+                self.generation_error = format!("script.candidateSaveFailed\n{error}");
             }
             _ => {}
         }
     }
 
     /// Publish the document view without rebuilding its history on each frame.
+    fn display_error(&self) -> String {
+        let error = crate::panes::agent::localize_product_message(&self.error);
+        let generation = crate::panes::agent::localize_product_message(&self.generation_error);
+        match (error.is_empty(), generation.is_empty()) {
+            (true, _) => generation,
+            (_, true) => error,
+            _ => format!("{error}\n{generation}"),
+        }
+    }
+
     pub fn publish(&self, app: &App) {
         let ui = app.global::<ScriptUi>();
+        let locale = crate::i18n::current();
+        if *self.published_locale.borrow() != locale {
+            *self.published_locale.borrow_mut() = locale;
+            self.published_rows.set(None);
+            self.published_candidates.set(None);
+        }
+        let languages = crate::i18n::language_choice_labels();
+        if !ui
+            .get_content_languages()
+            .iter()
+            .eq(languages.iter().cloned())
+        {
+            ui.set_content_languages(ModelRc::new(VecModel::from(languages)));
+        }
+        ui.set_content_language_index(crate::i18n::language_choice_index(&self.content_language));
         if ui.get_text().as_str() != self.text {
             ui.set_text(self.text.as_str().into());
         }
         let status = if self.is_busy() {
-            "正在读取或保存文案".to_owned()
+            t("script.readingSaving").to_owned()
         } else if self.generation.is_some() {
-            "正在生成候选；可以继续写稿，生成结果不会覆盖正文".to_owned()
+            t("script.generating").to_owned()
         } else if !self.ready {
-            "打开文案后可创建和保存版本".to_owned()
+            t("script.openHint").to_owned()
         } else if self.dirty() {
-            "文案有未保存修改".to_owned()
+            t("script.unsaved").to_owned()
         } else if let Some(version) = self.viewed {
-            format!("正在查看第{version}版")
+            tf("script.viewingVersion", &[&version])
         } else {
-            "新文案，请先保存初版；空稿也可保存后生成".to_owned()
+            t("script.newHint").to_owned()
         };
         ui.set_status(status.into());
-        let error = match (self.error.is_empty(), self.generation_error.is_empty()) {
-            (true, _) => self.generation_error.clone(),
-            (_, true) => self.error.clone(),
-            _ => format!("{}\n{}", self.error, self.generation_error),
-        };
+        let error = self.display_error();
         ui.set_error(error.into());
         ui.set_ready(self.ready);
         ui.set_busy(self.is_busy());
@@ -598,11 +730,11 @@ impl ScriptPane {
         }
         ui.set_candidate_notice(
             candidate
-                .map_or("", |value| {
+                .map_or_else(String::new, |value| {
                     if self.candidate_matches(value) {
-                        "接受后成为可编辑草稿；保存新版本和选择剪辑版本仍需分别操作。"
+                        t("script.acceptHint")
                     } else {
-                        "生成之后正文或保存版本已变化。此候选保留供查看，不能覆盖当前手稿。"
+                        t("script.candidateStale")
                     }
                 })
                 .into(),
@@ -616,8 +748,11 @@ impl ScriptPane {
                     .rev()
                     .map(|(index, value)| ScriptVersionData {
                         identity: value.candidate_id.as_str().into(),
-                        label: format!("候选{} · {}字", index + 1, value.content.chars().count())
-                            .into(),
+                        label: tf(
+                            "script.candidateLabel",
+                            &[&(index + 1), &value.content.chars().count()],
+                        )
+                        .into(),
                         selected: false,
                         viewed: self.viewed_candidate.as_deref()
                             == Some(value.candidate_id.as_str()),
@@ -634,11 +769,14 @@ impl ScriptPane {
                 && self.snapshot.is_none()
                 && self.legacy.is_some(),
         );
-        ui.set_legacy_notice(if self.snapshot.is_none() {
-            "旧版文案只按旧位置保存，归属尚未确认。请先查看正文，确认后复制；全部历史保留，剪辑版本需重新选择。"
-        } else {
-            "当前工程已有独立文案。旧位置文案继续保留供核对，不会覆盖当前文案。"
-        }.into());
+        ui.set_legacy_notice(
+            if self.snapshot.is_none() {
+                t("script.legacyReview")
+            } else {
+                t("script.legacyRetained")
+            }
+            .into(),
+        );
         let legacy_text = self
             .legacy
             .as_ref()
@@ -650,22 +788,23 @@ impl ScriptPane {
             self.legacy
                 .as_ref()
                 .map_or_else(
-                    || "请选择旧位置文案查看正文".to_owned(),
+                    || t("script.chooseLegacy").to_owned(),
                     |legacy| {
-                        format!(
-                            "{} · 第{}版（仅查看）",
-                            legacy.project_id, legacy.latest.version
+                        tf(
+                            "script.legacyLabel",
+                            &[&legacy.project_id, &legacy.latest.version],
                         )
                     },
                 )
                 .into(),
         );
         let selected = self.snapshot.as_ref().and_then(|s| s.selected.as_ref());
+        ui.set_has_selected(selected.is_some());
         ui.set_selected_label(
             selected
                 .map_or_else(
-                    || "尚未选择剪辑版本".to_owned(),
-                    |binding| format!("剪辑使用第{}版", binding.version),
+                    || t("script.noSelection").to_owned(),
+                    |binding| tf("script.selectedVersion", &[&binding.version]),
                 )
                 .into(),
         );
@@ -681,10 +820,9 @@ impl ScriptPane {
                 .rev()
                 .map(|version| ScriptVersionData {
                     identity: version.version.to_string().into(),
-                    label: format!(
-                        "第{}版 · {}字",
-                        version.version,
-                        version.content.chars().count()
+                    label: tf(
+                        "script.versionLabel",
+                        &[&version.version, &version.content.chars().count()],
                     )
                     .into(),
                     selected: selected.is_some_and(|binding| binding.version == version.version),
@@ -697,8 +835,11 @@ impl ScriptPane {
                     .iter()
                     .map(|legacy| ScriptVersionData {
                         identity: legacy.project_id.as_str().into(),
-                        label: format!("{} · {}个版本", legacy.project_id, legacy.latest_version)
-                            .into(),
+                        label: tf(
+                            "script.legacyVersions",
+                            &[&legacy.project_id, &legacy.latest_version],
+                        )
+                        .into(),
                         selected: false,
                         viewed: false,
                     })
@@ -712,30 +853,27 @@ impl ScriptPane {
 fn storage_error(error: ScriptError) -> String {
     log::warn!("native script workspace: {error}");
     match error {
-        ScriptError::Io(_) => "文案文件读取或写入失败，请保留草稿并检查存储位置。",
-        ScriptError::Database(_) => "文案存储暂时无法完成操作，请保留草稿后重试。",
-        ScriptError::InvalidStorage => "文案存储格式不兼容或内容已损坏，原文件保持不变。",
-        ScriptError::InvalidInput => "工程标识或文案内容超出存储限制。",
-        ScriptError::NotFound => "当前工程没有已保存文案，请保留草稿并重新读取。",
-        ScriptError::AlreadyExists | ScriptError::StaleSnapshot => {
-            "文案已被其他操作更新，请保留草稿并重新读取最新版本。"
-        }
-        ScriptError::WrongVersion => "所选文案版本不属于当前工程，请重新读取。",
-        ScriptError::StaleCandidate => "生成期间文案已修改，生成结果保留为候选。",
-        ScriptError::NoSelectedVersion => "请先明确选择用于剪辑的文案版本。",
-        ScriptError::ReadOnly => "文案存储为只读，请保留草稿并检查写入权限。",
-        ScriptError::RevisionExhausted => "文案版本已达到存储上限，请保留当前内容。",
-        ScriptError::Poisoned => "文案存储连接已中断，请保留草稿并重新读取。",
+        ScriptError::Io(_) => "script.errorIo".to_owned(),
+        ScriptError::Database(_) => "script.errorDatabase".to_owned(),
+        ScriptError::InvalidStorage => "script.errorFormat".to_owned(),
+        ScriptError::InvalidInput => "script.errorInput".to_owned(),
+        ScriptError::NotFound => "script.errorMissing".to_owned(),
+        ScriptError::AlreadyExists | ScriptError::StaleSnapshot => "script.errorStale".to_owned(),
+        ScriptError::WrongVersion => "script.errorVersion".to_owned(),
+        ScriptError::StaleCandidate => "script.errorCandidate".to_owned(),
+        ScriptError::NoSelectedVersion => "script.errorSelection".to_owned(),
+        ScriptError::ReadOnly => "script.errorReadOnly".to_owned(),
+        ScriptError::RevisionExhausted => "script.errorLimit".to_owned(),
+        ScriptError::Poisoned => "script.errorConnection".to_owned(),
     }
-    .into()
 }
 
 fn load(root: PathBuf, path: String, project_id: String) -> Result<Loaded, String> {
-    let project_path = std::fs::canonicalize(path)
-        .map_err(|_| "无法核对当前工程位置，文案没有打开。".to_owned())?;
+    let project_path =
+        std::fs::canonicalize(path).map_err(|_| "script.locationCheck".to_owned())?;
     let legacy_key = project_path
         .to_str()
-        .ok_or_else(|| "当前工程路径无法用于文案存储。".to_owned())?;
+        .ok_or_else(|| "script.invalidPath".to_owned())?;
     at_project(&root, &project_id, &project_path, |store| {
         let snapshot = store.load(&project_id).map_err(storage_error)?;
         let versions = if snapshot.is_some() {
@@ -774,15 +912,15 @@ fn open_with_identity(
     // Resolve aliases for inspection, while keeping the Session's original
     // path in the ordered save and journal evidence. The native save layer
     // remains responsible for write ordering and final identity admission.
-    let actual_path = std::fs::canonicalize(&native.path)
-        .map_err(|_| "无法核对当前工程位置，文案没有打开。".to_owned())?;
+    let actual_path =
+        std::fs::canonicalize(&native.path).map_err(|_| "script.locationCheck".to_owned())?;
     let existing = project_identity::read_persisted(&actual_path)?;
     if !projects::is_project(&actual_path) {
-        return Err("原工程文档已不存在，请先核对原生工程，文案没有打开。".into());
+        return Err("script.documentMissing".to_owned());
     }
     if let Some(existing) = existing {
         if existing != native.project_id {
-            return Err("工程位置已属于另一份工程，文案没有打开。".into());
+            return Err("script.locationOther".to_owned());
         }
         return Ok(Opened {
             saved: None,
@@ -796,7 +934,7 @@ fn open_with_identity(
     let (saved, journal_error) = native.save(record_written);
     let loaded = match &saved {
         Ok(_) => load(root, native.path, native.project_id),
-        Err(error) => Err(format!("工程身份尚未安全保存，文案没有打开：{error}")),
+        Err(error) => Err(format!("script.identitySaveFailed\n{error}")),
     };
     Ok(Opened {
         saved: Some(saved),
@@ -811,18 +949,24 @@ impl Studio {
             return;
         }
         if self.script.generation.is_some() {
-            self.script.error = "请先停止文案生成，再重新读取文案。".into();
+            self.script.error = "script.stopBeforeReload".to_owned();
             return;
         }
         self.flush_commit();
         let Some(session) = self.session.as_mut() else {
-            self.script.error = "请先打开工程。".into();
+            self.script.error = "agent.openProject".into();
             return;
         };
+        self.script.content_language = self
+            .prefs
+            .script_content_languages
+            .get(session.project_identity())
+            .cloned()
+            .unwrap_or_default();
         let native = match NativeSnapshot::capture(session) {
             Ok(native) => native,
             Err(error) => {
-                self.script.error = format!("无法保存工程身份，文案没有打开：{error}");
+                self.script.error = format!("script.identitySaveFailed\n{error}");
                 return;
             }
         };
@@ -884,7 +1028,7 @@ impl Studio {
             self.script.root.clone(),
             self.script.project_path.clone(),
         ) else {
-            self.script.error = "请重新打开文案工作区。".into();
+            self.script.error = "script.reopen".to_owned();
             return;
         };
         let snapshot = self.script.snapshot.clone();
@@ -897,6 +1041,9 @@ impl Studio {
         spawn_in_project(
             move || {
                 with_local_io(&gate, || {
+                    concat_host::projects::drafts::retain_external_work(std::path::Path::new(
+                        &project_path,
+                    ))?;
                     at_project(&root, &project_id, &project_path, |store| match snapshot {
                         Some(snapshot) => {
                             let mut draft = if let Some(draft) = accepted
@@ -920,7 +1067,7 @@ impl Studio {
                 Err(error) => {
                     studio.script.busy = false;
                     studio.script.pending_save = false;
-                    studio.script.error = format!("未确认文案保存完成：{error}");
+                    studio.script.error = format!("script.saveFailed\n{error}");
                 }
             },
         );
@@ -941,7 +1088,7 @@ impl Studio {
             }
         };
         if draft.generation_ticket() != candidate.ticket {
-            self.script.error = "生成之后文案已变化，候选继续保留，当前手稿没有改动。".into();
+            self.script.error = "script.changedAfterGeneration".to_owned();
             return;
         }
         let (Some(root), Some(project_path)) =
@@ -982,7 +1129,7 @@ impl Studio {
 
     fn select_specific_script_version(&mut self, version: u64) {
         if !self.script.ready || self.script.is_busy() || self.script.dirty() {
-            self.script.error = "请先保存或放弃文案修改，再选择剪辑版本。".into();
+            self.script.error = "script.saveBeforeSelect".to_owned();
             return;
         }
         if !self
@@ -991,7 +1138,7 @@ impl Studio {
             .iter()
             .any(|saved| saved.version == version)
         {
-            self.script.error = "该文案版本不在当前工程中，请重新读取。".into();
+            self.script.error = "script.versionMissing".to_owned();
             return;
         }
         let (Some(snapshot), Some(root), Some(project_path)) = (
@@ -1055,7 +1202,7 @@ impl Studio {
                         store
                             .load(&legacy_id)
                             .map_err(storage_error)?
-                            .ok_or_else(|| "旧位置文案已经不可读取，原稿未改动。".into())
+                            .ok_or_else(|| "script.legacyMissing".to_owned())
                     })
                 })
             },
@@ -1102,7 +1249,7 @@ impl Studio {
                     })?;
                     let path = project_path
                         .to_str()
-                        .ok_or("工程位置无法读取。")?
+                        .ok_or("script.locationUnreadable".to_owned())?
                         .to_owned();
                     load(root, path, project_id)
                 })
@@ -1112,8 +1259,7 @@ impl Studio {
                 Err(error) => {
                     studio.script.busy = false;
                     studio.script.ready = true;
-                    studio.script.error =
-                        format!("旧稿未确认复制完成，原记录保留；请重新读取核对：{error}");
+                    studio.script.error = format!("script.legacyCopyFailed\n{error}");
                 }
             },
         );
@@ -1142,7 +1288,7 @@ fn persist_generated_candidate_using(
 ) -> Result<ScriptCandidate, String> {
     with_local_io(&request.gate, || {
         if !request.is_active() {
-            return Err("文案生成已停止，迟到结果没有写入。".into());
+            return Err("script.lateStopped".to_owned());
         }
         admitted();
         at_project(
@@ -1169,8 +1315,7 @@ pub(crate) fn complete_generation(request: GenerationRequest, result: Result<Str
         let mut studio = shell.studio.borrow_mut();
         if studio.script.matches_generation(&request) && !request.is_active() {
             studio.script.cancel_generation();
-            studio.script.generation_error =
-                "文案生成所属组件已经停止；迟到结果没有进入候选保存。".into();
+            studio.script.generation_error = "script.componentStopped".to_owned();
             studio.script.publish(&app);
             return;
         }
@@ -1184,8 +1329,7 @@ pub(crate) fn complete_generation(request: GenerationRequest, result: Result<Str
         });
         if !current {
             studio.script.cancel_generation();
-            studio.script.generation_error =
-                "生成期间原生工程已切换或改变，本次结果未写入文案。".into();
+            studio.script.generation_error = "script.projectChanged".to_owned();
             studio.script.publish(&app);
             return;
         }
@@ -1193,7 +1337,7 @@ pub(crate) fn complete_generation(request: GenerationRequest, result: Result<Str
             Ok(content) if !content.trim().is_empty() => content,
             Ok(_) => {
                 studio.script.cancel_generation();
-                studio.script.generation_error = "模型没有返回文案正文，当前手稿保持不变。".into();
+                studio.script.generation_error = "script.emptyResult".to_owned();
                 studio.script.publish(&app);
                 return;
             }
@@ -1221,6 +1365,24 @@ pub(crate) fn complete_generation(request: GenerationRequest, result: Result<Str
 /// needed to write, read or choose the user's own document versions.
 pub fn install(app: &App) {
     let ui = app.global::<ScriptUi>();
+    ui.on_content_language_chosen(|index| {
+        with_studio(|studio| {
+            let Some(project) = studio.script.project_id.clone() else {
+                return;
+            };
+            let code = crate::i18n::language_choice_code(index);
+            if let Some(code) = &code {
+                studio
+                    .prefs
+                    .script_content_languages
+                    .insert(project, code.clone());
+            } else {
+                studio.prefs.script_content_languages.remove(&project);
+            }
+            studio.script.content_language = code.unwrap_or_default();
+            studio.prefs.save(&studio.host.dirs);
+        })
+    });
     ui.on_open_requested(|| {
         with_studio(|studio| studio.open_script_workspace(false));
         #[cfg(all(
@@ -1249,7 +1411,7 @@ pub fn install(app: &App) {
     ui.on_select_version_requested(|identity| {
         with_studio(|studio| match identity.parse::<u64>() {
             Ok(version) => studio.select_specific_script_version(version),
-            Err(_) => studio.script.error = "文案版本无效。".into(),
+            Err(_) => studio.script.error = "script.invalidVersion".to_owned(),
         });
     });
     ui.on_discard_requested(|| with_studio(|studio| studio.script.discard()));
@@ -1268,7 +1430,7 @@ pub fn install(app: &App) {
     ui.on_view_requested(|version| {
         with_studio(|studio| match version.parse::<u64>() {
             Ok(version) => studio.script.view(version),
-            Err(_) => studio.script.error = "文案版本无效。".into(),
+            Err(_) => studio.script.error = "script.invalidVersion".to_owned(),
         })
     });
 }
@@ -1278,6 +1440,56 @@ mod tests {
     use super::*;
 
     const PROJECT_ID: &str = "bkcat-project:11111111111111111111111111111111";
+
+    #[test]
+    fn writing_error_projection_localizes_native_codes_and_keeps_the_draft() {
+        let _language = crate::i18n::language_lock();
+        let dirs =
+            concat_host::AppDirs::under(&std::env::temp_dir().join("bkcut-writing-error-language"));
+        let mut pane = ScriptPane::default();
+        let original = "手稿 {0} / literal {1}";
+        pane.text = original.into();
+        pane.error = "agent.errorProjectIdentity".into();
+        for language in ["en", "zh-Hans"] {
+            crate::i18n::select(language, &dirs);
+            for code in [
+                "script.generationFailed",
+                "script.stopped",
+                "agent.errorRecoveryChanged",
+            ] {
+                pane.generation_error = code.into();
+                assert_eq!(
+                    pane.display_error(),
+                    format!("{}\n{}", t("agent.errorProjectIdentity"), t(code))
+                );
+                assert_eq!(pane.text, original);
+                assert_eq!(
+                    pane.generation_error, code,
+                    "display cannot rewrite the native error identity"
+                );
+            }
+            pane.error = "script.errorDatabase".into();
+            pane.generation_error = "script.candidateSaveFailed\nscript.errorStale".into();
+            assert_eq!(
+                pane.display_error(),
+                format!(
+                    "{}\n{}",
+                    t("script.errorDatabase"),
+                    tf("script.candidateSaveFailed", &[&t("script.errorStale")])
+                )
+            );
+            assert_eq!(
+                pane.generation_error,
+                "script.candidateSaveFailed\nscript.errorStale"
+            );
+            assert_eq!(pane.text, original);
+            pane.error = "external storage diagnostic {1}".into();
+            pane.generation_error.clear();
+            assert_eq!(pane.display_error(), "external storage diagnostic {1}");
+            pane.error = "agent.errorProjectIdentity".into();
+        }
+        crate::i18n::select("en", &dirs);
+    }
 
     fn snapshot(version: u64, content: &str) -> ScriptSnapshot {
         ScriptSnapshot {
@@ -1467,6 +1679,81 @@ mod tests {
         assert!(!pane.dirty());
         assert!(pane.candidate_matches(&candidate));
         assert_eq!(fixture.pane().candidates, vec![candidate]);
+    }
+
+    #[test]
+    fn recovered_writing_keeps_original_ticket_and_new_native_lifecycle() {
+        let fixture = DiskFixture::new();
+        let store = ScriptStore::open(&fixture.0).unwrap();
+        let first = store.create(PROJECT_ID, "original source").unwrap();
+        let mut pane = fixture.pane();
+        let old = pane.begin_generation(7, 9, "rewrite", true).unwrap();
+        let snapshot = old.recovery_snapshot();
+        pane.cancel_generation();
+        // Saving acknowledges the editor's current draft; it never replaces
+        // text on its own, because newer typing must survive a late save.
+        pane.set_text("independent newer draft".into());
+        let saved = append(&fixture.0, first, &pane.text);
+        pane.accept_saved(saved.clone());
+        let current_ticket = pane.editor_draft().unwrap().generation_ticket();
+        assert_ne!(current_ticket, *old.ticket());
+        assert!(!pane.dirty());
+        let restored = pane
+            .recover_generation(old.request_id(), 101, 23, &snapshot)
+            .unwrap();
+        assert_eq!(restored.ticket(), old.ticket());
+        assert_eq!(restored.prompt(), old.prompt());
+        assert_eq!(restored.session_id(), 101);
+        assert_eq!(restored.project_revision(), 23);
+        assert!(
+            !restored.is_active(),
+            "restoring data grants no component authority"
+        );
+        let retired = Arc::new(AtomicBool::new(false));
+        restored
+            .bind_component_revocation(Arc::clone(&retired))
+            .unwrap();
+        let candidate = persist_generated_candidate(&restored, "recovered candidate").unwrap();
+        assert_eq!(candidate.ticket, *old.ticket());
+        assert_eq!(pane.text, "independent newer draft");
+        assert_eq!(
+            pane.editor_draft().unwrap().generation_ticket(),
+            current_ticket
+        );
+        assert_eq!(store.load(PROJECT_ID).unwrap().unwrap(), saved);
+        assert!(!pane.candidate_matches(&candidate));
+        retired.store(true, Ordering::Release);
+        assert!(persist_generated_candidate(&restored, "late result").is_err());
+    }
+
+    #[test]
+    fn invalid_or_foreign_writing_recovery_never_claims_the_workspace() {
+        let fixture = DiskFixture::new();
+        let store = ScriptStore::open(&fixture.0).unwrap();
+        store.create(PROJECT_ID, "original").unwrap();
+        let mut pane = fixture.pane();
+        let old = pane.begin_generation(7, 9, "rewrite", true).unwrap();
+        let original = old.recovery_snapshot();
+        pane.cancel_generation();
+        assert!(
+            pane.recover_generation("another-task", 10, 11, &original)
+                .is_err()
+        );
+        for (field, value) in [
+            ("projectId", "foreign"),
+            ("documentId", "foreign"),
+            ("sha256", "not-a-hash"),
+        ] {
+            let mut snapshot = original.clone();
+            snapshot["ticket"][field] = serde_json::json!(value);
+            assert!(
+                pane.recover_generation(old.request_id(), 10, 11, &snapshot)
+                    .is_err()
+            );
+            assert!(pane.generation.is_none());
+        }
+        assert_eq!(pane.text, "original");
+        assert!(store.candidates(PROJECT_ID).unwrap().is_empty());
     }
 
     #[test]
@@ -1720,7 +2007,7 @@ mod tests {
         assert!(pane.accepted_draft.is_none());
         assert!(pane.viewed_candidate.is_none());
         assert_eq!(pane.candidates, vec![candidate]);
-        assert!(pane.generation_error.contains("已保留"));
+        assert_eq!(pane.generation_error, "script.stopped");
         assert_eq!(store.load(PROJECT_ID).unwrap(), Some(first));
     }
 
@@ -1761,7 +2048,10 @@ mod tests {
         pane.cancel_generation();
         pane.finish_candidate_write(&request, Err("文案存储写入失败".into()));
         assert!(!pane.is_busy());
-        assert!(pane.generation_error.contains("未确认保存完成"));
+        assert_eq!(
+            pane.generation_error,
+            "script.candidateSaveFailed\n文案存储写入失败"
+        );
         assert_eq!(pane.text, "原稿");
         assert_eq!(store.load(PROJECT_ID).unwrap(), Some(first));
         assert!(store.candidates(PROJECT_ID).unwrap().is_empty());

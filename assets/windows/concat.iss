@@ -30,25 +30,28 @@
 #endif
 
 [Setup]
-; One id for the life of the product, so an install over an older one is
-; an upgrade and not a second copy.
-AppId={{7B1E5C3A-3B9E-4F0B-9C6D-2F1D0C0A0C47}
-AppName=Concat
+; The existing BK product identity is preserved from the installed 0.2.12
+; release. The upstream Concat install has its own identity and is untouched.
+AppId={{A8DCE4CA-3E70-4263-9ED8-319D23851DC4}
+AppName=BK CUT
 AppVersion={#Version}
-AppVerName=Concat {#Version}
+AppVerName=BK CUT {#Version}
 AppPublisher=Concat contributors
-AppPublisherURL=https://github.com/jub0t/Concat
-AppSupportURL=https://github.com/jub0t/Concat/issues
-AppUpdatesURL=https://github.com/jub0t/Concat/releases
-DefaultDirName={autopf}\Concat
-DefaultGroupName=Concat
+AppPublisherURL=https://github.com/beyondchenlin/Concat
+AppSupportURL=https://github.com/beyondchenlin/Concat/issues
+AppUpdatesURL=https://github.com/beyondchenlin/Concat/releases
+DefaultDirName={localappdata}\Programs\BK-CAT
+DefaultGroupName=BK CUT
+UsePreviousAppDir=yes
+CloseApplications=no
+RestartApplications=no
 DisableProgramGroupPage=yes
 LicenseFile=..\..\LICENSE
 OutputDir={#Out}
-OutputBaseFilename=Concat-{#Version}-windows-{#Suffix}-setup
+OutputBaseFilename=BK CUT-{#Version}-windows-{#Suffix}-setup
 SetupIconFile=..\icons\concat.ico
 UninstallDisplayIcon={app}\concat.ico
-UninstallDisplayName=Concat
+UninstallDisplayName=BK CUT
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
@@ -100,6 +103,33 @@ Name: "indonesian"; MessagesFile: "languages\Indonesian.isl"
 Name: "urdu"; MessagesFile: "languages\Urdu.isl"
 Name: "vietnamese"; MessagesFile: "languages\Vietnamese.isl"
 
+[CustomMessages]
+english.SafeGraphics=safe graphics
+german.SafeGraphics=sichere Grafik
+spanish.SafeGraphics=gráficos seguros
+french.SafeGraphics=mode graphique sans échec
+italian.SafeGraphics=grafica sicura
+japanese.SafeGraphics=セーフグラフィックス
+brazilianportuguese.SafeGraphics=gráficos seguros
+russian.SafeGraphics=безопасная графика
+turkish.SafeGraphics=güvenli grafik
+chinesesimplified.SafeGraphics=安全图形模式
+chinesetraditional.SafeGraphics=安全圖形模式
+korean.SafeGraphics=안전 그래픽
+croatian.SafeGraphics=sigurna grafika
+farsi.SafeGraphics=گرافیک ایمن
+dutch.SafeGraphics=veilige grafische modus
+hebrew.SafeGraphics=מצב גרפי בטוח
+polish.SafeGraphics=bezpieczna grafika
+ukrainian.SafeGraphics=безпечна графіка
+arabic.SafeGraphics=وضع الرسومات الآمن
+thai.SafeGraphics=โหมดกราฟิกปลอดภัย
+bengali.SafeGraphics=নিরাপদ গ্রাফিক্স
+hindi.SafeGraphics=सुरक्षित ग्राफ़िक्स
+indonesian.SafeGraphics=grafis aman
+urdu.SafeGraphics=محفوظ گرافکس
+vietnamese.SafeGraphics=đồ họa an toàn
+
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
@@ -108,11 +138,25 @@ Source: "{#Stage}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs crea
 Source: "..\icons\concat.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\Concat"; Filename: "{app}\concat.exe"; IconFilename: "{app}\concat.ico"
+Name: "{autoprograms}\BK CUT"; Filename: "{app}\concat.exe"; IconFilename: "{app}\concat.ico"
 ; The way in when a graphics driver draws the window as coloured squares:
 ; it turns off Settings > General > Draw on the GPU, which that window hides.
-Name: "{autoprograms}\Concat (safe graphics)"; Filename: "{app}\concat.exe"; Parameters: "--software"; IconFilename: "{app}\concat.ico"
-Name: "{autodesktop}\Concat"; Filename: "{app}\concat.exe"; IconFilename: "{app}\concat.ico"; Tasks: desktopicon
+Name: "{autoprograms}\BK CUT ({cm:SafeGraphics})"; Filename: "{app}\concat.exe"; Parameters: "--software"; IconFilename: "{app}\concat.ico"
+Name: "{autodesktop}\BK CUT"; Filename: "{app}\concat.exe"; IconFilename: "{app}\concat.ico"; Tasks: desktopicon
+
+[InstallDelete]
+; Only the known previous BK product shortcuts are retired. User projects,
+; settings, credentials and the separately installed upstream app are retained.
+Type: files; Name: "{autoprograms}\BK CAT.lnk"; Check: IsBkProductUpgrade
+Type: files; Name: "{autoprograms}\BK CAT (safe graphics).lnk"; Check: IsBkProductUpgrade
+Type: files; Name: "{autodesktop}\BK CAT.lnk"; Check: IsBkProductUpgrade
+
+[Code]
+function IsBkProductUpgrade: Boolean;
+begin
+  Result := RegKeyExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{A8DCE4CA-3E70-4263-9ED8-319D23851DC4}_is1') or
+    RegKeyExists(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{A8DCE4CA-3E70-4263-9ED8-319D23851DC4}_is1');
+end;
 
 [Run]
-Filename: "{app}\concat.exe"; Description: "{cm:LaunchProgram,Concat}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\concat.exe"; Description: "{cm:LaunchProgram,BK CUT}"; Flags: nowait postinstall skipifsilent

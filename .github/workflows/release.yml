@@ -79,7 +79,7 @@ jobs:
           esac
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           # The bundles are named for the version, not the tag: v0.2.1 and
-          # v0.2.1-alpha.22 both produce Concat-0.2.1-* files.
+          # v0.2.1-alpha.22 both produce BK CUT-0.2.1-* files.
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   # The engine's tests and lints, on the tagged commit: a tag on a red
@@ -123,7 +123,7 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: bundles
-          pattern: Concat-*
+          pattern: "BK CUT-*"
           merge-multiple: true
 
       # The tree the release is cut from: the notes are read out of its
@@ -144,6 +144,7 @@ jobs:
           TAG: ${{ needs.check.outputs.tag }}
         run: |
           set -euo pipefail
+          python3 source/scripts/ci/test-release-assets.py
           python3 source/scripts/models.py release-manifest \
             --version "$VERSION" \
             --tag "$TAG" \
@@ -189,9 +190,25 @@ jobs:
       - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: ${{ needs.check.outputs.tag }}
-          name: Concat ${{ needs.check.outputs.tag }}
+          name: BK CUT ${{ needs.check.outputs.tag }}
           draft: true
           prerelease: ${{ contains(needs.check.outputs.tag, '-') }}
           body_path: ${{ runner.temp }}/notes.md
           fail_on_unmatched_files: true
           files: bundles/*
+
+      # GitHub can normalize filenames during upload. Keep the release a
+      # draft and fail if its actual assets differ from the product manifest.
+      - name: Verify uploaded product names and URLs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.check.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > "$RUNNER_TEMP/release.json"
+          release_id=$(python3 -c 'import json, sys; value = json.load(open(sys.argv[1])); identifier = value["id"]; assert type(identifier) is int and identifier > 0; print(identifier)' "$RUNNER_TEMP/release.json")
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?per_page=100" > "$RUNNER_TEMP/release-assets.json"
+          python3 source/scripts/models.py verify-release-assets \
+            --manifest bundles/manifest.json \
+            --release "$RUNNER_TEMP/release.json" \
+            --asset-pages "$RUNNER_TEMP/release-assets.json"

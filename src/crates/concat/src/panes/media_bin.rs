@@ -9,9 +9,10 @@
 //! the filter and the sort, and the card artwork. The peaks and
 //! filmstrips are not here: the lanes draw them too, so they stay on the
 //! controller's art store. An import probes on a worker and comes back
-//! as [`MediaMsg::Imported`], one batch of `AddMedia` commands.
+//! as [`MediaMsg::ImportCompleted`], with its request identity, then applies
+//! one batch of `AddMedia` commands when that request is still current.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
 use concat_host::media::{self, MediaSummary};
@@ -19,9 +20,10 @@ use concat_project::Command;
 use concat_project::model::{self, MediaItem, MediaOrigin, Project};
 
 use crate::format::{WAVE_FLOOR, wave_path};
-use crate::host::{probe_error, spawn_in_project};
+use crate::host::probe_error;
 use crate::i18n::{t, tf};
 use crate::panes::Msg;
+use crate::panes::import_progress::ImportJob;
 use crate::studio::Studio;
 use crate::ui::{MediaFilter, MediaItemData, MediaKind};
 
@@ -49,8 +51,14 @@ pub enum MediaMsg {
     RemoveSelected,
     /// Files picked, dropped or handed over by the platform.
     Import(Vec<PathBuf>),
-    /// The import's worker is done probing.
-    Imported(Vec<Result<MediaSummary, String>>),
+    CancelImport,
+    /// The current request's worker has finished probing.
+    ImportCompleted {
+        request: u64,
+        results: Vec<Result<MediaSummary, String>>,
+    },
+    /// A new phone project has validated its selection before creation.
+    InitialImported(Vec<Result<MediaSummary, String>>),
     /// Everything selected goes on the timeline at the playhead.
     AddSelectedAtPlayhead,
     /// The phone's Add: what was picked, in the order it was picked, onto
@@ -70,6 +78,10 @@ pub struct MediaBin {
     /// was dragged from.
     rows: HashMap<String, i32>,
     next_row: i32,
+    imports: VecDeque<(Vec<PathBuf>, Vec<String>)>,
+    importing: bool,
+    import_job: Option<ImportJob>,
+    import_epoch: u64,
     pub selected: HashSet<String>,
     /// The selection in the order it was made, oldest first: the order a
     /// phone's picks are numbered and laid down in, as every phone
@@ -93,6 +105,10 @@ impl Default for MediaBin {
         Self {
             rows: HashMap::new(),
             next_row: 1,
+            imports: VecDeque::new(),
+            importing: false,
+            import_job: None,
+            import_epoch: 0,
             selected: HashSet::new(),
             picked: Vec::new(),
             filter: MediaFilter::All,
@@ -164,68 +180,46 @@ impl MediaBin {
                 });
             }
             MediaMsg::Import(paths) => {
+                let failures = take_platform_import_failures(&paths);
                 if paths.is_empty() || studio.session.is_none() {
+                    if !failures.is_empty() {
+                        studio.notify(&failures.join("\n"), true);
+                    }
                     return;
                 }
-                spawn_in_project(
-                    move || {
-                        paths
-                            .iter()
-                            .map(|path| media::probe(&path.to_string_lossy()))
-                            .collect::<Vec<_>>()
-                    },
-                    |studio, _, _, results| studio.handle(Msg::Media(MediaMsg::Imported(results))),
-                );
+                let epoch = crate::host::project_epoch();
+                if self.import_epoch != epoch {
+                    self.cancel_import();
+                    self.import_epoch = epoch;
+                }
+                self.imports.push_back((paths, failures));
+                self.next_import();
             }
-            MediaMsg::Imported(results) => {
-                let mut commands = Vec::new();
-                let mut failures = Vec::new();
-                for result in results {
-                    match result {
-                        Ok(summary) => commands.push(Command::AddMedia {
-                            item: summary.to_new_media(),
-                        }),
-                        Err(error) => failures.push(error),
-                    }
+            MediaMsg::CancelImport => {
+                if self.import_job.is_some() || !self.imports.is_empty() {
+                    self.cancel_import();
+                    studio.notify(&t("import.cancelled"), false);
                 }
-                let added = commands.len();
-                if !commands.is_empty() {
-                    let before: HashSet<String> = studio
-                        .project()
-                        .media
-                        .iter()
-                        .map(|item| item.id.clone())
-                        .collect();
-                    studio.apply(Command::Batch { commands });
-                    // On a phone the files just brought in come back picked,
-                    // in the order the system's picker gave them, so Add is
-                    // the one tap left between the picker and the timeline.
-                    if crate::platform::phone() {
-                        let fresh: Vec<String> = studio
-                            .project()
-                            .media
-                            .iter()
-                            .filter(|item| !before.contains(&item.id))
-                            .map(|item| item.id.clone())
-                            .collect();
-                        if !fresh.is_empty() {
-                            self.selected = fresh.iter().cloned().collect();
-                            self.picked = fresh;
-                        }
-                    }
+            }
+            MediaMsg::ImportCompleted { request, results } => {
+                if self
+                    .import_job
+                    .as_ref()
+                    .is_none_or(|job| job.id() != request || job.cancelled())
+                {
+                    return;
                 }
-                if let Some(error) = failures.first() {
-                    studio.notify(&probe_error(error), true);
-                } else if added > 0 {
-                    studio.notify(
-                        &if added == 1 {
-                            t("mediaBin.importedOneFile")
-                        } else {
-                            tf("mediaBin.importedFiles", &[&added])
-                        },
-                        false,
-                    );
+                if let Some(job) = self.import_job.take() {
+                    job.finish();
                 }
+                self.importing = false;
+                self.finish_import(studio, results);
+                self.next_import();
+            }
+            MediaMsg::InitialImported(results) => {
+                self.import_epoch = crate::host::project_epoch();
+                self.cancel_import();
+                self.finish_import(studio, results);
             }
             MediaMsg::AddSelectedAtPlayhead => {
                 // Onto the timeline: the monitor goes back to it.
@@ -252,6 +246,109 @@ impl MediaBin {
                 self.selected.clear();
                 self.picked.clear();
             }
+        }
+    }
+
+    pub(crate) fn retire_imports(&mut self) {
+        self.cancel_import();
+    }
+
+    fn cancel_import(&mut self) {
+        if let Some(job) = self.import_job.take() {
+            job.cancel();
+        }
+        self.imports.clear();
+        self.importing = false;
+    }
+
+    /// Serial probing preserves selection and submission order. Cancellation
+    /// retires the native request immediately; a slow decoder may still unwind
+    /// on its worker, but its results can no longer reach a project.
+    fn next_import(&mut self) {
+        if self.importing {
+            return;
+        }
+        let Some((paths, failures)) = self.imports.pop_front() else {
+            return;
+        };
+        self.importing = true;
+        let epoch = self.import_epoch;
+        let job = ImportJob::new(paths.len());
+        let request = job.id();
+        self.import_job = Some(job.clone());
+        crate::host::spawn_long(
+            move || {
+                let mut results = Vec::with_capacity(paths.len() + failures.len());
+                for (index, path) in paths.iter().enumerate() {
+                    if job.cancelled() {
+                        return Vec::new();
+                    }
+                    results.push(media::probe(&path.to_string_lossy()));
+                    if job.cancelled() {
+                        return Vec::new();
+                    }
+                    job.progress(index + 1, paths.len());
+                }
+                results.extend(failures.into_iter().map(Err));
+                results
+            },
+            move |studio, _, _, results| {
+                if epoch == crate::host::project_epoch() {
+                    studio.handle(Msg::Media(MediaMsg::ImportCompleted { request, results }));
+                }
+            },
+        );
+    }
+
+    fn finish_import(&mut self, studio: &mut Studio, results: Vec<Result<MediaSummary, String>>) {
+        let mut items = Vec::new();
+        let mut failures = Vec::new();
+        for result in results {
+            match result {
+                Ok(summary) => items.push(summary.to_new_media()),
+                Err(error) => failures.push(probe_error(&error)),
+            }
+        }
+        let before: HashSet<String> = studio
+            .project()
+            .media
+            .iter()
+            .map(|item| item.id.clone())
+            .collect();
+        let added = if items.is_empty() {
+            0
+        } else {
+            match studio.import_media(items) {
+                Ok(count) => count,
+                Err(error) => {
+                    failures.push(error);
+                    0
+                }
+            }
+        };
+        if crate::platform::phone() && added > 0 {
+            let fresh: Vec<String> = studio
+                .project()
+                .media
+                .iter()
+                .filter(|item| !before.contains(&item.id))
+                .map(|item| item.id.clone())
+                .collect();
+            self.selected = fresh.iter().cloned().collect();
+            self.picked = fresh;
+        }
+        if !failures.is_empty() {
+            // Every failed item is retained in the native activity/toast text.
+            studio.notify(&failures.join("\n"), true);
+        } else if added > 0 {
+            studio.notify(
+                &if added == 1 {
+                    t("mediaBin.importedOneFile")
+                } else {
+                    tf("mediaBin.importedFiles", &[&added])
+                },
+                false,
+            );
         }
     }
 
@@ -539,6 +636,45 @@ fn media_kind_of(kind: model::MediaKind) -> MediaKind {
         model::MediaKind::Audio => MediaKind::Audio,
         model::MediaKind::Image => MediaKind::Image,
     }
+}
+
+/// The phone's copy failures belong to exactly the returned selection paths.
+/// They are consumed by the receiving picker callback, before probing, so a
+/// partial copy is reported together with its successful native imports.
+type PlatformImportFailures = (Vec<PathBuf>, Vec<(String, String)>);
+static PLATFORM_IMPORT_FAILURES: std::sync::Mutex<VecDeque<PlatformImportFailures>> =
+    std::sync::Mutex::new(VecDeque::new());
+
+#[cfg(target_os = "android")]
+pub fn record_platform_import_failures(paths: Vec<PathBuf>, failures: Vec<(String, String)>) {
+    if failures.is_empty() {
+        return;
+    }
+    let mut queue = PLATFORM_IMPORT_FAILURES
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    queue.push_back((paths, failures));
+}
+
+pub(crate) fn take_platform_import_failures(paths: &[PathBuf]) -> Vec<String> {
+    let mut queue = PLATFORM_IMPORT_FAILURES
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let Some(index) = queue
+        .iter()
+        .position(|(picked, _)| picked.as_slice() == paths)
+    else {
+        return Vec::new();
+    };
+    queue
+        .remove(index)
+        .map(|(_, failures)| {
+            failures
+                .into_iter()
+                .map(|(name, reason)| tf("mediaBin.copyFailed", &[&name, &reason]))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

@@ -5,6 +5,40 @@
 use super::*;
 
 impl Studio {
+    /// A native import batch preserves chooser order and commits its first
+    /// visual match with material insertion in the same undo transaction.
+    pub(crate) fn import_media(
+        &mut self,
+        items: Vec<concat_project::commands::NewMedia>,
+    ) -> Result<usize, String> {
+        self.end_burst();
+        self.flush_commit();
+        self.echo = None;
+        self.last_commit = None;
+        let locked: HashSet<String> = self
+            .lanes
+            .lane_view
+            .iter()
+            .filter(|(_, view)| view.locked)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let session = self
+            .session
+            .as_mut()
+            .ok_or_else(|| t("agent.openProject"))?;
+        let before_revision = session.revision();
+        let before_len = session.project().media.len();
+        let before_color = session.video().color_space;
+        let view = session.import_media(items, &locked)?;
+        let added = view.project.media.len().saturating_sub(before_len);
+        let changed = view.revision != before_revision;
+        let after_color = session.video().color_space;
+        if changed {
+            self.after_change();
+            self.tell_of_hdr(before_color, after_color);
+        }
+        Ok(added)
+    }
     // ── reading the edit ──
 
     /// The project as the window should draw it: the echo while a gesture
@@ -553,6 +587,10 @@ impl Studio {
     }
 
     fn schedule_autosave(&mut self) {
+        #[cfg(feature = "bk-cat-native-probe")]
+        if crate::agent::probe::crash::hold_autosave() {
+            return;
+        }
         // A second and a half after the last change, not after the first:
         // a drag that commits ten edits saves once.
         self.autosave.start(
@@ -580,6 +618,11 @@ impl Studio {
             return;
         };
         self.autosave.stop();
+        if announce && let Err(error) = session.preserve_draft() {
+            self.dirty = true;
+            self.notify(&tf("studio.couldNotSave", &[&error]), true);
+            return;
+        }
         let snapshot = match crate::agent::project_save::NativeSnapshot::capture(session) {
             Ok(snapshot) => snapshot,
             Err(error) => {

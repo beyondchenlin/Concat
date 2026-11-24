@@ -6,7 +6,10 @@
 //! digest, and an atomic file replacement. The native settings integration
 //! must retire the old runtime before changing a configuration or credential.
 
-use std::collections::BTreeSet;
+pub mod catalogue;
+pub mod providers;
+
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
@@ -18,8 +21,8 @@ use url::{Host, Url};
 
 /// Dedicated non-secret metadata file, separate from preferences and Pi.
 pub const CONFIGURATION_FILE: &str = "model-channels.json";
-/// The only format understood here; other versions are never migrated.
-pub const CONFIGURATION_SCHEMA: u32 = 1;
+/// Version two adds provider/region and credential revision while preserving identities.
+pub const CONFIGURATION_SCHEMA: u32 = 2;
 const LOCK_FILE: &str = ".model-channels.lock";
 const MAX_DOCUMENT_BYTES: usize = 128 * 1024;
 const MAX_CHANNELS: usize = 32;
@@ -84,6 +87,9 @@ pub enum ModelProtocol {
     /// The pinned original adapter's messages protocol.
     #[serde(rename = "anthropic-messages")]
     AnthropicMessages,
+    /// The pinned original Google Generative AI adapter.
+    #[serde(rename = "google-generative-ai")]
+    GoogleGenerativeAi,
 }
 
 impl ModelProtocol {
@@ -93,6 +99,7 @@ impl ModelProtocol {
             Self::OpenAiCompletions => "openai-completions",
             Self::OpenAiResponses => "openai-responses",
             Self::AnthropicMessages => "anthropic-messages",
+            Self::GoogleGenerativeAi => "google-generative-ai",
         }
     }
 
@@ -102,6 +109,7 @@ impl ModelProtocol {
             "openai-completions" => Ok(Self::OpenAiCompletions),
             "openai-responses" => Ok(Self::OpenAiResponses),
             "anthropic-messages" => Ok(Self::AnthropicMessages),
+            "google-generative-ai" => Ok(Self::GoogleGenerativeAi),
             _ => Err(ConfigurationError::UnsupportedProtocol),
         }
     }
@@ -130,6 +138,21 @@ pub struct ChannelDraft {
 pub struct ModelChannel {
     /// Stable native identity retained when the user edits this channel.
     pub id: ChannelId,
+    /// Provider preset; legacy channels migrate to custom without guessing.
+    #[serde(default)]
+    pub provider_id: String,
+    /// Product/region identifier, isolated per connection.
+    #[serde(default)]
+    pub region: String,
+    /// Changes only when a secure credential is changed or removed.
+    #[serde(default)]
+    pub credential_version: u64,
+    /// Explicitly retained models; directory refresh never removes these references.
+    #[serde(default)]
+    pub manual_models: Vec<String>,
+    /// Explicit conservative capacities entered by the user, never a verified catalogue fact.
+    #[serde(default)]
+    pub context_overrides: BTreeMap<String, u32>,
     /// Latest global configuration version that changed this channel or its key.
     pub version: u64,
     /// Non-secret user-visible name.
@@ -205,6 +228,26 @@ impl ConfigurationSnapshot {
         &self.document.channels
     }
 
+    /// All connections, including ones awaiting a model selection.
+    pub fn connections(&self) -> &[ModelChannel] {
+        self.channels()
+    }
+
+    /// Resolve a native session selection without changing the application default.
+    pub fn selected_model(
+        &self,
+        id: &ChannelId,
+        model: &str,
+    ) -> Result<ModelChannel, ConfigurationError> {
+        let mut channel = self
+            .channel(id)
+            .cloned()
+            .ok_or(ConfigurationError::MissingChannel)?;
+        validate_model_id(model)?;
+        channel.model = model.to_owned();
+        Ok(channel)
+    }
+
     /// Find a channel by its stable native identity.
     pub fn channel(&self, id: &ChannelId) -> Option<&ModelChannel> {
         self.channels().iter().find(|channel| &channel.id == id)
@@ -216,6 +259,7 @@ impl ConfigurationSnapshot {
             .active_channel
             .as_ref()
             .and_then(|id| self.channel(id))
+            .filter(|channel| !channel.model.is_empty())
     }
 }
 
@@ -258,27 +302,33 @@ pub enum ConfigurationError {
     RandomUnavailable,
 }
 
+impl ConfigurationError {
+    /// Stable failure identity; the native interface chooses its display language.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::InvalidIdentity => "modelSettings.invalidIdentity",
+            Self::InvalidLabel => "modelSettings.invalidLabel",
+            Self::UnsupportedProtocol => "modelSettings.unsupportedProtocol",
+            Self::InvalidAddress => "modelSettings.invalidAddress",
+            Self::InvalidModel => "modelSettings.invalidModel",
+            Self::InvalidTimeout => "modelSettings.invalidTimeout",
+            Self::InvalidOutputLimit => "modelSettings.invalidOutputLimit",
+            Self::TooManyChannels => "modelSettings.tooManyChannels",
+            Self::InvalidDocument => "modelSettings.invalidDocument",
+            Self::UnsupportedSchema => "modelSettings.unsupportedSchema",
+            Self::MissingChannel => "modelSettings.missingChannel",
+            Self::StaleConfiguration => "modelSettings.staleConfiguration",
+            Self::VersionExhausted => "modelSettings.versionExhausted",
+            Self::Busy => "modelSettings.busy",
+            Self::StorageUnavailable => "modelSettings.storageUnavailable",
+            Self::CommitUnconfirmed => "modelSettings.commitUnconfirmed",
+            Self::RandomUnavailable => "modelSettings.randomUnavailable",
+        }
+    }
+}
 impl fmt::Display for ConfigurationError {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        out.write_str(match self {
-            Self::InvalidIdentity => "渠道身份无效，请重新读取设置。",
-            Self::InvalidLabel => "渠道名称须为1至80个字符，不能包含控制字符。",
-            Self::UnsupportedProtocol => "请选择当前支持的明确模型协议。",
-            Self::InvalidAddress => "服务基址无效：请使用安全网页地址，且不包含用户名、密码、查询参数或片段；普通网页协议只允许本机回环地址。",
-            Self::InvalidModel => "请填写1至256个可见字符的模型标识，不能包含空白或控制字符。",
-            Self::InvalidTimeout => "请求超时须在1至600秒之间。",
-            Self::InvalidOutputLimit => "单次输出上限须在1至1000000个词元之间。",
-            Self::TooManyChannels => "最多可保存32个模型渠道。",
-            Self::InvalidDocument => "模型设置文件无效，已拒绝覆盖；请先检查原文件。",
-            Self::UnsupportedSchema => "模型设置版本不受支持，未迁移或覆盖原文件。",
-            Self::MissingChannel => "所选渠道已不存在，请重新读取设置。",
-            Self::StaleConfiguration => "模型设置已变化，旧操作已拒绝；请重新读取当前设置。",
-            Self::VersionExhausted => "模型设置版本已达上限，未保存。",
-            Self::Busy => "另一项设置写入正在进行，请稍后重新读取。",
-            Self::StorageUnavailable => "模型设置存储不可用，未确认保存。",
-            Self::CommitUnconfirmed => "模型设置替换后未能确认落盘，请重新读取核对；旧运行资格已撤销。",
-            Self::RandomUnavailable => "无法生成安全的渠道身份，未创建渠道。",
-        })
+        out.write_str(self.code())
     }
 }
 
@@ -348,6 +398,32 @@ pub fn validate_draft(mut draft: ChannelDraft) -> Result<ChannelDraft, Configura
     Ok(draft)
 }
 
+/// Validate an exact model identifier without guessing its provider or capacity.
+pub fn validate_model_id(model: &str) -> Result<(), ConfigurationError> {
+    if model.is_empty()
+        || model.chars().count() > 256
+        || model.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(ConfigurationError::InvalidModel);
+    }
+    Ok(())
+}
+
+/// Validate a connection which may still await its first model selection.
+pub fn validate_connection_draft(
+    mut draft: ChannelDraft,
+) -> Result<ChannelDraft, ConfigurationError> {
+    let waiting = draft.model.is_empty();
+    if waiting {
+        draft.model = "awaiting-model-selection".into();
+    }
+    let mut validated = validate_draft(draft)?;
+    if waiting {
+        validated.model.clear();
+    }
+    Ok(validated)
+}
+
 fn validate_document(document: &Document) -> Result<(), ConfigurationError> {
     if document.schema_version != CONFIGURATION_SCHEMA {
         return Err(ConfigurationError::UnsupportedSchema);
@@ -360,7 +436,22 @@ fn validate_document(document: &Document) -> Result<(), ConfigurationError> {
         if !identities.insert(&channel.id)
             || channel.version == 0
             || channel.version > document.configuration_version
-            || validate_draft(channel.draft())? != channel.draft()
+            || validate_connection_draft(channel.draft())? != channel.draft()
+            || providers::preset(&channel.provider_id).is_none()
+            || channel.region.is_empty()
+            || channel.region.len() > 80
+            || channel.region.chars().any(char::is_control)
+            || channel.credential_version == 0
+            || channel.credential_version > channel.version
+            || channel.manual_models.len() > 1024
+            || channel
+                .manual_models
+                .iter()
+                .any(|id| validate_model_id(id).is_err())
+            || channel.context_overrides.len() > 1024
+            || channel.context_overrides.iter().any(|(id, value)| {
+                validate_model_id(id).is_err() || !(1..=100_000_000).contains(value)
+            })
         {
             return Err(ConfigurationError::InvalidDocument);
         }
@@ -418,13 +509,56 @@ impl ConfigurationStore {
         if bytes.len() > MAX_DOCUMENT_BYTES {
             return Err(ConfigurationError::InvalidDocument);
         }
-        let document = serde_json::from_slice::<Document>(&bytes)
+        let mut document = serde_json::from_slice::<Document>(&bytes)
             .map_err(|_| ConfigurationError::InvalidDocument)?;
+        if document.schema_version == 1 {
+            // Pure projection on read: the first successful atomic mutation writes v2.
+            // Each legacy id and credential scope survives exactly; no host grouping.
+            document.schema_version = CONFIGURATION_SCHEMA;
+            for channel in &mut document.channels {
+                channel.provider_id = "custom".into();
+                channel.region = "custom".into();
+                channel.credential_version = channel.version;
+                if !channel.model.is_empty() {
+                    channel.manual_models = vec![channel.model.clone()];
+                }
+            }
+        }
         validate_document(&document)?;
         Ok(ConfigurationSnapshot {
             document,
             digest: Sha256::digest(bytes).into(),
         })
+    }
+
+    /// Only connection configuration/credential changes revoke its tasks. Defaults and directory freshness do not.
+    pub fn assert_connection_current(
+        &self,
+        expected: &ModelChannel,
+    ) -> Result<(), ConfigurationError> {
+        let current = self.load()?;
+        let actual = current
+            .channel(&expected.id)
+            .ok_or(ConfigurationError::MissingChannel)?;
+        if actual.version != expected.version
+            || actual.endpoint != expected.endpoint
+            || actual.protocol != expected.protocol
+            || actual.credential_version != expected.credential_version
+            || actual.region != expected.region
+            || actual.provider_id != expected.provider_id
+            || actual.label != expected.label
+            || actual.request_timeout_ms != expected.request_timeout_ms
+            || actual.max_output_tokens != expected.max_output_tokens
+            || actual.context_overrides != expected.context_overrides
+        {
+            return Err(ConfigurationError::StaleConfiguration);
+        }
+        Ok(())
+    }
+
+    /// Non-secret catalogue cache under the product settings directory.
+    pub fn directory(&self) -> &Path {
+        &self.directory
     }
 
     /// Re-read and reject both a changed revision and same-version content edits.
@@ -447,6 +581,35 @@ impl ConfigurationStore {
         draft: ChannelDraft,
     ) -> Result<ConfigurationSnapshot, ConfigurationError> {
         let draft = validate_draft(draft)?;
+        let existing = id.and_then(|id| expected.channel(id));
+        self.save_connection(
+            expected,
+            id,
+            draft,
+            existing.map_or("custom", |c| c.provider_id.as_str()),
+            existing.map_or("custom", |c| c.region.as_str()),
+        )
+    }
+
+    /// Save a provider connection; selecting a model may follow discovery.
+    pub fn save_connection(
+        &self,
+        expected: &ConfigurationSnapshot,
+        id: Option<&ChannelId>,
+        draft: ChannelDraft,
+        provider_id: &str,
+        region: &str,
+    ) -> Result<ConfigurationSnapshot, ConfigurationError> {
+        let draft = validate_connection_draft(draft)?;
+        let preset =
+            providers::preset(provider_id).ok_or(ConfigurationError::UnsupportedProtocol)?;
+        if region != preset.region
+            || (provider_id != "custom"
+                && (draft.protocol != preset.protocol
+                    || draft.endpoint.trim_end_matches('/') != preset.endpoint))
+        {
+            return Err(ConfigurationError::InvalidAddress);
+        }
         self.mutate(expected, |document, version| {
             let id = match id {
                 Some(id) => {
@@ -462,9 +625,40 @@ impl ConfigurationStore {
                     ChannelId::generate()?
                 }
             };
+            let previous = document.channels.iter().find(|channel| channel.id == id);
+            let credential_version = previous.map_or(version, |channel| channel.credential_version);
+            let connection_version = previous
+                .filter(|channel| {
+                    channel.provider_id == provider_id
+                        && channel.region == region
+                        && channel.label == draft.label
+                        && channel.protocol == draft.protocol
+                        && channel.endpoint == draft.endpoint
+                        && channel.request_timeout_ms == draft.request_timeout_ms
+                        && channel.max_output_tokens == draft.max_output_tokens
+                })
+                .map_or(version, |channel| channel.version);
+            let mut manual_models = previous
+                .filter(|channel| {
+                    channel.endpoint == draft.endpoint && channel.protocol == draft.protocol
+                })
+                .map_or_else(Vec::new, |channel| channel.manual_models.clone());
+            if !draft.model.is_empty() && !manual_models.contains(&draft.model) {
+                manual_models.push(draft.model.clone());
+            }
+            let context_overrides = previous
+                .filter(|channel| {
+                    channel.endpoint == draft.endpoint && channel.protocol == draft.protocol
+                })
+                .map_or_else(BTreeMap::new, |channel| channel.context_overrides.clone());
             let channel = ModelChannel {
                 id: id.clone(),
-                version,
+                provider_id: provider_id.to_owned(),
+                region: region.to_owned(),
+                credential_version,
+                manual_models,
+                context_overrides,
+                version: connection_version,
                 label: draft.label,
                 protocol: draft.protocol,
                 endpoint: draft.endpoint,
@@ -496,6 +690,64 @@ impl ConfigurationStore {
                 return Err(ConfigurationError::MissingChannel);
             }
             document.active_channel = id.cloned();
+            Ok(())
+        })
+    }
+
+    /// Change only the application default model. Its connection version and
+    /// running-task authorizations stay unchanged; tasks capture their model.
+    pub fn select_model(
+        &self,
+        expected: &ConfigurationSnapshot,
+        id: &ChannelId,
+        model: &str,
+    ) -> Result<ConfigurationSnapshot, ConfigurationError> {
+        validate_model_id(model)?;
+        self.mutate(expected, |document, _| {
+            let channel = document
+                .channels
+                .iter_mut()
+                .find(|channel| &channel.id == id)
+                .ok_or(ConfigurationError::MissingChannel)?;
+            channel.model = model.to_owned();
+            if !channel.manual_models.iter().any(|saved| saved == model) {
+                channel.manual_models.push(model.to_owned());
+            }
+            document.active_channel = Some(id.clone());
+            Ok(())
+        })
+    }
+
+    /// Explicit, model-scoped conservative input for services without capacity metadata.
+    pub fn set_context_override(
+        &self,
+        expected: &ConfigurationSnapshot,
+        id: &ChannelId,
+        model: &str,
+        capacity: Option<u32>,
+    ) -> Result<ConfigurationSnapshot, ConfigurationError> {
+        validate_model_id(model)?;
+        if capacity.is_some_and(|value| !(1..=100_000_000).contains(&value)) {
+            return Err(ConfigurationError::InvalidOutputLimit);
+        }
+        self.mutate(expected, |document, version| {
+            let channel = document
+                .channels
+                .iter_mut()
+                .find(|channel| &channel.id == id)
+                .ok_or(ConfigurationError::MissingChannel)?;
+            match capacity {
+                Some(value) => {
+                    channel.context_overrides.insert(model.to_owned(), value);
+                }
+                None => {
+                    channel.context_overrides.remove(model);
+                }
+            }
+            channel.version = version;
+            if !channel.manual_models.iter().any(|saved| saved == model) {
+                channel.manual_models.push(model.to_owned());
+            }
             Ok(())
         })
     }
@@ -534,8 +786,75 @@ impl ConfigurationStore {
                 .find(|channel| &channel.id == id)
                 .ok_or(ConfigurationError::MissingChannel)?;
             channel.version = version;
+            channel.credential_version = version;
             Ok(())
         })
+    }
+
+    /// Serialize a vault operation with its version invalidation. Even a failed
+    /// vault write leaves the old version revoked; no secret enters this store.
+    pub fn credential_transaction<T>(
+        &self,
+        expected: &ConfigurationSnapshot,
+        id: &ChannelId,
+        operation: impl FnOnce(&ModelChannel) -> T,
+    ) -> Result<(ConfigurationSnapshot, T), ConfigurationError> {
+        fs::create_dir_all(&self.directory).map_err(|_| ConfigurationError::StorageUnavailable)?;
+        let _lock = self.lock()?;
+        let next = self.mutate_locked(expected, |document, version| {
+            let channel = document
+                .channels
+                .iter_mut()
+                .find(|channel| &channel.id == id)
+                .ok_or(ConfigurationError::MissingChannel)?;
+            channel.version = version;
+            channel.credential_version = version;
+            Ok(())
+        })?;
+        let result = operation(next.channel(id).ok_or(ConfigurationError::MissingChannel)?);
+        self.assert_current(&next)?;
+        Ok((next, result))
+    }
+
+    /// Revoke a connection before touching its secure credential, keep the
+    /// configuration lock through deletion/readback, then remove the connection.
+    /// A failed vault operation retains the revoked connection for an explicit
+    /// retry; another instance cannot write a replacement key in the middle.
+    pub fn delete_with_credential<E>(
+        &self,
+        expected: &ConfigurationSnapshot,
+        id: &ChannelId,
+        delete_credential: impl FnOnce(&ModelChannel) -> Result<(), E>,
+    ) -> Result<(ConfigurationSnapshot, Result<(), E>), ConfigurationError> {
+        fs::create_dir_all(&self.directory).map_err(|_| ConfigurationError::StorageUnavailable)?;
+        let _lock = self.lock()?;
+        let revoked = self.mutate_locked(expected, |document, version| {
+            let channel = document
+                .channels
+                .iter_mut()
+                .find(|channel| &channel.id == id)
+                .ok_or(ConfigurationError::MissingChannel)?;
+            channel.version = version;
+            channel.credential_version = version;
+            Ok(())
+        })?;
+        let outcome = delete_credential(
+            revoked
+                .channel(id)
+                .ok_or(ConfigurationError::MissingChannel)?,
+        );
+        self.assert_current(&revoked)?;
+        if outcome.is_err() {
+            return Ok((revoked, outcome));
+        }
+        let next = self.mutate_locked(&revoked, |document, _| {
+            document.channels.retain(|channel| &channel.id != id);
+            if document.active_channel.as_ref() == Some(id) {
+                document.active_channel = None;
+            }
+            Ok(())
+        })?;
+        Ok((next, outcome))
     }
 
     fn mutate(
@@ -545,6 +864,14 @@ impl ConfigurationStore {
     ) -> Result<ConfigurationSnapshot, ConfigurationError> {
         fs::create_dir_all(&self.directory).map_err(|_| ConfigurationError::StorageUnavailable)?;
         let _lock = self.lock()?;
+        self.mutate_locked(expected, change)
+    }
+
+    fn mutate_locked(
+        &self,
+        expected: &ConfigurationSnapshot,
+        change: impl FnOnce(&mut Document, u64) -> Result<(), ConfigurationError>,
+    ) -> Result<ConfigurationSnapshot, ConfigurationError> {
         let current = self.load()?;
         if &current != expected {
             return Err(ConfigurationError::StaleConfiguration);
@@ -557,6 +884,35 @@ impl ConfigurationStore {
         change(&mut document, version)?;
         document.configuration_version = version;
         validate_document(&document)?;
+        // Retain the exact v1 bytes before the first replacement. No secrets live here.
+        let path = self.directory.join(CONFIGURATION_FILE);
+        if let Ok(bytes) = fs::read(&path)
+            && serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .and_then(|v| v.get("schema_version").and_then(serde_json::Value::as_u64))
+                == Some(1)
+        {
+            let backup = self.directory.join("model-channels.v1.backup.json");
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&backup)
+            {
+                Ok(mut file) => {
+                    file.write_all(&bytes)
+                        .and_then(|()| file.sync_all())
+                        .map_err(|_| ConfigurationError::StorageUnavailable)?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if fs::read(backup).map_err(|_| ConfigurationError::StorageUnavailable)?
+                        != bytes
+                    {
+                        return Err(ConfigurationError::StaleConfiguration);
+                    }
+                }
+                Err(_) => return Err(ConfigurationError::StorageUnavailable),
+            }
+        }
         self.commit_document(&document, || Ok(()))
     }
 

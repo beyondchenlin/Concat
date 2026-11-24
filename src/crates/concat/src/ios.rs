@@ -98,7 +98,7 @@ thread_local! {
 /// Installs the iPhone's picker and its export publisher into the window's
 /// crate. Before the window runs; see `platform::install_file_picker`.
 pub fn install() {
-    crate::platform::install_file_picker(Box::new(|kinds, on_picked| {
+    crate::platform::install_file_picker(Box::new(|kinds, _transfer, on_picked| {
         let previous = PENDING
             .lock()
             .map(|mut slot| slot.replace(on_picked))

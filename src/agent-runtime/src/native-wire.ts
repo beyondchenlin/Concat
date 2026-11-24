@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { RuntimeRefused } from "./gate.ts";
+import { nativeResumeInput } from "./commands.ts";
 import { nativeSqlitePort } from "./sqlite-port.ts";
 import { nativeNetworkFetch } from "./native-network.ts";
 import type { NativePorts, OwnerLease, RecoverySnapshot, ExecutionGrant } from "./ports.ts";
@@ -49,7 +50,7 @@ export class NativeWireClient {
         || this.#revoked.has(JSON.stringify([owner.handle, owner.generation]))
         || typeof operationId !== "string" || !/^[1-9][0-9]*$/.test(operationId) || operationId.length > 20) return;
       if (this.#savedAcks.has(operationId)) return;
-      if (this.#savedAcks.size >= 65536) { this.#savedFailure("native save acknowledgement limit reached"); return; }
+      // Keep exact lifetime deduplication without a product limit on total saves.
       this.#savedAcks.add(operationId);
       // A native save request is not a save acknowledgement. Only this actual
       // native Written notification reaches here, and only receipt by this
@@ -193,8 +194,13 @@ export function messageNativePorts(wire: NativeWireClient): NativePorts {
       async discardVerified(lease, signal) {
         const result = record(await bound(lease, "recovery.discardVerified", {}, signal));
         if (result.verified !== true || Object.keys(result).length !== 1) {
-          throw new RuntimeRefused("原生未确认历史任务已全部结束，会话未恢复就绪。");
+          throw new RuntimeRefused("agent.errorRecoveryPending");
         }
+      },
+      async resumeVerified(lease, signal) {
+        const result = await bound(lease, "recovery.resumeVerified", {}, signal);
+        signal.throwIfAborted();
+        return nativeResumeInput(result);
       },
     },
     sqlite: nativeSqlitePort({ send: (frame, signal) => wire.call({ ...frame }, signal) }),

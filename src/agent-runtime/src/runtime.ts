@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { ExecutionGate, RuntimeRefused } from "./gate.ts";
+import { nativeRecoveryScope, nativeResumeInput, assertRecoveryIdentity, type NativeResumeAccepted, type NativeRecoveryReviewed } from "./commands.ts";
 import type {
   NativePorts, OwnerLease, PiEngine, PiEngineFactory, RecoveryApproval,
   RecoverySnapshot, SchedulingAction, ConversationEvent, ConversationObservation,
@@ -8,7 +9,7 @@ import type {
 
 const ACTIONS = new Set<SchedulingAction>([
   "createConversation", "submit", "waitSubmission", "abortSubmission", "resume", "abortTask",
-  "signal", "waitForTask", "waitForIdle", "compact", "abortConversation", "resetConversation", "nativeSubmit", "nativeWait",
+  "signal", "waitForTask", "waitForIdle", "compact", "abortConversation", "resetConversation", "nativeSubmit", "nativeResume", "nativeWait",
 ]);
 
 /**
@@ -30,6 +31,7 @@ export class AgentRuntime {
   #unsubscribe: (() => void) | undefined;
   #confirming = false;
   #nativeConfirmed = false;
+  #reviewedOnly = false;
   readonly #observations = new Set<() => void>();
 
   constructor(
@@ -86,8 +88,8 @@ export class AgentRuntime {
     return { ...this.#snapshot };
   }
 
-  confirmRecovery(approval: RecoveryApproval): Promise<void> {
-    if (this.phase !== "recovery" || this.#confirming) {
+  confirmRecovery(approval: RecoveryApproval): Promise<void | NativeResumeAccepted | NativeRecoveryReviewed> {
+    if (this.phase !== "recovery" || this.#confirming || this.#reviewedOnly) {
       return Promise.reject(new RuntimeRefused("recovery is not awaiting a decision"));
     }
     this.#confirming = true;
@@ -108,29 +110,47 @@ export class AgentRuntime {
     try { this.#onStartupFailure?.(stage, error); } catch { /* Reporting cannot grant authority or delay revocation. */ }
   }
 
-  async #activate(approval: RecoveryApproval): Promise<void> {
+  async #activate(approval: RecoveryApproval): Promise<void | NativeResumeAccepted | NativeRecoveryReviewed> {
     const lease = this.#requireLease();
     this.#gate.assertOwned(lease);
     const snapshot = this.#snapshot;
     if (!snapshot || approval.snapshotId !== snapshot.snapshotId || !approval.approvalId
-      || !["continue", "discard"].includes(approval.decision)) {
+      || !["continue", "discard", "review"].includes(approval.decision)) {
       throw new RuntimeRefused("the native approval must match the last reconciliation snapshot");
     }
     const issued = await this.#ports.ownership.confirm(lease, snapshot, approval);
     this.#nativeConfirmed = true;
     this.#gate.assertOwned(lease);
     if (issued.snapshotId !== snapshot.snapshotId) throw new RuntimeRefused("native grant has a stale snapshot");
+    if (issued.reviewedOnly === true) {
+      if (approval.decision !== "review" || !snapshot.hasInterruptedWork || issued.allowInitializeEmptyStore
+        || issued.networkPermit !== undefined || issued.discardConversationIds !== undefined || issued.resumeTask !== undefined
+        || issued.reconciledOperations !== true || !Number.isSafeInteger(issued.remainingOtherOperations)
+        || Number(issued.remainingOtherOperations) < 1) throw new RuntimeRefused("agent.errorRecoveryScope");
+      this.#reviewedOnly = true;
+      // Native deliberately granted no runtime/storage/network authority.
+      // The browser reports this result then closes the confirmed owner.
+      return {reviewed:true,remainingOtherOperations:Number(issued.remainingOtherOperations)};
+    }
+    if (approval.decision === "review") throw new RuntimeRefused("agent.errorRecoveryScope");
     const ids = issued.discardConversationIds;
-    if (ids !== undefined && (!Array.isArray(ids) || ids.length === 0 || ids.length > 65536
+    const resumed = issued.resumeTask === undefined ? undefined : nativeRecoveryScope(issued.resumeTask);
+    if (ids !== undefined && (!Array.isArray(ids) || ids.length === 0
       || new Set(ids).size !== ids.length || Array.from(ids).some((id) => !Number.isSafeInteger(id) || id < 0)
       || approval.decision !== "discard" || !snapshot.hasInterruptedWork || snapshot.schemaVersion === "empty"
-      || issued.allowInitializeEmptyStore || issued.networkPermit !== undefined)) {
-      throw new RuntimeRefused("原生放弃授权不完整或同时包含调用许可，未打开会话存储。");
+      || issued.allowInitializeEmptyStore || issued.networkPermit !== undefined || resumed !== undefined)) {
+      throw new RuntimeRefused("agent.errorRecoveryScope");
     }
-    if (snapshot.hasInterruptedWork && (approval.decision !== "discard" || ids === undefined)) {
-      throw new RuntimeRefused("未完成任务需要当前工程的原生明确放弃授权，未自动恢复或清除。");
+    if (resumed !== undefined && (approval.decision !== "continue" || !snapshot.hasInterruptedWork
+      || snapshot.schemaVersion === "empty" || issued.allowInitializeEmptyStore || issued.networkPermit !== undefined)) {
+      throw new RuntimeRefused("agent.errorRecoveryScope");
     }
-    const grant = { ...issued, ...(ids === undefined ? {} : { discardConversationIds: Object.freeze([...ids]) }) };
+    if (snapshot.hasInterruptedWork && ids === undefined && resumed === undefined
+      && !(issued.reconciledOperations === true && snapshot.hasUnfinishedPi === false && approval.decision === "continue")) {
+      throw new RuntimeRefused("agent.errorRecoverySnapshotMissing");
+    }
+    const grant = { ...issued, ...(ids === undefined ? {} : { discardConversationIds: Object.freeze([...ids]) }),
+      ...(resumed === undefined ? {} : {resumeTask:resumed}) };
     this.#gate.activating(lease, grant);
     const engine = await this.#factory.open({ lease, grant, ports: this.#ports, gate: this.#gate });
     this.#engine = engine;
@@ -138,6 +158,14 @@ export class AgentRuntime {
       this.#gate.assertStorageWrite(lease);
       await this.#ports.recovery.discardVerified(lease, this.#gate.signal);
       this.#gate.assertStorageWrite(lease);
+    }
+    if (resumed !== undefined) {
+      if (!this.#ports.recovery.resumeVerified) throw new RuntimeRefused("agent.errorRecoveryScope");
+      const admitted = nativeResumeInput(await this.#ports.recovery.resumeVerified(lease, this.#gate.signal));
+      this.#gate.assertStorageWrite(lease);
+      assertRecoveryIdentity(resumed, admitted);
+      this.#gate.ready(lease);
+      return await engine.run("nativeResume", admitted) as NativeResumeAccepted;
     }
     this.#gate.ready(lease);
     // Ordinary open never resumes. A discard grant is consumed inside the
@@ -220,6 +248,7 @@ export class AgentRuntime {
 function validateSnapshot(snapshot: RecoverySnapshot): RecoverySnapshot {
   if (!snapshot.snapshotId || !snapshot.projectSession || !snapshot.projectRevision || !snapshot.sessionRevision
     || typeof snapshot.hasInterruptedWork !== "boolean"
+    || (snapshot.hasUnfinishedPi !== undefined && typeof snapshot.hasUnfinishedPi !== "boolean")
     || !(snapshot.schemaVersion === "empty" || (Number.isSafeInteger(snapshot.schemaVersion) && snapshot.schemaVersion >= 0))) {
     throw new RuntimeRefused("native recovery snapshot is incomplete");
   }

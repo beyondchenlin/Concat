@@ -97,13 +97,13 @@ fn recovery_location_read_refuses_copies_and_allows_moves_without_rewriting() {
     with_project_location(&root.0, FIRST, &original, read_identity, || Ok(())).unwrap();
     let before = fs::read(root.record("json")).unwrap();
     let ran = AtomicBool::new(false);
-    assert!(
+    assert_eq!(
         with_read_only_project_location(&root.0, FIRST, &copy, read_identity, || {
             ran.store(true, Ordering::SeqCst);
             Ok(())
         })
-        .unwrap_err()
-        .contains("副本")
+        .unwrap_err(),
+        "agent.errorProjectIdentity"
     );
     assert!(!ran.load(Ordering::SeqCst));
     let moved = root.0.join("moved");
@@ -168,7 +168,7 @@ fn a_live_copy_and_a_mismatched_current_manifest_are_refused_before_writing() {
         ran.store(true, Ordering::SeqCst);
         Ok(())
     });
-    assert!(result.unwrap_err().contains("副本"));
+    assert_eq!(result.unwrap_err(), "agent.errorProjectIdentity");
     assert!(!ran.load(Ordering::SeqCst));
     assert!(
         with_project_location(&root.0, SECOND, &original, read_identity, || {

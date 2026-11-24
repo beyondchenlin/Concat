@@ -23,7 +23,7 @@ ios_min=${IPHONEOS_DEPLOYMENT_TARGET:-15.0}
 binary=$workspace/target/$target/$profile/concat
 [ -f "$binary" ] || { echo "no binary at $binary: build first" >&2; exit 1; }
 
-app=$workspace/target/$target/$profile/Concat.app
+app="$workspace/target/$target/$profile/BK CUT.app"
 rm -rf "$app"
 mkdir -p "$app"
 cp "$binary" "$app/Concat"
@@ -48,8 +48,8 @@ cat > "$app/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Concat</string>
-  <key>CFBundleDisplayName</key><string>Concat</string>
+  <key>CFBundleName</key><string>BK CUT</string>
+  <key>CFBundleDisplayName</key><string>BK CUT</string>
   <key>CFBundleIdentifier</key><string>app.concat.editor</string>
   <key>CFBundleVersion</key><string>${version}</string>
   <key>CFBundleShortVersionString</key><string>${version}</string>
@@ -84,9 +84,9 @@ cat > "$app/Info.plist" <<PLIST
   <key>LSApplicationCategoryType</key><string>public.app-category.video</string>
   <key>UIFileSharingEnabled</key><true/>
   <key>LSSupportsOpeningDocumentsInPlace</key><true/>
-  <key>NSPhotoLibraryUsageDescription</key><string>Concat imports the clips you pick.</string>
-  <key>NSPhotoLibraryAddUsageDescription</key><string>Concat saves your finished videos to Photos.</string>
-  <key>NSMicrophoneUsageDescription</key><string>Concat records voice-over.</string>
+  <key>NSPhotoLibraryUsageDescription</key><string>BK CUT imports the clips you pick.</string>
+  <key>NSPhotoLibraryAddUsageDescription</key><string>BK CUT saves your finished videos to Photos.</string>
+  <key>NSMicrophoneUsageDescription</key><string>BK CUT records voice-over.</string>
   <key>NSHumanReadableCopyright</key><string>AGPL-3.0-or-later. See THIRD_PARTY_NOTICES.md.</string>
 </dict>
 </plist>

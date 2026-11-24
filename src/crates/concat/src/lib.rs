@@ -60,7 +60,8 @@ pub use concat_host::awake::install as install_awake;
 /// `platform::publish_export`.
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub use platform::{
-    ExportPublisher, FilePicker, PickKinds, install_export_publisher, install_file_picker,
+    ExportPublisher, FilePicker, PickKinds, PickProgress, PickTransfer, install_export_publisher,
+    install_file_picker,
 };
 #[cfg(target_os = "android")]
 pub use platform::{LinkOpener, install_link_opener};
@@ -115,6 +116,8 @@ use panes::Msg;
 use panes::captions::CaptionsMsg;
 use panes::export::ExportMsg;
 use panes::media_bin::MediaMsg;
+#[cfg(target_os = "android")]
+pub use panes::media_bin::record_platform_import_failures;
 use panes::monitor::MonitorMsg;
 use panes::project::ProjectMsg;
 use panes::relink::RelinkMsg;
@@ -185,7 +188,7 @@ pub(crate) fn closing(how: &str) {
 pub fn report_startup_failure(error: &slint::PlatformError) {
     let error = error.to_string();
     // "could not start" right after the topic: the smoke scripts look for it.
-    log::error!("start: could not start the window: {error}; Concat says so in a dialog and quits");
+    log::error!("start: could not start the window: {error}; BK CUT says so in a dialog and quits");
     platform::report_startup_failure(&error);
 }
 
@@ -278,7 +281,11 @@ fn start(project: Option<std::path::PathBuf>, smoke: Smoke) -> Result<(), slint:
     // the window is up and kept through moves between monitors; see
     // `platform::apply_ui_scale`. https://github.com/jub0t/Concat/issues/320
     if let Ok(dirs) = concat_host::AppDirs::locate() {
-        let percent = prefs::Preferences::load(&dirs)
+        let preferences = prefs::Preferences::load(&dirs);
+        // Select the saved language before backend initialization, so a startup
+        // failure uses the same language as the editor would have used.
+        i18n::select(i18n::startup_locale(preferences.locale.as_deref()), &dirs);
+        let percent = preferences
             .ui_scale
             .filter(|percent| prefs::UI_SCALES.contains(percent));
         platform::set_ui_scale(percent);
@@ -545,6 +552,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: Smoke) -> Result<(), slint:
     });
     Shell::install(shell.clone());
     let agent_status_timer = agent::window::install(&app);
+    panes::import_progress::install(&app);
 
     // The machine's fonts, for the Text inspector's picker. Read on a
     // worker: on a machine with a few thousand faces it is a moment, and
@@ -719,17 +727,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: Smoke) -> Result<(), slint:
     // The interface's words. Every `I18n.t` in the tree asks here by its
     // key; the answer is the active locale's line, else the English. See
     // i18n.rs.
-    {
-        let words = app.global::<I18n>();
-        words.on_lookup(|_, key| i18n::t(&key).into());
-        words.on_lookup1(|_, key, a| i18n::tf(&key, &[&a]).into());
-        words.on_lookup2(|_, key, a, b| i18n::tf(&key, &[&a, &b]).into());
-        // Uppercased here rather than in the tree: Slint has no text
-        // transform, and casing is the language's rule and not the
-        // interface's to guess at.
-        words.on_lookup_upper(|_, key| i18n::t(&key).to_uppercase().into());
-        words.set_lang(i18n::current().into());
-    }
+    i18n::install(&app);
 
     // The strip's drag region and double-click. Only the platform's window
     // can do either; the scene graph forwards the gestures here.
@@ -906,6 +904,9 @@ fn start(project: Option<std::path::PathBuf>, smoke: Smoke) -> Result<(), slint:
     // ── the launch screen ──
     app.on_start_compose(on_window!(|state| {
         state.handle(Msg::Start(StartMsg::Compose));
+    }));
+    app.on_start_new_files(on_window!(|state| {
+        state.handle(Msg::Start(StartMsg::ComposeFiles));
     }));
     app.on_start_dismiss(on_window!(|state| {
         state.handle(Msg::Start(StartMsg::Dismiss));
@@ -2201,6 +2202,12 @@ fn start(project: Option<std::path::PathBuf>, smoke: Smoke) -> Result<(), slint:
     app.on_export_rate_changed(on_window!(|state, index: i32| {
         state.handle(Msg::Export(ExportMsg::RateChanged(index)));
     }));
+    app.on_export_resolution_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Export(ExportMsg::ResolutionChanged(index)));
+    }));
+    app.on_export_long_edge_changed(on_window!(|state, value: f32| {
+        state.handle(Msg::Export(ExportMsg::CustomLongEdge(value)));
+    }));
     app.on_export_codec_changed(on_window!(|state, index: i32| {
         state.handle(Msg::Export(ExportMsg::CodecChanged(index)));
     }));
@@ -2212,6 +2219,9 @@ fn start(project: Option<std::path::PathBuf>, smoke: Smoke) -> Result<(), slint:
     }));
     app.on_export_bitrate_changed(on_window!(|state, mbps: f32| {
         state.handle(Msg::Export(ExportMsg::BitrateChanged(mbps)));
+    }));
+    app.on_export_use_current(on_window!(|state| {
+        state.handle(Msg::Export(ExportMsg::UseCurrent));
     }));
     app.on_export_again(on_window!(|state| {
         state.handle(Msg::Export(ExportMsg::Again));
@@ -2253,9 +2263,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: Smoke) -> Result<(), slint:
     app.on_settings_show_log(on_window!(|state| {
         state.handle(Msg::Settings(SettingsMsg::ShowLog));
     }));
-    app.on_settings_language_changed(on_window!(|state, index: i32| {
-        state.handle(Msg::Settings(SettingsMsg::LanguageChanged(index)));
-    }));
+    app.on_settings_language_changed(crate::panes::settings::language_changed_from_ui);
     app.on_settings_log_level_changed(on_window!(|state, index: i32| {
         state.handle(Msg::Settings(SettingsMsg::LogLevelChanged(index)));
     }));
@@ -2273,6 +2281,23 @@ fn start(project: Option<std::path::PathBuf>, smoke: Smoke) -> Result<(), slint:
     }));
     app.on_settings_magnetic_changed(on_window!(|state, on: bool| {
         state.handle(Msg::Settings(SettingsMsg::MagneticChanged(on)));
+    }));
+    app.on_settings_default_project_location_edited(on_window!(|state, text: SharedString| {
+        state.handle(Msg::Settings(SettingsMsg::DefaultProjectLocation(
+            text.to_string(),
+        )));
+    }));
+    app.on_settings_default_match_media_changed(on_window!(|state, on: bool| {
+        state.handle(Msg::Settings(SettingsMsg::DefaultMatchMedia(on)));
+    }));
+    app.on_settings_default_project_width_changed(on_window!(|state, value: f32| {
+        state.handle(Msg::Settings(SettingsMsg::DefaultProjectWidth(value)));
+    }));
+    app.on_settings_default_project_height_changed(on_window!(|state, value: f32| {
+        state.handle(Msg::Settings(SettingsMsg::DefaultProjectHeight(value)));
+    }));
+    app.on_settings_default_project_rate_changed(on_window!(|state, value: f32| {
+        state.handle(Msg::Settings(SettingsMsg::DefaultProjectRate(value)));
     }));
     app.on_settings_download_source_changed(on_window!(|state, index: i32| {
         state.handle(Msg::Settings(SettingsMsg::DownloadSourceChanged(index)));
@@ -2785,6 +2810,11 @@ fn start(project: Option<std::path::PathBuf>, smoke: Smoke) -> Result<(), slint:
     };
     if let Some(path) = project {
         open_launch_project(&mut shell.studio.borrow_mut(), path);
+    } else if !cfg!(any(windows, target_os = "android")) && smoke == Smoke::No {
+        shell
+            .studio
+            .borrow_mut()
+            .handle(Msg::Start(StartMsg::Compose));
     }
 
     {
@@ -2971,6 +3001,8 @@ fn start_windows_preview() {
             studio.watch_packages();
             if let Some(path) = WINDOWS_LAUNCH_PROJECT.with(|pending| pending.borrow_mut().take()) {
                 open_launch_project(&mut studio, path);
+            } else if studio.session.is_none() {
+                studio.handle(Msg::Start(StartMsg::Compose));
             }
             studio.host.monitor.warm_shaders();
             studio.refresh_art();

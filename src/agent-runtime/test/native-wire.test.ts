@@ -60,7 +60,7 @@ test("discard completion verification carries only native ownership and requires
     const frame = b.sent.at(-1)!;
     assert.deepEqual(frame.payload, { method: "recovery.discardVerified", ownerHandle: "native-owner", generation: "7" });
     b.receive({ channel: NATIVE_CHANNEL, id: frame.id, result: reply });
-    await assert.rejects(pending, /原生未确认/);
+    await assert.rejects(pending, /agent\.errorRecoveryPending/);
   }
   const pending = ports.recovery.discardVerified(lease, new AbortController().signal);
   b.receive({ channel: NATIVE_CHANNEL, id: b.sent.at(-1)!.id, result: { verified: true } });

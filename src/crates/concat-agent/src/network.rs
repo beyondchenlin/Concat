@@ -3,6 +3,8 @@
 //! retry, redirect, provider discovery, or credential returned to JavaScript.
 //! A permit is created only by a native submission, never by settings or recovery.
 
+pub mod catalogue;
+
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -24,7 +26,7 @@ use crate::credentials::{CredentialScope, CredentialStore, Secret};
 use crate::{OperationPermit, OwnerToken, SessionOwner};
 
 /// Maximum request JSON, including the original persisted conversation.
-pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+pub const MAX_REQUEST_BYTES: usize = crate::transport::MAX_MODEL_REQUEST_BYTES;
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 const CHUNK_BYTES: usize = 64 * 1024;
 const CANCELLED: &str = "本次模型调用已停止；未继续发送后续请求。";
@@ -128,7 +130,6 @@ impl Streams {
 struct TransportPolicy {
     channel: ModelChannel,
     store: ConfigurationStore,
-    snapshot: ConfigurationSnapshot,
 }
 
 /// One explicitly authorized native task's model access. Debug is deliberately absent.
@@ -136,7 +137,6 @@ pub struct ModelNetwork {
     owner: Arc<SessionOwner>,
     token: OwnerToken,
     store: ConfigurationStore,
-    snapshot: ConfigurationSnapshot,
     channel: ModelChannel,
     credentials: Arc<dyn CredentialStore>,
     cancellation: Arc<Cancellation>,
@@ -151,11 +151,30 @@ pub fn runtime_configuration(snapshot: &ConfigurationSnapshot) -> Option<Value> 
         json!({
             "id": channel.id.as_str(), "version": channel.version.to_string(),
             "configurationVersion": snapshot.version().to_string(),
-            "protocol": channel.protocol.as_str(), "endpoint": channel.endpoint,
+            "providerId": channel.provider_id, "protocol": channel.protocol.as_str(), "endpoint": channel.endpoint,
             "model": channel.model, "requestTimeoutMs": channel.request_timeout_ms,
             "maxOutputTokens": channel.max_output_tokens,
+            "contextWindow": Value::Null, "contextSource": Value::Null,
+
         })
     })
+}
+
+/// Resolve metadata from the exact connection cache; defaults are not task identity.
+pub fn runtime_configuration_for(
+    store: &ConfigurationStore,
+    snapshot: &ConfigurationSnapshot,
+    selected: &ModelChannel,
+) -> Value {
+    let facts = store.catalogue(selected).unwrap_or_default();
+    let metadata =
+        crate::configuration::catalogue::resolve_context(selected, &selected.model, &facts);
+    let capacity = metadata.as_ref().map(|value| value.0);
+    let source = metadata.map(|value| value.1);
+    json!({"id":selected.id.as_str(),"version":selected.version.to_string(),"configurationVersion":snapshot.version().to_string(),
+        "providerId":selected.provider_id,"protocol":selected.protocol.as_str(),"endpoint":selected.endpoint,"model":selected.model,
+        "requestTimeoutMs":selected.request_timeout_ms,"maxOutputTokens":selected.max_output_tokens,
+        "contextWindow":capacity, "contextSource":source})
 }
 
 impl ModelNetwork {
@@ -169,11 +188,25 @@ impl ModelNetwork {
         credentials: Arc<dyn CredentialStore>,
     ) -> Result<Self, String> {
         let channel = snapshot.active().cloned().ok_or("请先明确选择模型渠道。")?;
+        Self::authorize_selected(owner, token, store, snapshot, credentials, channel)
+    }
+
+    /// Native session selection can differ from the application default.
+    pub fn authorize_selected(
+        owner: Arc<SessionOwner>,
+        token: OwnerToken,
+        store: ConfigurationStore,
+        _snapshot: ConfigurationSnapshot,
+        credentials: Arc<dyn CredentialStore>,
+        channel: ModelChannel,
+    ) -> Result<Self, String> {
+        crate::configuration::validate_model_id(&channel.model)
+            .map_err(|error| error.to_string())?;
         if channel.protocol == ModelProtocol::OpenAiResponses && channel.max_output_tokens < 16 {
             return Err("当前响应协议至少需要16个输出词元，请修改输出上限后重新授权。".into());
         }
         store
-            .assert_current(&snapshot)
+            .assert_connection_current(&channel)
             .map_err(|error| error.to_string())?;
         let scope = scope(&channel)?;
         if credentials
@@ -192,7 +225,6 @@ impl ModelNetwork {
             owner,
             token,
             store,
-            snapshot,
             channel,
             credentials,
             cancellation: Arc::new(Cancellation {
@@ -215,7 +247,7 @@ impl ModelNetwork {
             .map_err(|_| CANCELLED.to_owned())?
             .with_valid(|| ())
             .map_err(|_| CANCELLED.to_owned())?;
-        if let Err(error) = self.store.assert_current(&self.snapshot) {
+        if let Err(error) = self.store.assert_connection_current(&self.channel) {
             self.cancel();
             return Err(error.to_string());
         }
@@ -283,7 +315,6 @@ impl ModelNetwork {
             let policy = TransportPolicy {
                 channel: self.channel.clone(),
                 store: self.store.clone(),
-                snapshot: self.snapshot.clone(),
             };
             std::thread::Builder::new().name("bk-cat-model-request".into()).spawn(move || {
                 struct Active(Arc<AtomicU64>, u64);
@@ -557,6 +588,13 @@ fn expected_url(channel: &ModelChannel) -> String {
         ModelProtocol::OpenAiResponses => "/responses",
         // The pinned original Pi adapter uses the SDK beta messages entry.
         ModelProtocol::AnthropicMessages => "/v1/messages?beta=true",
+        ModelProtocol::GoogleGenerativeAi => {
+            return format!(
+                "{}/models/{}:streamGenerateContent?alt=sse",
+                channel.endpoint.trim_end_matches('/'),
+                channel.model
+            );
+        }
     };
     format!("{}{suffix}", channel.endpoint.trim_end_matches('/'))
 }
@@ -576,6 +614,9 @@ fn validate_request(
     }
     let body: Value =
         serde_json::from_str(&request.body).map_err(|_| "模型请求不是有效的数据对象。")?;
+    if channel.protocol == ModelProtocol::GoogleGenerativeAi {
+        return validate_google_request(channel, request, body);
+    }
     if !body.is_object() || body["model"] != channel.model || body["stream"] != true {
         return Err("模型请求与已选择的模型或流式模式不一致。".into());
     }
@@ -590,6 +631,7 @@ fn validate_request(
         }
         ModelProtocol::OpenAiResponses => "max_output_tokens",
         ModelProtocol::AnthropicMessages => "max_tokens",
+        ModelProtocol::GoogleGenerativeAi => unreachable!("Google validated above"),
     };
     let ceiling = body[field].as_u64().ok_or("模型请求缺少明确输出上限。")?;
     if ceiling == 0 || ceiling > u64::from(channel.max_output_tokens) {
@@ -690,6 +732,9 @@ fn validate_body(protocol: ModelProtocol, body: &Value) -> Result<(), String> {
             "tools",
             "tool_choice",
         ],
+        ModelProtocol::GoogleGenerativeAi => {
+            return Err("Google protocol requires its native validator.".into());
+        }
         ModelProtocol::AnthropicMessages => &[
             "model",
             "messages",
@@ -730,6 +775,9 @@ fn validate_body(protocol: ModelProtocol, body: &Value) -> Result<(), String> {
         let mut names = std::collections::BTreeSet::new();
         for tool in tools {
             let function = match protocol {
+                ModelProtocol::GoogleGenerativeAi => {
+                    return Err("Google protocol requires its native validator.".into());
+                }
                 ModelProtocol::OpenAiCompletions => {
                     allowed_keys(tool, &["type", "function"])?;
                     if tool["type"] != "function" {
@@ -787,6 +835,7 @@ fn validate_body(protocol: ModelProtocol, body: &Value) -> Result<(), String> {
     }
     if let Some(choice) = body.get("tool_choice") {
         let valid = match protocol {
+            ModelProtocol::GoogleGenerativeAi => false,
             ModelProtocol::OpenAiCompletions => {
                 matches!(choice.as_str(), Some("auto" | "none" | "required"))
                     || (choice["type"] == "function"
@@ -851,6 +900,10 @@ async fn transfer(
     sender: &mpsc::Sender<Frame>,
 ) -> Result<(), &'static str> {
     let (name, authorization) = match policy.channel.protocol {
+        ModelProtocol::GoogleGenerativeAi => (
+            "x-goog-api-key",
+            zeroize::Zeroizing::new(secret.expose_secret().to_owned()),
+        ),
         ModelProtocol::AnthropicMessages => (
             "x-api-key",
             zeroize::Zeroizing::new(secret.expose_secret().to_owned()),
@@ -883,7 +936,11 @@ async fn transfer(
     let mut execute = std::pin::pin!(client.execute(request));
     let mut response = std::future::poll_fn(|context| {
         match permit.with_valid(|| {
-            if policy.store.assert_current(&policy.snapshot).is_err() {
+            if policy
+                .store
+                .assert_connection_current(&policy.channel)
+                .is_err()
+            {
                 return Poll::Ready(Err("模型配置已改变，旧调用许可已失效。"));
             }
             execute
@@ -902,9 +959,9 @@ async fn transfer(
     if !(200..300).contains(&status) {
         return Err(match status {
             300..=399 => "模型服务要求跳转，已拒绝向其他目的地转发凭据。",
-            401 => "模型服务未接受当前密钥（401）。",
-            402 => "模型账户余额或计费额度不足（402）。",
-            403 => "模型服务拒绝当前账户或模型访问权限（403）。",
+            401 => "agent.errorAuthentication",
+            402 => "agent.errorBilling",
+            403 => "agent.errorAccess",
             429 => "模型服务额度或速率限制，任务已停止且未自动重试。",
             _ => "模型服务返回失败状态，任务未完成且未自动重试。",
         });
@@ -1383,4 +1440,158 @@ impl Drop for SecretFilter {
             prefix.escape.zeroize();
         }
     }
+}
+
+/// The Google adapter is a separate protocol, never interpreted as OpenAI JSON.
+fn validate_google_request(
+    channel: &ModelChannel,
+    request: &ModelRequest,
+    body: Value,
+) -> Result<(HeaderMap, String), String> {
+    if !channel
+        .model
+        .bytes()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.'))
+    {
+        return Err("Google model identifier must name a single model.".into());
+    }
+    allowed_keys(
+        &body,
+        &[
+            "contents",
+            "systemInstruction",
+            "generationConfig",
+            "tools",
+            "toolConfig",
+        ],
+    )?;
+    let config = &body["generationConfig"];
+    allowed_keys(
+        config,
+        &["maxOutputTokens", "temperature", "thinkingConfig"],
+    )?;
+    let ceiling = config["maxOutputTokens"]
+        .as_u64()
+        .ok_or("Model output limit is missing.")?;
+    if ceiling == 0 || ceiling > u64::from(channel.max_output_tokens) {
+        return Err("Model output limit exceeds its grant.".into());
+    }
+    if let Some(thinking) = config.get("thinkingConfig") {
+        allowed_keys(
+            thinking,
+            &["thinkingBudget", "includeThoughts", "thinkingLevel"],
+        )?;
+        if thinking
+            .get("thinkingBudget")
+            .is_some_and(|v| v.as_u64().is_none_or(|v| v > ceiling))
+        {
+            return Err("Unreviewed Google thinking budget.".into());
+        }
+    }
+    let contents = body["contents"]
+        .as_array()
+        .ok_or("Google contents must be an array.")?;
+    for content in contents.iter().chain(body.get("systemInstruction")) {
+        allowed_keys(content, &["role", "parts"])?;
+        if content
+            .get("role")
+            .is_some_and(|v| !matches!(v.as_str(), Some("user" | "model" | "system")))
+        {
+            return Err("Invalid Google content role.".into());
+        }
+        for part in content["parts"]
+            .as_array()
+            .ok_or("Google content parts are missing.")?
+        {
+            allowed_keys(
+                part,
+                &[
+                    "text",
+                    "thought",
+                    "thoughtSignature",
+                    "functionCall",
+                    "functionResponse",
+                ],
+            )?;
+            if let Some(call) = part.get("functionCall") {
+                allowed_keys(call, &["id", "name", "args"])?;
+                if !local_tool_name(&call["name"]) || !call["args"].is_object() {
+                    return Err("Unregistered Google function call.".into());
+                }
+            }
+            if let Some(response) = part.get("functionResponse") {
+                allowed_keys(response, &["id", "name", "response"])?;
+                if !local_tool_name(&response["name"]) || !response["response"].is_object() {
+                    return Err("Unregistered Google function result.".into());
+                }
+            }
+        }
+    }
+    if let Some(tools) = body.get("tools") {
+        let mut names = std::collections::BTreeSet::new();
+        for group in tools.as_array().ok_or("Google tools must be an array.")? {
+            allowed_keys(group, &["functionDeclarations"])?;
+            for function in group["functionDeclarations"]
+                .as_array()
+                .ok_or("Google function declarations are missing.")?
+            {
+                allowed_keys(
+                    function,
+                    &["name", "description", "parameters", "parametersJsonSchema"],
+                )?;
+                let schema = function
+                    .get("parametersJsonSchema")
+                    .or(function.get("parameters"))
+                    .ok_or("Google function schema is missing.")?;
+                if !local_tool_name(&function["name"])
+                    || !schema.is_object()
+                    || !matches!(schema["type"].as_str(), Some("object" | "OBJECT"))
+                    || !names.insert(function["name"].as_str().unwrap_or_default())
+                    || names.len() > LOCAL_TOOL_NAMES.len()
+                {
+                    return Err("Google may use only registered native functions.".into());
+                }
+            }
+        }
+    }
+    if let Some(config) = body.get("toolConfig") {
+        allowed_keys(config, &["functionCallingConfig"])?;
+        let choice = &config["functionCallingConfig"];
+        allowed_keys(choice, &["mode", "allowedFunctionNames"])?;
+        if !matches!(
+            choice["mode"].as_str(),
+            Some("AUTO" | "ANY" | "NONE" | "VALIDATED")
+        ) {
+            return Err("Invalid Google tool mode.".into());
+        }
+        if let Some(names) = choice.get("allowedFunctionNames")
+            && !names
+                .as_array()
+                .is_some_and(|names| names.iter().all(local_tool_name))
+        {
+            return Err("Unregistered Google tool choice.".into());
+        }
+    }
+    let mut headers = HeaderMap::new();
+    for (name, value) in &request.headers {
+        let name = name.to_ascii_lowercase();
+        if !matches!(name.as_str(), "accept" | "content-type")
+            || value.len() > 1024
+            || value.chars().any(char::is_control)
+            || headers.contains_key(&name)
+        {
+            return Err("Unreviewed Google request header.".into());
+        }
+        headers.insert(
+            HeaderName::from_bytes(name.as_bytes()).map_err(|_| "Invalid header.")?,
+            HeaderValue::from_str(value).map_err(|_| "Invalid header.")?,
+        );
+    }
+    if headers.get("content-type").and_then(|v| v.to_str().ok()) != Some("application/json") {
+        return Err("Google request must use JSON content.".into());
+    }
+    Ok((
+        headers,
+        serde_json::to_string(&body).map_err(|_| "Invalid Google request object.")?,
+    ))
 }

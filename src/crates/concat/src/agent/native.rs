@@ -14,7 +14,8 @@ use std::time::Duration;
 
 use concat_agent::conversations::CONVERSATIONS_FILE_NAME;
 use concat_agent::operations::{
-    Invocation, JournalInspection, OPERATIONS_FILE_NAME, inspect_operations,
+    Invocation, JournalInspection, OPERATIONS_FILE_NAME, RecoveryReview, inspect_operations,
+    inspect_recovery,
 };
 use concat_agent::sqlite::{
     DATABASE_FILE_NAME, NativeSqlite, PI_SCHEMA_VERSION, SqliteMethod, SqliteRequest,
@@ -45,6 +46,9 @@ struct Evidence {
     bindings_fingerprint: String,
     discard_conversations: Vec<u64>,
     discard_scope_error: Option<String>,
+    operation_review: Option<RecoveryReview>,
+    resume_task: Option<super::tasks::RecoveryTaskScope>,
+    resume_scope_error: Option<String>,
 }
 
 impl Evidence {
@@ -61,9 +65,14 @@ impl Evidence {
     }
 
     fn unsettled_edits(&self) -> bool {
-        self.journal.needs_project_reconciliation > 0
-            || self.journal.applied_not_saved > 0
-            || self.journal.saved_not_notified > 0
+        self.operation_review.as_ref().map_or_else(
+            || {
+                self.journal.needs_project_reconciliation > 0
+                    || self.journal.applied_not_saved > 0
+                    || self.journal.saved_not_notified > 0
+            },
+            |review| review.unreviewed_current > 0 || review.pending_other_projects > 0,
+        )
     }
 
     fn interrupted(&self) -> bool {
@@ -72,15 +81,17 @@ impl Evidence {
 
     fn common_blocked_reason(&self) -> Option<&'static str> {
         if self.project.is_none() {
-            return Some("请先打开原生工程，再确认会话恢复");
+            return Some("agent.openProject");
         }
         if self.storage.state == StorageState::Existing && !self.storage.compatible {
-            return Some("会话数据库版本或结构不兼容，已保持只读；不能自动迁移或覆盖");
+            return Some("agent.errorRecoveryStorage");
         }
-        if self.unsettled_edits() {
-            return Some(
-                "原生编辑或保存记录尚未核对，不能放弃任务或恢复会话；现有工程与日志保持不变",
-            );
+        if self
+            .operation_review
+            .as_ref()
+            .is_some_and(|review| review.pending_other_projects > 0)
+        {
+            return Some("agent.errorRecoveryOtherProject");
         }
         None
     }
@@ -90,9 +101,11 @@ impl Evidence {
             return Some(reason);
         }
         if self.unfinished_pi() {
-            self.discard_scope_error.as_deref().or(Some(
-                "检测到未完成任务。可明确放弃当前工程已登记的旧任务后打开会话；不会恢复模型调用，已有消息保留。",
-            ))
+            self.resume_scope_error.as_deref().or_else(|| {
+                self.resume_task
+                    .is_none()
+                    .then_some("agent.errorRecoverySnapshotMissing")
+            })
         } else {
             None
         }
@@ -103,17 +116,27 @@ impl Evidence {
             return Some(reason);
         }
         if !self.unfinished_pi() {
-            Some("当前没有待放弃的未完成任务，请使用确认继续。")
+            Some("agent.recoveryNoInterruptedTask")
         } else if let Some(error) = self.discard_scope_error.as_deref() {
             Some(error)
         } else if self.discard_conversations.is_empty() {
-            Some("当前工程没有可核对的历史会话归属，未完成任务保持停止。")
+            Some("agent.errorRecoveryBinding")
         } else {
             None
         }
     }
 
+    fn can_review_current_project(&self) -> bool {
+        self.project.is_some()
+            && self.operation_review.as_ref().is_some_and(|review| {
+                review.unreviewed_current > 0 && review.pending_other_projects > 0
+            })
+    }
+
     fn decision_blocked_reason(&self, decision: &str) -> Option<&str> {
+        if decision == "review" {
+            return (!self.can_review_current_project()).then_some("agent.errorRecoveryScope");
+        }
         if decision == "discard" {
             self.discard_blocked_reason()
         } else {
@@ -150,6 +173,11 @@ impl Snapshot {
             "sessionRevision": self.evidence.session_revision,
             "schemaVersion": schema,
             "hasInterruptedWork": self.evidence.interrupted(),
+            "hasUnfinishedPi": self.evidence.unfinished_pi(),
+            "canReviewCurrentProject": self.evidence.can_review_current_project(),
+            "canContinueInterrupted": self.evidence.unfinished_pi() && self.evidence.blocked_reason().is_none(),
+            "operationFacts": self.evidence.operation_review.as_ref().map(RecoveryReview::facts),
+            "resumeTask": self.evidence.resume_task.as_ref().map(super::tasks::RecoveryTaskScope::value),
             "canDiscardInterrupted": self.evidence.discard_blocked_reason().is_none(),
             "projectPath": project.map(|p| p.path.as_str()),
             "blockedReason": self.evidence.blocked_reason(),
@@ -167,12 +195,14 @@ struct ApprovalState {
 struct State {
     acquired: bool,
     granted: bool,
+    reviewed_only: bool,
     initialize_empty: bool,
     database: Option<NativeSqlite>,
     closed_database: Option<String>,
     closed: bool,
     awaiting_delivery: BTreeSet<u64>,
     discard: Option<DiscardVerification>,
+    resume: Option<ResumeVerification>,
 }
 
 #[derive(Clone)]
@@ -185,9 +215,23 @@ struct DiscardVerification {
     verified: bool,
 }
 
+#[derive(Clone)]
+struct ResumeVerification {
+    project: CurrentProject,
+    project_fingerprint: String,
+    bindings_fingerprint: String,
+    review: RecoveryReview,
+    scope: super::tasks::RecoveryTaskScope,
+    attempted: bool,
+    verified: bool,
+}
+
 impl State {
     fn execution_ready(&self) -> bool {
-        self.granted && !self.closed && self.discard.as_ref().is_none_or(|scope| scope.verified)
+        self.granted
+            && !self.closed
+            && self.discard.as_ref().is_none_or(|scope| scope.verified)
+            && self.resume.as_ref().is_none_or(|scope| scope.verified)
     }
 }
 
@@ -272,9 +316,23 @@ impl NativeSession {
         encode: impl FnOnce(Value) -> Result<T, super::tasks::SubmissionError>,
     ) -> Result<T, super::tasks::SubmissionError> {
         if !self.state()?.execution_ready() {
-            return Err("原生会话恢复核验尚未完成，未签发模型任务许可。".into());
+            return Err("agent.errorRecoveryPending".into());
         }
         self.tasks.prepare(intent, encode)
+    }
+
+    /// Read the same native project source used by recovery verification.
+    /// This grants no authority and does not expose the writable live bridge.
+    pub(crate) fn current_project(&self) -> Result<Option<CurrentProject>, String> {
+        (self.project_reader)()
+    }
+
+    /// Presentation acknowledgement only. This does not grant execution or
+    /// revive an owner; a page cannot manufacture a successful local review.
+    pub(crate) fn reviewed_current_project(&self) -> bool {
+        self.state
+            .lock()
+            .is_ok_and(|state| state.reviewed_only && !state.granted)
     }
 
     fn check_bound(&self, payload: &Value) -> Result<(), String> {
@@ -360,11 +418,11 @@ impl NativeSession {
             "task.bind" => {
                 allow_bound_keys(&payload, &["taskId", "conversationId"])?;
                 if !state.execution_ready() {
-                    return Err("任务绑定尚未完成原生恢复确认。".into());
+                    return Err("agent.errorRecoveryPending".into());
                 }
                 let conversation = payload["conversationId"]
                     .as_u64()
-                    .ok_or("原版会话编号无效。")?;
+                    .ok_or("runtime.invalidRequest")?;
                 self.tasks
                     .bind(text_field(&payload, "taskId")?, conversation)?;
                 Ok(Value::Null)
@@ -375,7 +433,7 @@ impl NativeSession {
                     &["networkPermit", "url", "methodName", "headers", "body"],
                 )?;
                 let request = serde_json::from_value(json!({"url":payload["url"],"methodName":payload["methodName"],"headers":payload["headers"],"body":payload["body"]}))
-                    .map_err(|_| "原生模型请求格式无效。")?;
+                    .map_err(|_| "runtime.invalidRequest")?;
                 self.tasks
                     .open(text_field(&payload, "networkPermit")?, request)
             }
@@ -395,6 +453,10 @@ impl NativeSession {
             "recovery.read" => {
                 allow_bound_keys(&payload, &[])?;
                 self.snapshot_locked(&state)
+            }
+            "recovery.resumeVerified" => {
+                allow_bound_keys(&payload, &[])?;
+                self.verify_resume(&mut state)
             }
             "recovery.discardVerified" => {
                 allow_bound_keys(&payload, &[])?;
@@ -479,7 +541,7 @@ impl NativeSession {
                         text_field(&payload, "approvalTicket")?,
                     )?;
                 } else if payload.get("approvalTicket").is_some() {
-                    return Err("只读调用不能携带剪辑审批票据。".into());
+                    return Err("permission.onlyGuarded".into());
                 }
                 let tool_name = message
                     .pointer("/params/name")
@@ -489,11 +551,11 @@ impl NativeSession {
                     .bridge
                     .handle_with_invocation(message, invocation.clone())?;
                 if guarded_edit {
-                    let reply = response
-                        .as_ref()
-                        .ok_or("原生剪辑工具没有返回结果，需核对当前工程。")?;
+                    let reply = response.as_ref().ok_or("runtime.editReceiptUnconfirmed")?;
                     self.tasks.record_edit_result(
-                        invocation.as_ref().ok_or("原生工具调用身份缺失。")?,
+                        invocation
+                            .as_ref()
+                            .ok_or("runtime.editReceiptUnconfirmed")?,
                         reply,
                     )?;
                 }
@@ -516,23 +578,23 @@ impl NativeSession {
         let mut message = payload
             .get("message")
             .filter(|message| message.is_object())
-            .ok_or("剪辑审批缺少工具参数。")?
+            .ok_or("permission.invalidArguments")?
             .clone();
         if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
             || message.get("method").and_then(Value::as_str) != Some("tools/call")
             || message.pointer("/params/name").and_then(Value::as_str) != Some("edit_apply_guarded")
         {
-            return Err("只能为受保护的原生剪辑工具申请审批。".into());
+            return Err("permission.onlyGuarded".into());
         }
         let invocation = parse_invocation(
             payload
                 .get("invocation")
-                .ok_or("剪辑审批缺少原版调用身份。")?,
+                .ok_or("permission.missingInvocation")?,
         )?;
         let check = |message: &mut Value| -> Result<(), String> {
             let state = self.state()?;
             if !state.acquired || !state.execution_ready() || state.closed {
-                return Err("当前会话未就绪，不能授权剪辑。".into());
+                return Err("agent.connectAndReview".into());
             }
             self.check_owned()?;
             self.tasks.authorize_tool(message, Some(&invocation))
@@ -545,7 +607,7 @@ impl NativeSession {
         }
         let ticket = match self.tool_approval.authorize(&message, Some(&invocation)) {
             Ok(Some(ticket)) => ticket,
-            Ok(None) => return Err("剪辑审批没有产生原生票据。".into()),
+            Ok(None) => return Err("permission.missingTicket".into()),
             Err(error) => return refused(error),
         };
         if let Err(error) = check(&mut message) {
@@ -662,7 +724,7 @@ impl NativeSession {
         snapshot_id: &str,
         decision: &str,
     ) -> Result<Value, String> {
-        if !matches!(decision, "continue" | "discard") {
+        if !matches!(decision, "continue" | "discard" | "review") {
             return Err("the recovery decision is invalid".into());
         }
         let mut state = self.approval()?;
@@ -685,7 +747,7 @@ impl NativeSession {
     }
 
     fn confirm(&self, state: &mut State, payload: &Value) -> Result<Value, String> {
-        if state.granted {
+        if state.granted || state.reviewed_only {
             return Err("recovery was already confirmed for this native generation".into());
         }
         let supplied = payload
@@ -714,7 +776,7 @@ impl NativeSession {
         // Compare full current evidence, not page-supplied counts or a cache.
         let current = self.read_evidence()?;
         if current != snapshot.evidence {
-            return Err("工程、会话或存储已变化；请重新核对后再确认".into());
+            return Err("agent.errorRecoveryChanged".into());
         }
         let decision = text_field(supplied, "decision")?;
         if let Some(reason) = current.decision_blocked_reason(decision) {
@@ -723,9 +785,10 @@ impl NativeSession {
         let project = current
             .project
             .as_ref()
-            .ok_or_else(|| "请先打开原生工程，再确认会话恢复".to_owned())?;
+            .ok_or_else(|| "agent.openProject".to_owned())?;
+        let review_only = decision == "review";
         let decision = match decision {
-            "continue" => RecoveryDecision::ContinueAfterRevalidation,
+            "continue" | "review" => RecoveryDecision::ContinueAfterRevalidation,
             "discard" => RecoveryDecision::DiscardInterrupted,
             _ => return Err("invalid native recovery decision".into()),
         };
@@ -733,17 +796,79 @@ impl NativeSession {
             Reconciliation {
                 project_identity: format!("{}#{}", project.path, project.session_id),
                 project_revision: project.revision.to_string(),
-                session_revision: current.session_revision,
+                session_revision: current.session_revision.clone(),
             },
             decision,
         )?;
         state.granted = true;
+        let reviewed = if let Some(review) = &current.operation_review {
+            if review.unreviewed_current > 0 {
+                let result = (|| -> Result<RecoveryReview, String> {
+                    let journal = self
+                        .bridge
+                        .journal
+                        .lock()
+                        .map_err(|_| "native journal state failed")?
+                        .clone()
+                        .ok_or("native journal is closed")?;
+                    journal
+                        .reconcile_review(review)
+                        .map_err(|error| error.to_string())
+                })();
+                match result {
+                    Ok(review) => Some(review),
+                    Err(error) => {
+                        self.bridge.stop();
+                        return Err(error);
+                    }
+                }
+            } else {
+                Some(review.clone())
+            }
+        } else {
+            None
+        };
+        if review_only {
+            state.granted = false;
+            state.reviewed_only = true;
+            return Ok(
+                json!({"generation":self.generation,"snapshotId":snapshot.id,
+                "allowInitializeEmptyStore":false,"reconciledOperations":true,"reviewedOnly":true,
+                "remainingOtherOperations":reviewed.as_ref().map_or(0,|review|review.pending_other_projects)}),
+            );
+        }
         state.initialize_empty = current.storage.state == StorageState::Empty;
         let mut grant = json!({
             "generation": self.generation,
             "snapshotId": snapshot.id,
             "allowInitializeEmptyStore": state.initialize_empty,
         });
+        if current
+            .operation_review
+            .as_ref()
+            .is_some_and(|review| review.unreviewed_current > 0)
+        {
+            grant["reconciledOperations"] = json!(true);
+        }
+        if matches!(decision, RecoveryDecision::ContinueAfterRevalidation)
+            && current.unfinished_pi()
+        {
+            let scope = current
+                .resume_task
+                .clone()
+                .ok_or("agent.errorRecoverySnapshotMissing")?;
+            let review = reviewed.ok_or("agent.errorRecoverySnapshotInvalid")?;
+            state.resume = Some(ResumeVerification {
+                project: project.clone(),
+                project_fingerprint: current.project_fingerprint.clone(),
+                bindings_fingerprint: current.bindings_fingerprint.clone(),
+                review,
+                scope: scope.clone(),
+                attempted: false,
+                verified: false,
+            });
+            grant["resumeTask"] = scope.value();
+        }
         if matches!(decision, RecoveryDecision::DiscardInterrupted) {
             // This scope permits original Pi cancellation only. There is no
             // model grant, task authority, edit permission or automatic resume.
@@ -765,14 +890,11 @@ impl NativeSession {
     /// A duplicate after success is refused without undoing that verified state.
     fn verify_discard(&self, state: &mut State) -> Result<Value, String> {
         if !state.granted || state.closed {
-            return Err("当前组件没有已确认的放弃操作。".into());
+            return Err("agent.errorRecoveryPending".into());
         }
-        let scope = state
-            .discard
-            .as_mut()
-            .ok_or("本代没有明确放弃任务的原生决定。")?;
+        let scope = state.discard.as_mut().ok_or("agent.errorRecoveryPending")?;
         if scope.attempted {
-            return Err("本代放弃核验已使用，不能重复或重试。".into());
+            return Err("agent.errorRecoveryChanged".into());
         }
         scope.attempted = true;
         let expected = scope.clone();
@@ -785,14 +907,12 @@ impl NativeSession {
             || current.project_fingerprint != expected.project_fingerprint
             || current.bindings_fingerprint != expected.bindings_fingerprint
         {
-            return Err(
-                "放弃后仍有未完成记录，或工程身份、会话、版本和文件已改变；会话未恢复就绪。".into(),
-            );
+            return Err("agent.errorRecoveryChanged".into());
         }
         if self.tasks.recovery_conversations(&expected.project)? != expected.conversations
             || (self.project_reader)()?.as_ref() != Some(&expected.project)
         {
-            return Err("放弃期间当前工程的真实位置或历史会话归属已改变，会话未恢复就绪。".into());
+            return Err("agent.errorRecoveryChanged".into());
         }
         self.check_owned()?;
         state
@@ -803,6 +923,53 @@ impl NativeSession {
         Ok(json!({"verified":true}))
     }
 
+    /// Native-only final check after the original store was opened paused.
+    /// A failed attempt consumes this generation's recovery admission.
+    fn verify_resume(&self, state: &mut State) -> Result<Value, String> {
+        if !state.granted || state.closed {
+            return Err("agent.errorRecoveryChanged".into());
+        }
+        let expected = {
+            let review = state.resume.as_mut().ok_or("agent.errorRecoveryScope")?;
+            if review.attempted {
+                return Err("agent.errorRecoveryChanged".into());
+            }
+            review.attempted = true;
+            review.clone()
+        };
+        let current = self.read_evidence()?;
+        if !current.storage.compatible
+            || current.project.as_ref() != Some(&expected.project)
+            || current.project_fingerprint != expected.project_fingerprint
+            || current.bindings_fingerprint != expected.bindings_fingerprint
+            || current.operation_review.as_ref() != Some(&expected.review)
+            || current.resume_task.as_ref() != Some(&expected.scope)
+            || current.operation_review.as_ref().is_none_or(|review| {
+                review.unreviewed_current > 0 || review.pending_other_projects > 0
+            })
+        {
+            return Err("agent.errorRecoveryChanged".into());
+        }
+        self.check_owned()?;
+        // Clear the old task diagnostics before the runtime can schedule any
+        // new tool. The later presentation event must not reset an approval.
+        self.tool_approval.begin_task()?;
+        let result =
+            self.tasks
+                .prepare_recovery(&expected.scope, &expected.project, &expected.review)?;
+        if (self.project_reader)()?.as_ref() != Some(&expected.project) {
+            self.tasks.abandon();
+            return Err("agent.errorRecoveryChanged".into());
+        }
+        self.check_owned()?;
+        state
+            .resume
+            .as_mut()
+            .expect("resume review retained")
+            .verified = true;
+        Ok(result)
+    }
+
     fn read_evidence(&self) -> Result<Evidence, String> {
         self.check_owned()?;
         let project = (self.project_reader)()?;
@@ -810,6 +977,13 @@ impl NativeSession {
             .map_err(|error| error.to_string())?;
         let journal = inspect_operations(&self.bridge.owner, &self.bridge.token)
             .map_err(|error| error.to_string())?;
+        let operation_review = project
+            .as_ref()
+            .map(|project| {
+                inspect_recovery(&self.bridge.owner, &self.bridge.token, &project.path)
+                    .map_err(|error| error.to_string())
+            })
+            .transpose()?;
         // The owner remains held, but read-only file I/O never holds its gate.
         // Stop can revoke immediately, and every block plus the final result
         // rechecks the original generation before approval can be consumed.
@@ -864,6 +1038,9 @@ impl NativeSession {
             bindings_fingerprint,
             discard_conversations: Vec::new(),
             discard_scope_error: None,
+            operation_review,
+            resume_task: None,
+            resume_scope_error: None,
         };
         if evidence.unfinished_pi() && evidence.common_blocked_reason().is_none() {
             let project = evidence.project.as_ref().expect("checked native project");
@@ -872,14 +1049,21 @@ impl NativeSession {
                     evidence.discard_conversations = conversations;
                 }
                 Ok(_) => {
-                    evidence.discard_scope_error =
-                        Some("当前工程没有可核对的历史会话归属，未完成任务保持停止。".into());
+                    evidence.discard_scope_error = Some("agent.errorRecoveryBinding".into());
                 }
                 Err(error) => evidence.discard_scope_error = Some(error),
             }
         }
+        if evidence.unfinished_pi() && evidence.common_blocked_reason().is_none() {
+            let project = evidence.project.as_ref().expect("checked native project");
+            match self.tasks.recovery_task_scope(project) {
+                Ok(Some(scope)) => evidence.resume_task = Some(scope),
+                Ok(None) => evidence.resume_scope_error = Some("agent.errorRecoveryScope".into()),
+                Err(error) => evidence.resume_scope_error = Some(error),
+            }
+        }
         if (self.project_reader)()? != evidence.project {
-            return Err("核对恢复范围时工程已变化，请重新核对。".into());
+            return Err("agent.errorRecoveryChanged".into());
         }
         self.check_owned()?;
         Ok(evidence)
@@ -1538,7 +1722,7 @@ mod tests {
             snapshot["blockedReason"]
                 .as_str()
                 .unwrap()
-                .contains("原生工程")
+                .contains("agent.openProject")
         );
         assert!(
             fixture
@@ -1877,6 +2061,8 @@ mod tests {
             let project = fixture.project.lock().unwrap().as_ref().unwrap().clone();
             assert!(!next.state().unwrap().execution_ready());
             let intent = crate::agent::tasks::SubmissionIntent {
+                languages: crate::agent::tasks::TaskLanguages::default(),
+                model: None,
                 id: "must-not-start".into(),
                 project: project.clone(),
                 mode: crate::agent::tasks::TaskMode::Chat,
@@ -1890,7 +2076,7 @@ mod tests {
                 next.prepare_submission(&intent, Ok)
                     .unwrap_err()
                     .to_string()
-                    .contains("恢复核验")
+                    .contains("agent.errorRecoveryPending")
             );
             let database = next
                 .handle(bound(
@@ -1955,7 +2141,7 @@ mod tests {
                     next.prepare_submission(&intent, Ok)
                         .unwrap_err()
                         .to_string()
-                        .contains("恢复核验")
+                        .contains("agent.errorRecoveryPending")
                 );
             }
             assert!(
@@ -1990,7 +2176,12 @@ mod tests {
         let (_, next, _) = fixture.reopen();
         let snapshot = next.snapshot().unwrap();
         assert_eq!(snapshot["canDiscardInterrupted"], false);
-        assert!(snapshot["blockedReason"].as_str().unwrap().contains("副本"));
+        assert!(
+            snapshot["blockedReason"]
+                .as_str()
+                .unwrap()
+                .contains("agent.errorProjectIdentity")
+        );
         assert!(
             next.approve_from_ui(snapshot["snapshotId"].as_str().unwrap(), "discard")
                 .is_err()
@@ -1999,7 +2190,7 @@ mod tests {
     }
 
     #[test]
-    fn each_unsettled_native_edit_stage_keeps_discard_closed() {
+    fn each_unsettled_native_edit_stage_requires_explicit_review_and_preserves_original_facts() {
         for stage in ["intent", "applied", "saved"] {
             let fixture = Fixture::with_bound_interrupted_task();
             let project = fixture.project.lock().unwrap().as_ref().unwrap().clone();
@@ -2051,26 +2242,112 @@ mod tests {
                 },
             );
             fixture.native.shutdown().unwrap();
-            let (bridge, next, _) = fixture.reopen();
+            let (bridge, next, lease) = fixture.reopen();
             let snapshot = next.snapshot().unwrap();
-            assert_eq!(snapshot["canDiscardInterrupted"], false, "{stage}");
+            assert_eq!(snapshot["canDiscardInterrupted"], true, "{stage}");
+            assert_eq!(snapshot["hasInterruptedWork"], true);
+            assert_eq!(snapshot["operationFacts"]["unreviewedCurrent"], 1);
             assert!(
-                snapshot["blockedReason"]
-                    .as_str()
+                next.approve_clean_project(snapshot["snapshotId"].as_str().unwrap())
                     .unwrap()
-                    .contains("编辑或保存记录")
-            );
-            assert!(
-                next.approve_from_ui(snapshot["snapshotId"].as_str().unwrap(), "discard")
-                    .is_err()
+                    .is_none()
             );
             assert!(
                 next.approve_from_ui(snapshot["snapshotId"].as_str().unwrap(), "continue")
-                    .is_err()
+                    .is_err(),
+                "legacy work without immutable native metadata cannot acquire today's task choices"
             );
-            assert_eq!(bridge.status().unwrap().phase, Phase::RecoveryRequired);
+            let approval = next
+                .approve_from_ui(snapshot["snapshotId"].as_str().unwrap(), "discard")
+                .unwrap();
+            let grant = next
+                .handle(bound(
+                    &lease,
+                    "ownership.confirm",
+                    json!({"snapshot":snapshot,"approval":approval}),
+                ))
+                .unwrap();
+            assert_eq!(grant["reconciledOperations"], true);
+            assert!(grant.get("networkPermit").is_none());
+            assert!(grant.get("resumeTask").is_none());
+            assert!(
+                !next.state().unwrap().execution_ready(),
+                "original local cleanup still needs final native verification"
+            );
+            assert_eq!(
+                inspect_operations(&bridge.owner, &bridge.token).unwrap(),
+                counts,
+                "review does not turn unknown into applied or applied into saved"
+            );
+            assert_eq!(
+                inspect_recovery(&bridge.owner, &bridge.token, &project.path)
+                    .unwrap()
+                    .unreviewed_current,
+                0
+            );
             next.shutdown().unwrap();
         }
+    }
+
+    #[test]
+    fn reviewing_one_projects_facts_does_not_grant_storage_or_resume_other_projects() {
+        let fixture = Fixture::new();
+        let lease = fixture.acquire();
+        fixture.approve(&lease);
+        let current = fixture.project.lock().unwrap().as_ref().unwrap().clone();
+        let other = fixture.directory.0.join("other-project");
+        fs::create_dir(&other).unwrap();
+        fs::write(other.join("concat.json"), b"{\"project\":\"other\"}").unwrap();
+        let journal = fixture.bridge.journal.lock().unwrap().clone().unwrap();
+        for (path, call) in [
+            (current.path.clone(), "current"),
+            (other.to_string_lossy().into_owned(), "other"),
+        ] {
+            journal.prepare(&Invocation{conversation_id:1,task_id:2,call_id:call.into()},
+                &json!({"method":"edit.applyGuarded","path":path,"expectedSession":7,"expectedRevision":1}),&path,7,1).unwrap();
+        }
+        drop(journal);
+        fixture.native.shutdown().unwrap();
+        let (bridge, next, lease) = fixture.reopen();
+        let snapshot = next.snapshot().unwrap();
+        assert_eq!(snapshot["canReviewCurrentProject"], true);
+        assert_eq!(snapshot["canContinueInterrupted"], false);
+        assert!(
+            next.approve_from_ui(snapshot["snapshotId"].as_str().unwrap(), "continue")
+                .is_err()
+        );
+        let approval = next
+            .approve_from_ui(snapshot["snapshotId"].as_str().unwrap(), "review")
+            .unwrap();
+        let grant = next
+            .handle(bound(
+                &lease,
+                "ownership.confirm",
+                json!({"snapshot":snapshot,"approval":approval}),
+            ))
+            .unwrap();
+        assert_eq!(grant["reviewedOnly"], true);
+        assert_eq!(grant["remainingOtherOperations"], 1);
+        assert!(grant.get("resumeTask").is_none());
+        assert!(grant.get("discardConversationIds").is_none());
+        assert!(
+            next.handle(bound(
+                &lease,
+                "sqlite.open",
+                json!({"expectedSchemaVersion":2,"allowInitializeEmptyStore":true})
+            ))
+            .is_err()
+        );
+        assert!(
+            next.handle(bound(&lease, "recovery.resumeVerified", json!({})))
+                .is_err()
+        );
+        assert!(!next.state().unwrap().execution_ready());
+        let review = inspect_recovery(&bridge.owner, &bridge.token, &current.path).unwrap();
+        assert_eq!(review.unreviewed_current, 0);
+        assert_eq!(review.pending_other_projects, 1);
+        assert_eq!(review.inspection.needs_project_reconciliation, 2);
+        next.shutdown().unwrap();
     }
 
     #[test]

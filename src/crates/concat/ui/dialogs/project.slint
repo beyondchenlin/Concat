@@ -19,6 +19,7 @@ export struct ProjectSheetData {
     open: bool,
     name: string,
     folder: string,
+    initial-format: string,
     /// The timeline whose frame and rate the Output section edits: the
     /// active one, named so the sheet never looks like it is setting the
     /// whole project's.
@@ -85,6 +86,13 @@ export component ProjectDialog inherits Modal {
             // Named for the timeline it sets, because it sets only that one:
             // a second cut keeps its own frame whatever is picked here.
             title: I18n.t1("project.output", root.data.timeline);
+
+            Text {
+                text: root.data.initial-format;
+                color: Theme.fg-muted;
+                font-size: Theme.fs-sm;
+                wrap: word-wrap;
+            }
 
             // The same eight frames the monitor's picker offers, in the same
             // order, so the two controls can never disagree about what a

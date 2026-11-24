@@ -34,15 +34,17 @@ use crate::dirs::AppDirs;
 use crate::models;
 
 /// The repository the releases are read from.
-pub const REPO: &str = "jub0t/Concat";
+pub const REPO: &str = "beyondchenlin/Concat";
 
 /// The first release with a Version page: the earliest one a person can
-/// come back from, so the earliest one offered.
-pub const FIRST_SWITCHABLE: Version = Version::new(0, 2, 5);
+/// come back from, so the earliest one offered. BK CUT starts with 0.2.13;
+/// older upstream manifests must not replace the product build.
+pub const FIRST_SWITCHABLE: Version = Version::new(0, 2, 13);
 
 /// GitHub's list of the repository's releases, newest first. A hundred
 /// covers years of releases at this pace.
-const RELEASES_URL: &str = "https://api.github.com/repos/jub0t/Concat/releases?per_page=100";
+const RELEASES_URL: &str =
+    "https://api.github.com/repos/beyondchenlin/Concat/releases?per_page=100";
 
 /// What a download that was stopped says.
 pub const CANCELLED: &str = "the download was cancelled";
@@ -205,9 +207,9 @@ pub fn standing(current: Version, releases: &[Release]) -> Standing {
 pub enum PackageKind {
     /// A macOS disk image with the app in it.
     Dmg,
-    /// The Windows installer, `Concat-<version>-windows-<arch>-setup.exe`.
+    /// The Windows installer, `BK CUT-<version>-windows-<arch>-setup.exe`.
     Setup,
-    /// The Windows Installer package, `Concat-<version>-windows-<arch>.msi`:
+    /// The Windows Installer package, `BK CUT-<version>-windows-<arch>.msi`:
     /// the per-machine install an administrator deploys.
     Msi,
     /// A Linux AppImage: one file, started where it lies.
@@ -352,7 +354,7 @@ fn rpm_has_concat() -> bool {
 /// hash to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Package {
-    /// Its file name, `Concat-0.2.5-macos-arm64.dmg`.
+    /// Its file name, `BK CUT-0.2.13-macos-arm64.dmg`.
     pub file: String,
     /// Where to fetch it.
     pub url: String,
@@ -380,6 +382,9 @@ pub fn package_from_manifest(
 ) -> Result<Package, String> {
     let value: serde_json::Value = serde_json::from_str(json)
         .map_err(|error| format!("the release manifest does not read as JSON: {error}"))?;
+    if value.get("product").and_then(serde_json::Value::as_str) != Some("BK CUT") {
+        return Err("the release manifest does not identify BK CUT".to_owned());
+    }
     let entry = value
         .get("binaries")
         .and_then(|binaries| binaries.get(os))
@@ -401,15 +406,54 @@ pub fn package_from_manifest(
             "the manifest names the package {file:?}, which is not a file name"
         ));
     }
-    Ok(Package {
+    let package = Package {
         file,
         url: text("url")?,
         bytes: entry
             .get("bytes")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(0),
-        sha256: text("sha256")?,
-    })
+        sha256: text("sha256")?.to_ascii_lowercase(),
+    };
+    validate_product_package(&package)?;
+    Ok(package)
+}
+
+/// Only this product's versioned release assets can reach the installer.
+/// The exact URL grammar rejects alternate hosts, userinfo, query redirects,
+/// encoded separators and names that Windows could interpret as streams.
+fn validate_product_package(package: &Package) -> Result<(), String> {
+    let suffix = package.file.strip_prefix("BK CUT-");
+    if suffix.is_none_or(|suffix| {
+        suffix.is_empty()
+            || suffix.ends_with('.')
+            || !suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+    }) {
+        return Err("the update package has an invalid BK CUT file name".to_owned());
+    }
+    let prefix = format!("https://github.com/{REPO}/releases/download/");
+    let path = package
+        .url
+        .strip_prefix(&prefix)
+        .ok_or_else(|| "the update package is outside the BK CUT release repository".to_owned())?;
+    let (tag, file) = path
+        .split_once('/')
+        .ok_or_else(|| "the update package has no release tag".to_owned())?;
+    let version = Version::parse(tag)
+        .ok_or_else(|| "the update package release tag is invalid".to_owned())?;
+    if tag != version.tag()
+        || version < FIRST_SWITCHABLE
+        || file != package.file.replace(' ', "%20")
+        || !package.file.starts_with(&format!("BK CUT-{version}-"))
+    {
+        return Err("the update package does not match its release asset".to_owned());
+    }
+    if package.sha256.len() != 64 || !package.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("the update package has no valid SHA-256 digest".to_owned());
+    }
+    Ok(())
 }
 
 /// Where a release's manifest is.
@@ -419,12 +463,29 @@ pub fn manifest_url(tag: &str) -> String {
 
 /// The package of `kind` for this machine in `release`, from its manifest.
 pub fn fetch_package(release: &Release, kind: PackageKind) -> Result<Package, String> {
-    package_from_manifest(
-        &get_text(&manifest_url(&release.tag))?,
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-        kind,
-    )
+    if release.tag != release.version.tag() || release.version < FIRST_SWITCHABLE {
+        return Err("the requested BK CUT release tag is invalid".to_owned());
+    }
+    let json = get_text(&manifest_url(&release.tag))?;
+    let manifest: serde_json::Value = serde_json::from_str(&json)
+        .map_err(|error| format!("the release manifest does not read as JSON: {error}"))?;
+    if manifest.get("tag").and_then(serde_json::Value::as_str) != Some(release.tag.as_str())
+        || manifest.get("version").and_then(serde_json::Value::as_str)
+            != Some(release.version.to_string().as_str())
+    {
+        return Err("the release manifest does not match the selected BK CUT version".to_owned());
+    }
+    let package = package_from_manifest(&json, std::env::consts::OS, std::env::consts::ARCH, kind)?;
+    if package.url
+        != format!(
+            "https://github.com/{REPO}/releases/download/{}/{}",
+            release.tag,
+            package.file.replace(' ', "%20")
+        )
+    {
+        return Err("the update asset belongs to another BK CUT release".to_owned());
+    }
+    Ok(package)
 }
 
 /// Where packages are downloaded to.
@@ -443,6 +504,9 @@ pub fn download_package(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<PathBuf, String> {
+    // Recheck at the I/O boundary: Package is public and can be constructed
+    // without passing through the manifest reader.
+    validate_product_package(package)?;
     std::fs::create_dir_all(folder)
         .map_err(|error| format!("could not create {}: {error}", folder.display()))?;
     let partial = folder.join(format!("{}.part", package.file));
@@ -711,7 +775,7 @@ fn detach(command: &mut Command) -> Result<(), String> {
 /// One GET, read whole as text. GitHub wants a user agent and says so with
 /// a 403 otherwise.
 fn get_text(url: &str) -> Result<String, String> {
-    let agent = format!("Concat/{}", Version::current());
+    let agent = format!("BK-CUT/{}", Version::current());
     let response = crate::net::get(
         url,
         std::time::Duration::from_secs(20),
@@ -776,12 +840,12 @@ mod tests {
 
     const RELEASES: &str = r#"[
         {"tag_name": "nightly", "draft": false, "prerelease": true, "published_at": "2026-10-03T01:00:00Z"},
-        {"tag_name": "v0.2.7", "draft": true, "prerelease": false, "published_at": null},
+        {"tag_name": "v0.2.15", "draft": true, "prerelease": false, "published_at": null},
         {"tag_name": "v0.3.0-beta.1", "draft": false, "prerelease": true, "published_at": "2026-10-02T12:00:00Z"},
-        {"tag_name": "v0.2.5", "draft": false, "prerelease": false, "published_at": "2026-09-28T09:30:00Z"},
-        {"tag_name": "v0.2.6", "draft": false, "prerelease": false, "published_at": "2026-10-01T17:34:02Z"},
-        {"tag_name": "v0.2.4", "draft": false, "prerelease": false, "published_at": "2026-09-24T17:34:02Z"},
-        {"tag_name": "v0.2.6", "draft": false, "prerelease": false, "published_at": "2026-10-01T17:34:02Z"}
+        {"tag_name": "v0.2.13", "draft": false, "prerelease": false, "published_at": "2026-09-28T09:30:00Z"},
+        {"tag_name": "v0.2.14", "draft": false, "prerelease": false, "published_at": "2026-10-01T17:34:02Z"},
+        {"tag_name": "v0.2.12", "draft": false, "prerelease": false, "published_at": "2026-09-24T17:34:02Z"},
+        {"tag_name": "v0.2.14", "draft": false, "prerelease": false, "published_at": "2026-10-01T17:34:02Z"}
     ]"#;
 
     #[test]
@@ -791,8 +855,8 @@ mod tests {
             .iter()
             .map(|release| release.version.to_string())
             .collect();
-        assert_eq!(versions, ["0.2.6", "0.2.5"]);
-        assert_eq!(releases[0].tag, "v0.2.6");
+        assert_eq!(versions, ["0.2.14", "0.2.13"]);
+        assert_eq!(releases[0].tag, "v0.2.14");
         assert_eq!(releases[0].published, "2026-10-01");
         assert_eq!(releases[1].published, "2026-09-28");
         assert!(releases_from_json("[]").expect("reads").is_empty());
@@ -810,21 +874,24 @@ mod tests {
     fn standing_says_where_this_build_sits() {
         let releases = releases_from_json(RELEASES).expect("reads");
         assert_eq!(
-            standing(Version::new(0, 2, 5), &releases),
-            Standing::Behind(Version::new(0, 2, 6))
+            standing(Version::new(0, 2, 13), &releases),
+            Standing::Behind(Version::new(0, 2, 14))
         );
-        assert_eq!(standing(Version::new(0, 2, 6), &releases), Standing::Latest);
-        assert_eq!(standing(Version::new(0, 2, 7), &releases), Standing::Ahead);
-        assert_eq!(standing(Version::new(0, 2, 6), &[]), Standing::NoReleases);
+        assert_eq!(
+            standing(Version::new(0, 2, 14), &releases),
+            Standing::Latest
+        );
+        assert_eq!(standing(Version::new(0, 2, 15), &releases), Standing::Ahead);
+        assert_eq!(standing(Version::new(0, 2, 14), &[]), Standing::NoReleases);
     }
 
     const MANIFEST: &str = r#"{
-        "schema": 2, "version": "0.2.6", "tag": "v0.2.6",
+        "schema": 2, "product": "BK CUT", "version": "0.2.14", "tag": "v0.2.14",
         "binaries": {
-            "macos": {"arm64": {"dmg": {"file": "Concat-0.2.6-macos-arm64.dmg", "url": "https://example.test/arm64.dmg", "bytes": 59456586, "sha256": "26cc"}}},
-            "linux": {"x86_64": {"appimage": {"file": "Concat-0.2.6-linux-x86_64.AppImage", "url": "https://example.test/x.AppImage", "bytes": 1, "sha256": "5c75"},
+            "macos": {"arm64": {"dmg": {"file": "BK CUT-0.2.14-macos-arm64.dmg", "url": "https://github.com/beyondchenlin/Concat/releases/download/v0.2.14/BK%20CUT-0.2.14-macos-arm64.dmg", "bytes": 59456586, "sha256": "26cc26cc26cc26cc26cc26cc26cc26cc26cc26cc26cc26cc26cc26cc26cc26cc"}}},
+            "linux": {"x86_64": {"appimage": {"file": "BK CUT-0.2.14-linux-x86_64.AppImage", "url": "https://github.com/beyondchenlin/Concat/releases/download/v0.2.14/BK%20CUT-0.2.14-linux-x86_64.AppImage", "bytes": 1, "sha256": "5c755c755c755c755c755c755c755c755c755c755c755c755c755c755c755c75"},
                                  "deb": {"file": "../evil.deb", "url": "https://example.test/evil", "bytes": 1, "sha256": "00"}}},
-            "windows": {"aarch64": {"setup": {"file": "Concat-0.2.6-windows-aarch64-setup.exe", "url": "https://example.test/setup.exe", "sha256": "7042"}}}
+            "windows": {"aarch64": {"setup": {"file": "BK CUT-0.2.14-windows-aarch64-setup.exe", "url": "https://github.com/beyondchenlin/Concat/releases/download/v0.2.14/BK%20CUT-0.2.14-windows-aarch64-setup.exe", "sha256": "7042704270427042704270427042704270427042704270427042704270427042"}}}
         }
     }"#;
 
@@ -832,12 +899,18 @@ mod tests {
     fn the_package_is_found_by_platform_architecture_and_kind() {
         let mac =
             package_from_manifest(MANIFEST, "macos", "aarch64", PackageKind::Dmg).expect("a Mac's");
-        assert_eq!(mac.file, "Concat-0.2.6-macos-arm64.dmg");
+        assert_eq!(mac.file, "BK CUT-0.2.14-macos-arm64.dmg");
         assert_eq!(mac.bytes, 59456586);
-        assert_eq!(mac.sha256, "26cc");
+        assert_eq!(
+            mac.sha256,
+            "26cc26cc26cc26cc26cc26cc26cc26cc26cc26cc26cc26cc26cc26cc26cc26cc"
+        );
         let appimage = package_from_manifest(MANIFEST, "linux", "x86_64", PackageKind::AppImage)
             .expect("an AppImage");
-        assert_eq!(appimage.url, "https://example.test/x.AppImage");
+        assert_eq!(
+            appimage.url,
+            "https://github.com/beyondchenlin/Concat/releases/download/v0.2.14/BK%20CUT-0.2.14-linux-x86_64.AppImage"
+        );
         // A size the manifest leaves out is zero, not a refusal.
         let setup = package_from_manifest(MANIFEST, "windows", "aarch64", PackageKind::Setup)
             .expect("an installer");
@@ -909,9 +982,91 @@ mod tests {
             assert!(!kind.key().is_empty());
         }
         assert_eq!(
-            manifest_url("v0.2.6"),
-            "https://github.com/jub0t/Concat/releases/download/v0.2.6/manifest.json"
+            manifest_url("v0.2.14"),
+            "https://github.com/beyondchenlin/Concat/releases/download/v0.2.14/manifest.json"
         );
+    }
+
+    #[test]
+    fn product_updates_refuse_other_repositories_and_malformed_assets() {
+        let valid =
+            package_from_manifest(MANIFEST, "windows", "aarch64", PackageKind::Setup).unwrap();
+        for url in [
+            "https://github.com/jub0t/Concat/releases/download/v0.2.14/BK%20CUT-0.2.14-windows-aarch64-setup.exe",
+            "https://github.com.evil.test/beyondchenlin/Concat/releases/download/v0.2.14/BK%20CUT-0.2.14-windows-aarch64-setup.exe",
+            "http://github.com/beyondchenlin/Concat/releases/download/v0.2.14/BK%20CUT-0.2.14-windows-aarch64-setup.exe",
+            "https://github.com/beyondchenlin/Concat/releases/download/v0.2.14/other.exe",
+            "https://github.com/beyondchenlin/Concat/releases/download/v0.2.14/BK%20CUT-0.2.14-windows-aarch64-setup.exe?redirect=1",
+        ] {
+            let mut bad = valid.clone();
+            bad.url = url.to_owned();
+            assert!(validate_product_package(&bad).is_err(), "{url}");
+        }
+        for file in [
+            "../bad.exe",
+            "BK-CUT-0.2.14-windows-aarch64-setup.exe",
+            "BK  CUT-0.2.14-windows-aarch64-setup.exe",
+            "BK CUT-0.2.14-windows aarch64-setup.exe",
+            "BK\tCUT-0.2.14-windows-aarch64-setup.exe",
+            "BK CUT-0.2.14-windows-中文-setup.exe",
+            "BK CUT-x.exe:stream",
+            "BK CUT-x.exe.",
+            "BK CUT-%2f.exe",
+            "Concat-old.exe",
+        ] {
+            let mut bad = valid.clone();
+            bad.file = file.to_owned();
+            assert!(validate_product_package(&bad).is_err(), "{file}");
+        }
+        let mut bad = valid;
+        bad.sha256 = "7042".to_owned();
+        assert!(validate_product_package(&bad).is_err());
+        assert!(
+            package_from_manifest(
+                &MANIFEST.replace("\"product\": \"BK CUT\"", "\"product\": \"Concat\""),
+                "windows",
+                "aarch64",
+                PackageKind::Setup
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn product_update_requires_one_brand_space_and_its_exact_url_encoding() {
+        let valid =
+            package_from_manifest(MANIFEST, "windows", "aarch64", PackageKind::Setup).unwrap();
+        assert_eq!(valid.file, "BK CUT-0.2.14-windows-aarch64-setup.exe");
+        assert!(validate_product_package(&valid).is_ok());
+        for encoded in [
+            "BK CUT-",
+            "BK+CUT-",
+            "BK%2520CUT-",
+            "BK%20%20CUT-",
+            "BK%2fCUT-",
+            "BK%5cCUT-",
+        ] {
+            let mut bad = valid.clone();
+            bad.url = bad.url.replace("BK%20CUT-", encoded);
+            assert!(validate_product_package(&bad).is_err(), "{encoded}");
+        }
+    }
+
+    #[test]
+    fn invalid_update_package_is_rejected_before_touching_the_download_folder() {
+        let package = Package {
+            file: "../outside.exe".to_owned(),
+            url: "https://example.test/x".to_owned(),
+            bytes: 1,
+            sha256: "a".repeat(64),
+        };
+        let path =
+            std::env::temp_dir().join(format!("bk-cut-invalid-update-{}", std::process::id()));
+        assert!(!path.exists());
+        let error =
+            download_package(&package, &path, &AtomicBool::new(false), &mut |_, _| {}).unwrap_err();
+        assert!(error.contains("invalid BK CUT file name"));
+        assert!(!path.exists());
     }
 
     #[test]

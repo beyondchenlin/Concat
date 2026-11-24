@@ -279,7 +279,9 @@ fn read_manifest(root: &Path) -> Result<(PathBuf, Option<Value>), String> {
     read_manifest_as_stored(root).map(|(path, stored)| (path, stored.map(|(document, _)| document)))
 }
 
-fn read_manifest_as_stored(root: &Path) -> Result<(PathBuf, Option<(Value, Vec<u8>)>), String> {
+type StoredManifest = (Value, Vec<u8>);
+
+fn read_manifest_as_stored(root: &Path) -> Result<(PathBuf, Option<StoredManifest>), String> {
     for name in std::iter::once(super::MANIFEST).chain(super::LEGACY_MANIFESTS.iter().copied()) {
         let manifest = root.join(name);
         match std::fs::symlink_metadata(&manifest) {

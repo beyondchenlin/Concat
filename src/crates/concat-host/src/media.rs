@@ -118,11 +118,16 @@ impl MediaSummary {
             kind: self.kind,
             width: self.video.as_ref().map(|video| video.width),
             height: self.video.as_ref().map(|video| video.height),
-            frame_rate: self.video.as_ref().map(|video| video.frame_rate),
+            frame_rate: self
+                .video
+                .as_ref()
+                .map(|video| video.frame_rate)
+                .filter(|rate| rate.is_finite() && *rate > 0.0),
             frame_rate_fraction: self
                 .video
                 .as_ref()
-                .map(|video| video.frame_rate_fraction.clone()),
+                .map(|video| video.frame_rate_fraction.clone())
+                .filter(|rate| !rate.is_empty()),
             video_codec: self.video.as_ref().map(|video| video.codec.clone()),
             audio_codec: self.audio.as_ref().map(|audio| audio.codec.clone()),
             has_audio: self.audio.is_some(),
@@ -200,12 +205,20 @@ impl From<concat_media::MediaInfo> for MediaSummary {
                 codec: video.codec,
                 width: video.width,
                 height: video.height,
-                frame_rate: video.frame_rate.fps().as_f64(),
-                frame_rate_fraction: format!(
-                    "{}/{}",
-                    video.frame_rate.fps().numerator(),
-                    video.frame_rate.fps().denominator()
-                ),
+                frame_rate: if video.frame_rate_known {
+                    video.frame_rate.fps().as_f64()
+                } else {
+                    0.0
+                },
+                frame_rate_fraction: if video.frame_rate_known {
+                    format!(
+                        "{}/{}",
+                        video.frame_rate.fps().numerator(),
+                        video.frame_rate.fps().denominator()
+                    )
+                } else {
+                    String::new()
+                },
                 color_range: video.color_range.map(|range| range.name().to_owned()),
                 color_space: match video.signal {
                     Signal::Hlg => ColorSpace::Hlg,
@@ -1000,6 +1013,7 @@ mod tests {
                 width: 1440,
                 height: 1080,
                 frame_rate: concat_core::time::FrameRate::from_int(25),
+                frame_rate_known: true,
                 cadence: concat_core::time::FrameRate::from_int(25),
                 color_range: None,
                 signal: Signal::Sdr,
@@ -1008,6 +1022,32 @@ mod tests {
             audio: None,
             audio_streams: Vec::new(),
         }
+    }
+
+    #[test]
+    fn unknown_source_rate_reaches_first_native_match_without_a_fabricated_rate() {
+        let mut info = probed("/missing-rate.mp4", Some(Rational::from_int(2)));
+        info.video.as_mut().unwrap().frame_rate_known = false;
+        let summary = MediaSummary::from(info);
+        let item = summary.to_new_media();
+        assert_eq!(item.frame_rate, None);
+        assert_eq!(item.frame_rate_fraction, None);
+        let mut project = concat_project::Project::new();
+        project.active_mut().video.rate_num = 24000;
+        project.active_mut().video.rate_den = 1001;
+        concat_project::initial_format::initialize(&mut project, true);
+        let mut editor = concat_project::Editor::from_project(project);
+        editor
+            .import_media(vec![item], true, &Default::default())
+            .unwrap();
+        assert_eq!(
+            (
+                editor.project().active().video.rate_num,
+                editor.project().active().video.rate_den
+            ),
+            (24000, 1001)
+        );
+        assert!(concat_project::initial_format::read(editor.project()).used_default_rate);
     }
 
     /// FFmpeg's `image2` demuxer, which reads JPEGs, states the one frame's

@@ -1073,6 +1073,241 @@ fn inspect_owned_storage(root: &Path) -> Result<StorageInspection, SqliteError> 
     })
 }
 
+/// Original live records read without opening a writable Pi store.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct InterruptedWork {
+    /// Every nonterminal task in the shared original store.
+    pub tasks: Vec<Value>,
+    /// Every nonterminal original submission. No query filters by project.
+    pub submissions: Vec<Value>,
+    /// Latest terminal submission for a draining conversation, when no input
+    /// remains live. A committed answer can still have local task cleanup.
+    pub draining_submission: Option<Value>,
+}
+
+/// Read the exact original record JSON and cross-check its indexed identities.
+/// This is evidence only: it neither initializes storage nor runs Pi.
+pub fn inspect_interrupted_work(
+    owner: &SessionOwner,
+    token: &OwnerToken,
+) -> Result<InterruptedWork, SqliteError> {
+    owner.with_owned(token, || ())?;
+    let result = (|| -> Result<InterruptedWork, SqliteError> {
+        let path = storage_path(owner.storage_root())?;
+        if !path.exists() {
+            return Ok(InterruptedWork::default());
+        }
+        let mut connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW
+                | OpenFlags::SQLITE_OPEN_PRIVATE_CACHE,
+        )?;
+        configure(&connection)?;
+        install_authorization(&mut connection, Arc::new(AuthorizationState::default()))?;
+        let tables = schema_objects(&connection)?;
+        if schema_version(&connection, &tables)? != Some(i64::from(PI_SCHEMA_VERSION))
+            || !has_required_tables(&tables)
+        {
+            return Err(SqliteError::SchemaMismatch {
+                found: schema_version(&connection, &tables)?,
+            });
+        }
+        let mut work = InterruptedWork::default();
+        for (sql, into) in [
+            (
+                "SELECT id,conversation_id,record FROM tasks WHERE status != 'terminal' ORDER BY id",
+                &mut work.tasks,
+            ),
+            (
+                "SELECT id,conversation_id,record FROM submissions WHERE status NOT IN ('done','unanswered') ORDER BY id",
+                &mut work.submissions,
+            ),
+        ] {
+            let mut statement = connection.prepare(sql)?;
+            let mut rows = statement.query([])?;
+            while let Some(row) = rows.next()? {
+                owner.with_owned(token, || ())?;
+                into.push(checked_original_record(row)?);
+            }
+        }
+        if work.submissions.is_empty()
+            && let Some(conversation) = work
+                .tasks
+                .first()
+                .and_then(|task| task["conversationId"].as_u64())
+        {
+            let mut statement = connection.prepare("SELECT id,conversation_id,record FROM submissions WHERE conversation_id=?1 ORDER BY id DESC LIMIT 1")?;
+            let mut rows = statement.query([conversation as i64])?;
+            if let Some(row) = rows.next()? {
+                work.draining_submission = Some(checked_original_record(row)?);
+            }
+        }
+        Ok(work)
+    })();
+    owner.with_owned(token, || ())?;
+    result
+}
+
+/// Resolve only original model-tool calls inside one native input's transcript
+/// interval. This includes already-terminal calls, so a saved edit from an
+/// earlier round of the same interrupted request is not lost. It excludes
+/// prior/later inputs in the same conversation and unknown nested task kinds.
+/// No record is rewritten and no outcome is inferred from transcript text.
+pub fn inspect_submission_invocations(
+    owner: &SessionOwner,
+    token: &OwnerToken,
+    conversation: u64,
+    submission: u64,
+) -> Result<Vec<crate::operations::Invocation>, SqliteError> {
+    owner.with_owned(token, || ())?;
+    if conversation > MAX_SAFE_INTEGER as u64 || submission > MAX_SAFE_INTEGER as u64 {
+        return Err(SqliteError::InvalidRequest(
+            "original recovery identity is invalid",
+        ));
+    }
+    let result = (|| -> Result<Vec<crate::operations::Invocation>, SqliteError> {
+        let path = storage_path(owner.storage_root())?;
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let mut connection = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW
+                | OpenFlags::SQLITE_OPEN_PRIVATE_CACHE,
+        )?;
+        configure(&connection)?;
+        install_authorization(&mut connection, Arc::new(AuthorizationState::default()))?;
+        let tables = schema_objects(&connection)?;
+        if schema_version(&connection, &tables)? != Some(i64::from(PI_SCHEMA_VERSION))
+            || !has_required_tables(&tables)
+        {
+            return Err(SqliteError::SchemaMismatch {
+                found: schema_version(&connection, &tables)?,
+            });
+        }
+        let mut statement = connection.prepare("SELECT id,conversation_id,record FROM submissions WHERE conversation_id=?1 ORDER BY id")?;
+        let mut rows = statement.query([conversation as i64])?;
+        let mut inputs = Vec::new();
+        let mut original = None;
+        while let Some(row) = rows.next()? {
+            owner.with_owned(token, || ())?;
+            let record = checked_original_record(row)?;
+            if record["id"].as_u64() == Some(submission) {
+                original = Some(record.clone());
+            }
+            if record["type"].as_str() == Some("input")
+                && let Some(entry) = record["entry"].as_u64()
+            {
+                inputs.push(entry);
+            }
+        }
+        let original = original.ok_or(SqliteError::InvalidRequest(
+            "original recovery submission is missing",
+        ))?;
+        if original["type"].as_str() != Some("input") {
+            return Err(SqliteError::InvalidRequest(
+                "recovery input type is invalid",
+            ));
+        }
+        let Some(first) = original["entry"].as_u64() else {
+            return Ok(Vec::new());
+        };
+        let next = inputs.into_iter().filter(|entry| *entry > first).min();
+        let mut result = Vec::new();
+        // Pi 1.5.2's encodeIndexedString() stores task kinds as JSON strings.
+        // Keep the earlier plain-string form readable without rewriting either
+        // representation. The record remains authoritative and is checked below.
+        let mut statement = connection.prepare(
+            "SELECT id,conversation_id,record,kind FROM tasks WHERE conversation_id=?1 AND kind IN (?2,?3) ORDER BY id",
+        )?;
+        let mut rows = statement.query(rusqlite::params![
+            conversation as i64,
+            "pi.tool",
+            "\"pi.tool\""
+        ])?;
+        while let Some(row) = rows.next()? {
+            owner.with_owned(token, || ())?;
+            let task = checked_original_record(row)?;
+            let indexed_kind: String = row.get(3)?;
+            if !matches!(indexed_kind.as_str(), "pi.tool" | "\"pi.tool\"")
+                || task["kind"].as_str() != Some("pi.tool")
+            {
+                return Err(SqliteError::InvalidRequest(
+                    "original durable task kind differs from its index",
+                ));
+            }
+            if task["version"].as_u64() != Some(4)
+                || task["input"]["kind"].as_str() != Some("model")
+            {
+                continue;
+            }
+            let Some(assistant) = task["input"]["assistant"].as_u64() else {
+                continue;
+            };
+            if assistant <= first
+                || next.is_some_and(|next| assistant >= next)
+                || assistant > MAX_SAFE_INTEGER as u64
+            {
+                continue;
+            }
+            let Some(parent) = task["owner"].as_u64() else {
+                continue;
+            };
+            let mut entry_statement = connection.prepare(
+                "SELECT id,conversation_id,record FROM entries WHERE id=?1 AND conversation_id=?2",
+            )?;
+            let mut entries = entry_statement.query([assistant as i64, conversation as i64])?;
+            let Some(row) = entries.next()? else {
+                continue;
+            };
+            let entry = checked_original_record(row)?;
+            if entry["byTaskId"].as_u64() != Some(parent) {
+                continue;
+            }
+            let Some(call) = task["input"]["callId"].as_str() else {
+                continue;
+            };
+            if call.is_empty() || call.len() > 512 || call.chars().any(char::is_control) {
+                continue;
+            }
+            result.push(crate::operations::Invocation {
+                conversation_id: conversation,
+                task_id: task["id"].as_u64().expect("checked indexed task identity"),
+                call_id: call.to_owned(),
+            });
+        }
+        Ok(result)
+    })();
+    owner.with_owned(token, || ())?;
+    result
+}
+
+fn checked_original_record(row: &rusqlite::Row<'_>) -> Result<Value, SqliteError> {
+    let id: i64 = row.get(0)?;
+    let conversation: i64 = row.get(1)?;
+    let text: String = row.get(2)?;
+    if !(0..=MAX_SAFE_INTEGER).contains(&id)
+        || !(0..=MAX_SAFE_INTEGER).contains(&conversation)
+        || text.len() > MAX_VALUE_BYTES
+    {
+        return Err(SqliteError::InvalidRequest(
+            "original durable record is invalid",
+        ));
+    }
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|_| SqliteError::InvalidRequest("original durable record is not JSON"))?;
+    if value["id"].as_i64() != Some(id) || value["conversationId"].as_i64() != Some(conversation) {
+        return Err(SqliteError::InvalidRequest(
+            "original durable record identity differs from its index",
+        ));
+    }
+    Ok(value)
+}
+
 fn schema_objects(connection: &Connection) -> Result<BTreeMap<String, String>, SqliteError> {
     let mut statement =
         connection.prepare("SELECT name,type FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'")?;
@@ -1391,5 +1626,246 @@ mod stop_tests {
     #[test]
     fn fast_stop_interrupts_a_real_write_without_releasing_its_owner() {
         stopped_statement_rolls_back(true);
+    }
+}
+
+#[cfg(test)]
+mod recovery_record_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn original_file(root: &Path) -> Connection {
+        let db = Connection::open(root.join(DATABASE_FILE_NAME)).unwrap();
+        db.execute_batch(include_str!("../tests/fixtures/pi-schema-1.5.2.sql"))
+            .unwrap();
+        db
+    }
+    fn submission(db: &Connection, id: u64, entry: u64, status: &str) {
+        let value = json!({"id":id,"conversationId":7,"type":"input","requestId":format!("native-{id}"),"entry":entry,"status":status});
+        db.execute("INSERT INTO submissions(id,conversation_id,status,request_id,record) VALUES(?1,7,?2,?3,?4)",
+            rusqlite::params![id as i64,status,format!("native-{id}"),value.to_string()]).unwrap();
+    }
+    fn tool(db: &Connection, id: u64, assistant: u64, owner: u64) {
+        let value = json!({"id":id,"conversationId":7,"kind":"pi.tool","version":4,"owner":owner,
+            "input":{"kind":"model","assistant":assistant,"callId":format!("call-{id}")},"state":{"status":"terminal","outcome":{"status":"completed"}}});
+        db.execute("INSERT INTO tasks(id,conversation_id,kind,status,abort_requested,background,record) VALUES(?1,7,'pi.tool','terminal',0,0,?2)",
+            rusqlite::params![id as i64,value.to_string()]).unwrap();
+        let entry =
+            json!({"id":assistant,"conversationId":7,"byTaskId":owner,"kind":"pi.assistant"});
+        db.execute(
+            "INSERT INTO entries(id,conversation_id,commit_seq,record) VALUES(?1,7,1,?2)",
+            rusqlite::params![assistant as i64, entry.to_string()],
+        )
+        .unwrap();
+    }
+    #[test]
+    fn original_task_inspection_is_readonly_and_checks_indexed_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let owner = SessionOwner::acquire(root.path()).unwrap();
+        assert_eq!(
+            inspect_interrupted_work(&owner, &owner.token()).unwrap(),
+            InterruptedWork::default()
+        );
+        assert!(!root.path().join(DATABASE_FILE_NAME).exists());
+        let db = original_file(root.path());
+        submission(&db, 2, 3, "placed");
+        let task = json!({"id":5,"conversationId":7,"kind":"pi.generation","version":3,"state":{"status":"running","checkpoint":{"phase":"request"}}});
+        db.execute("INSERT INTO tasks(id,conversation_id,kind,status,abort_requested,background,record) VALUES(5,7,'pi.generation','running',0,0,?1)",[task.to_string()]).unwrap();
+        drop(db);
+        let before = fs::read(root.path().join(DATABASE_FILE_NAME)).unwrap();
+        let work = inspect_interrupted_work(&owner, &owner.token()).unwrap();
+        assert_eq!(work.tasks, vec![task]);
+        assert_eq!(work.submissions.len(), 1);
+        assert_eq!(
+            before,
+            fs::read(root.path().join(DATABASE_FILE_NAME)).unwrap()
+        );
+        let db = Connection::open(root.path().join(DATABASE_FILE_NAME)).unwrap();
+        db.execute(
+            "UPDATE tasks SET record=?1 WHERE id=5",
+            [json!({"id":99,"conversationId":7}).to_string()],
+        )
+        .unwrap();
+        drop(db);
+        assert!(inspect_interrupted_work(&owner, &owner.token()).is_err());
+    }
+    #[test]
+    fn original_submission_tools_include_earlier_rounds_but_exclude_adjacent_inputs() {
+        let root = tempfile::tempdir().unwrap();
+        let db = original_file(root.path());
+        submission(&db, 1, 2, "done");
+        tool(&db, 6, 5, 4);
+        submission(&db, 10, 11, "placed");
+        tool(&db, 15, 14, 13);
+        tool(&db, 19, 18, 17);
+        submission(&db, 25, 26, "done");
+        tool(&db, 30, 29, 28);
+        drop(db);
+        let owner = SessionOwner::acquire(root.path()).unwrap();
+        let before = fs::read(root.path().join(DATABASE_FILE_NAME)).unwrap();
+        let calls = inspect_submission_invocations(&owner, &owner.token(), 7, 10).unwrap();
+        assert_eq!(
+            calls.iter().map(|call| call.task_id).collect::<Vec<_>>(),
+            vec![15, 19]
+        );
+        assert_eq!(calls[0].call_id, "call-15");
+        assert_eq!(
+            before,
+            fs::read(root.path().join(DATABASE_FILE_NAME)).unwrap()
+        );
+        assert!(inspect_submission_invocations(&owner, &owner.token(), 8, 10).is_err());
+        assert!(inspect_submission_invocations(&owner, &owner.token(), u64::MAX, 10).is_err());
+    }
+
+    fn pinned_original_file(root: &Path) -> Connection {
+        // Created by unmodified pinned openNodeSqliteStorage/commit, not by a
+        // handwritten imitation of its indexed-string serialization.
+        fs::write(
+            root.join(DATABASE_FILE_NAME),
+            include_bytes!("../tests/fixtures/pi-recovery-1.5.2.sqlite3"),
+        )
+        .unwrap();
+        Connection::open(root.join(DATABASE_FILE_NAME)).unwrap()
+    }
+
+    #[test]
+    fn pinned_original_json_kind_indexes_preserve_saved_tool_attribution_readonly() {
+        let root = tempfile::tempdir().unwrap();
+        let db = pinned_original_file(root.path());
+        let kind: String = db
+            .query_row("SELECT kind FROM tasks WHERE id=15", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(kind, "\"pi.tool\"");
+        drop(db);
+        let before = fs::read(root.path().join(DATABASE_FILE_NAME)).unwrap();
+        let owner = SessionOwner::acquire(root.path()).unwrap();
+        for (input, expected) in [(1, vec![6]), (10, vec![15, 19]), (25, vec![30])] {
+            let calls = inspect_submission_invocations(&owner, &owner.token(), 7, input).unwrap();
+            assert_eq!(
+                calls.iter().map(|call| call.task_id).collect::<Vec<_>>(),
+                expected
+            );
+            assert!(calls.iter().all(|call| call.conversation_id == 7
+                && call.call_id == format!("call-{}", call.task_id)));
+        }
+        assert!(inspect_submission_invocations(&owner, &owner.token(), 8, 10).is_err());
+        assert_eq!(
+            before,
+            fs::read(root.path().join(DATABASE_FILE_NAME)).unwrap()
+        );
+    }
+
+    #[test]
+    fn pinned_original_and_legacy_indexes_can_coexist_without_rewriting_history() {
+        let root = tempfile::tempdir().unwrap();
+        let db = pinned_original_file(root.path());
+        // Only this isolated copy is altered to represent the earlier form.
+        db.execute("UPDATE tasks SET kind='pi.tool' WHERE id=15", [])
+            .unwrap();
+        drop(db);
+        let before = fs::read(root.path().join(DATABASE_FILE_NAME)).unwrap();
+        let owner = SessionOwner::acquire(root.path()).unwrap();
+        let calls = inspect_submission_invocations(&owner, &owner.token(), 7, 10).unwrap();
+        assert_eq!(
+            calls.iter().map(|call| call.task_id).collect::<Vec<_>>(),
+            vec![15, 19]
+        );
+        assert_eq!(
+            before,
+            fs::read(root.path().join(DATABASE_FILE_NAME)).unwrap()
+        );
+    }
+
+    #[test]
+    fn both_index_forms_reject_a_conflicting_original_task_kind() {
+        for indexed_kind in ["pi.tool", "\"pi.tool\""] {
+            let root = tempfile::tempdir().unwrap();
+            let db = pinned_original_file(root.path());
+            let record: String = db
+                .query_row("SELECT record FROM tasks WHERE id=15", [], |row| row.get(0))
+                .unwrap();
+            let mut record: Value = serde_json::from_str(&record).unwrap();
+            record["kind"] = json!("unrelated.kind");
+            db.execute(
+                "UPDATE tasks SET kind=?1,record=?2 WHERE id=15",
+                rusqlite::params![indexed_kind, record.to_string()],
+            )
+            .unwrap();
+            drop(db);
+            let owner = SessionOwner::acquire(root.path()).unwrap();
+            assert!(matches!(
+                inspect_submission_invocations(&owner, &owner.token(), 7, 10),
+                Err(SqliteError::InvalidRequest(
+                    "original durable task kind differs from its index"
+                ))
+            ));
+        }
+    }
+
+    #[test]
+    fn encoded_original_indexes_keep_assistant_owner_and_version_checks() {
+        let root = tempfile::tempdir().unwrap();
+        let db = pinned_original_file(root.path());
+        for (table, id, field, value) in [
+            ("entries", 14, "byTaskId", json!(999)),
+            ("tasks", 19, "version", json!(5)),
+        ] {
+            let record: String = db
+                .query_row(
+                    &format!("SELECT record FROM {table} WHERE id=?1"),
+                    [id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let mut record: Value = serde_json::from_str(&record).unwrap();
+            record[field] = value;
+            db.execute(
+                &format!("UPDATE {table} SET record=?1 WHERE id=?2"),
+                rusqlite::params![record.to_string(), id],
+            )
+            .unwrap();
+        }
+        drop(db);
+        let owner = SessionOwner::acquire(root.path()).unwrap();
+        assert!(
+            inspect_submission_invocations(&owner, &owner.token(), 7, 10)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the sealed whole-application saved-continue crash database"]
+    fn sealed_whole_application_saved_task_is_found_without_rewriting_original_database() {
+        let source = std::path::PathBuf::from(
+            std::env::var_os("BK_CUT_RECOVERY_REAL_DATABASE").expect("sealed SQLite copy path"),
+        );
+        let original = fs::read(&source).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(DATABASE_FILE_NAME), &original).unwrap();
+        let owner = SessionOwner::acquire(root.path()).unwrap();
+        let calls = inspect_submission_invocations(&owner, &owner.token(), 2, 9).unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].task_id, 13);
+        assert_eq!(calls[0].conversation_id, 2);
+        assert_eq!(
+            original,
+            fs::read(root.path().join(DATABASE_FILE_NAME)).unwrap()
+        );
+        assert_eq!(original, fs::read(source).unwrap());
+    }
+
+    #[test]
+    fn terminal_submission_can_be_identified_for_local_original_task_drain() {
+        let root = tempfile::tempdir().unwrap();
+        let db = original_file(root.path());
+        submission(&db, 2, 3, "done");
+        let task = json!({"id":5,"conversationId":7,"kind":"pi.generation","version":3,"state":{"status":"pending","checkpoint":{"phase":"finish"}}});
+        db.execute("INSERT INTO tasks(id,conversation_id,kind,status,abort_requested,background,record) VALUES(5,7,'pi.generation','pending',0,0,?1)",[task.to_string()]).unwrap();
+        drop(db);
+        let owner = SessionOwner::acquire(root.path()).unwrap();
+        let work = inspect_interrupted_work(&owner, &owner.token()).unwrap();
+        assert!(work.submissions.is_empty());
+        assert_eq!(work.draining_submission.unwrap()["id"], 2);
     }
 }

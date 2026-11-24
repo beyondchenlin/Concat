@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { Theme } from "theme/theme.slint";
+import { I18n } from "i18n.slint";
+import { Select } from "primitives/select.slint";
 import { Button, Field, CopyChip } from "primitives/modal.slint";
 import { ResizeBox } from "primitives/resize-box.slint";
 import { ThinScrollbar } from "primitives/scrollbar.slint";
@@ -15,10 +17,14 @@ export struct ScriptVersionData {
 }
 
 export global ScriptUi {
+    in property <bool> has-selected;
+    in property <[string]> content-languages;
+    in property <int> content-language-index;
+    callback content-language-chosen(int);
     in-out property <string> text;
-    in-out property <string> status: "打开文案后可创建和保存版本";
+    in-out property <string> status: I18n.t("script.openHint");
     in-out property <string> error;
-    in-out property <string> selected-label: "尚未选择剪辑版本";
+    in-out property <string> selected-label: I18n.t("script.noSelection");
     in-out property <[ScriptVersionData]> versions;
     in-out property <[ScriptVersionData]> legacy-documents;
     in-out property <bool> has-legacy;
@@ -70,7 +76,7 @@ export component ScriptWorkspace inherits Rectangle {
         spacing: 8px;
         HorizontalLayout {
             Text {
-                text: "文案";
+                text: I18n.t("script.title");
                 color: Theme.fg;
                 font-size: Theme.fs-xl;
                 font-weight: Theme.weight-title;
@@ -78,14 +84,22 @@ export component ScriptWorkspace inherits Rectangle {
                 vertical-alignment: center;
             }
             Button {
-                label: "新建草稿";
+                label: I18n.t("script.newDraft");
                 enabled: ScriptUi.ready && !ScriptUi.busy && !ScriptUi.dirty;
                 clicked => { ScriptUi.new-requested(); }
             }
             Button {
-                label: ScriptUi.dirty ? "保留草稿并读取" : "重新读取";
+                label: ScriptUi.dirty ? I18n.t("script.reloadKeepDraft") : I18n.t("script.reload");
                 enabled: !ScriptUi.busy && !ScriptUi.generating;
                 clicked => { ScriptUi.reload-requested(); }
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Text { text: I18n.t("language.writing"); color: Theme.fg-muted; font-size: Theme.fs; vertical-alignment: center; }
+            Select { options: ScriptUi.content-languages; current: ScriptUi.content-language-index;
+                enabled: ScriptUi.ready; horizontal-stretch: 1;
+                changed(index) => { ScriptUi.content-language-chosen(index); }
             }
         }
         Text {
@@ -101,13 +115,13 @@ export component ScriptWorkspace inherits Rectangle {
             wrap: word-wrap;
         }
         Text {
-            text: "文案要求";
+            text: I18n.t("script.requirements");
             color: Theme.fg;
             font-size: Theme.fs;
         }
         Field {
             value: ScriptUi.generation-instruction;
-            placeholder: "主题、受众、时长，或需要怎样改写";
+            placeholder: I18n.t("script.requirementsHint");
             max-length: 2048;
             edited(text) => { ScriptUi.generation-instruction = text; }
         }
@@ -115,17 +129,17 @@ export component ScriptWorkspace inherits Rectangle {
         HorizontalLayout {
             spacing: 6px;
             if ScriptUi.generating: Button {
-                label: "停止生成";
+                label: I18n.t("script.stopGeneration");
                 clicked => { ScriptUi.stop-generation-requested(); }
             }
             Button {
-                label: "生成候选";
+                label: I18n.t("script.generate");
                 enabled: ScriptUi.can-generate && ScriptUi.generation-instruction != "";
                 horizontal-stretch: 1;
                 clicked => { ScriptUi.generate-requested(ScriptUi.generation-instruction, false); }
             }
             Button {
-                label: "改写当前草稿";
+                label: I18n.t("script.rewrite");
                 enabled: ScriptUi.can-generate && ScriptUi.generation-instruction != "" && ScriptUi.text != "";
                 horizontal-stretch: 1;
                 clicked => { ScriptUi.generate-requested(ScriptUi.generation-instruction, true); }
@@ -176,7 +190,7 @@ export component ScriptWorkspace inherits Rectangle {
                     }
                 }
                 Button {
-                    label: "确认归属，复制旧稿到当前工程";
+                    label: I18n.t("script.copyLegacy");
                     enabled: ScriptUi.can-copy-legacy;
                     clicked => { ScriptUi.copy-legacy-requested(); }
                 }
@@ -201,7 +215,7 @@ export component ScriptWorkspace inherits Rectangle {
                 font-size: Theme.fs-input;
                 selection-background-color: Theme.accent;
                 selection-foreground-color: Theme.on-accent;
-                accessible-label: "当前工程的文案，可保存为独立版本";
+                accessible-label: I18n.t("script.editorHint");
                 edited => { ScriptUi.edited(self.text); }
                 cursor-position-changed(at) => { words-box.reveal(at.y, self.font-size * 1.4); }
             }
@@ -209,13 +223,13 @@ export component ScriptWorkspace inherits Rectangle {
         HorizontalLayout {
             spacing: 6px;
             Button {
-                label: "放弃本次修改";
+                label: I18n.t("script.discardChanges");
                 max-width: root.compact-sidebar ? 120px : 100000px;
                 enabled: ScriptUi.dirty && !ScriptUi.busy;
                 clicked => { ScriptUi.discard-requested(); }
             }
             Button {
-                label: ScriptUi.busy ? "处理中" : "保存新版本";
+                label: ScriptUi.busy ? I18n.t("script.processing") : I18n.t("script.saveVersion");
                 max-width: root.compact-sidebar ? 120px : 100000px;
                 primary: true;
                 enabled: ScriptUi.can-save;
@@ -226,7 +240,7 @@ export component ScriptWorkspace inherits Rectangle {
         if ScriptUi.candidates.length > 0: VerticalLayout {
             spacing: 6px;
             Text {
-                text: "生成候选";
+                text: I18n.t("script.generate");
                 color: Theme.fg;
                 font-size: Theme.fs;
                 font-weight: Theme.weight-title;
@@ -271,18 +285,18 @@ export component ScriptWorkspace inherits Rectangle {
                         font-size: Theme.fs-input;
                         selection-background-color: Theme.accent;
                         selection-foreground-color: Theme.on-accent;
-                        accessible-label: "候选文案，仅查看，不会覆盖手稿";
+                        accessible-label: I18n.t("script.candidateView");
                     }
                 }
                 HorizontalLayout {
                     spacing: 6px;
                     CopyChip { text: ScriptUi.candidate-text; }
                     Button {
-                        label: "暂不采用";
+                        label: I18n.t("script.dismissCandidate");
                         clicked => { ScriptUi.candidate-dismiss-requested(); }
                     }
                     Button {
-                        label: "接受为草稿";
+                        label: I18n.t("script.acceptCandidate");
                         primary: true;
                         enabled: ScriptUi.can-accept-candidate;
                         horizontal-stretch: 1;
@@ -301,7 +315,7 @@ export component ScriptWorkspace inherits Rectangle {
                 wrap: word-wrap;
             }
             Button {
-                label: "用于剪辑";
+                label: I18n.t("script.useForEditing");
                 enabled: ScriptUi.can-select;
                 clicked => { ScriptUi.select-requested(); }
             }
@@ -322,7 +336,7 @@ export component ScriptWorkspace inherits Rectangle {
                     spacing: 4px;
                     alignment: start;
                     for version in ScriptUi.versions: Button {
-                        label: version.label + (version.selected ? " · 已选定" : "");
+                        label: version.label + (version.selected ? I18n.t("script.selectedFixedSuffix") : "");
                         primary: version.viewed;
                         enabled: !ScriptUi.busy && !ScriptUi.dirty;
                         min-height: 34px;

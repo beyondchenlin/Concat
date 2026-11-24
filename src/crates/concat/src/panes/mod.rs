@@ -20,6 +20,7 @@ pub mod agent_settings;
 pub mod captions;
 pub mod export;
 pub mod glide;
+pub mod import_progress;
 pub mod media_bin;
 pub mod monitor;
 pub mod pace;
@@ -72,7 +73,7 @@ pub enum Msg {
 pub fn activity(msg: &Msg) -> Option<Activity> {
     use captions::CaptionsMsg;
     use export::ExportMsg;
-    use log::Level::{Debug, Error, Info, Warn};
+    use log::Level::{Debug, Error, Info};
     use media_bin::MediaMsg;
     use monitor::MonitorMsg;
     use relink::RelinkMsg;
@@ -154,18 +155,6 @@ pub fn activity(msg: &Msg) -> Option<Activity> {
                     cap(&names.join(", "), 200)
                 ),
             ));
-        }
-        Msg::Media(MediaMsg::Imported(results)) => {
-            let failed = results.iter().filter(|result| result.is_err()).count();
-            let added = results.len() - failed;
-            return Some(if failed == 0 {
-                Activity::once(Info, format!("import: {added} added"))
-            } else {
-                Activity::once(
-                    Warn,
-                    format!("import: {added} added, {failed} would not import"),
-                )
-            });
         }
         Msg::Relink(RelinkMsg::Show(missing)) => {
             return Some(Activity::once(

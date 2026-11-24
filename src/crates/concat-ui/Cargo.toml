@@ -8,6 +8,9 @@ publish = false
 description = "Generated Slint interface for the Concat window."
 
 [dependencies]
+# EmbedFiles needs PNG/JPEG and SVG decoding even without a window backend.
+# Keep this feature-only dependency at the exact core version pinned by Slint.
+i-slint-core = { version = "=1.18.1", default-features = false, features = ["image-decoders", "svg"] }
 slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2"] }
 
 [build-dependencies]

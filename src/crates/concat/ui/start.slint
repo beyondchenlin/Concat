@@ -1622,6 +1622,7 @@ component WideHome inherits Rectangle {
     in property <bool> capcut;
 
     callback compose();
+    callback new-files();
     callback open();
     callback import-capcut();
     callback open-recent(path: string);
@@ -1894,6 +1895,7 @@ component NarrowHome inherits Rectangle {
     in property <bool> capcut;
 
     callback compose();
+    callback new-files();
     callback open();
     callback import-capcut();
     callback open-settings();
@@ -1988,9 +1990,20 @@ component NarrowHome inherits Rectangle {
                 primary: true;
                 glyph: Glyph.plus;
                 title: I18n.t("start.newProject");
-                note: I18n.t("start.newProjectNote");
+                note: root.phone ? I18n.t("start.selectMediaNote") : I18n.t("start.newProjectNote");
                 enabled: !root.busy;
                 clicked => { root.compose(); }
+            }
+
+            if root.phone: Rectangle { height: 10px; }
+            if root.phone: CreateTile {
+                height: 64px;
+                primary: false;
+                glyph: Glyph.folder;
+                title: I18n.t("start.newFromFiles");
+                note: I18n.t("start.filesNote");
+                enabled: !root.busy;
+                clicked => { root.new-files(); }
             }
 
             Rectangle { height: 32px; }
@@ -2103,6 +2116,7 @@ export component StartScreen inherits Rectangle {
 
     /// Put up the sheet a new project is described on.
     callback compose();
+    callback new-files();
     /// Open a project that already exists, picked from disk.
     callback open();
     /// Make a project of a CapCut draft, picked from CapCut's drafts.
@@ -2133,6 +2147,7 @@ export component StartScreen inherits Rectangle {
         can-drop: root.can-drop;
         capcut: root.capcut;
         compose => { root.compose(); }
+        new-files => { root.new-files(); }
         open => { root.open(); }
         import-capcut => { root.import-capcut(); }
         open-recent(path) => { root.open-recent(path); }
@@ -2154,6 +2169,7 @@ export component StartScreen inherits Rectangle {
         phone: root.phone;
         capcut: root.capcut;
         compose => { root.compose(); }
+        new-files => { root.new-files(); }
         open => { root.open(); }
         import-capcut => { root.import-capcut(); }
         open-settings => { root.open-settings(); }

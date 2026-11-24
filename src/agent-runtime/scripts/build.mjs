@@ -23,7 +23,7 @@ const result = await build({
   metafile: true,
   legalComments: "eof",
   outfile: resolve(output, "runtime.js"),
-  banner: { js: "// BK CAT controlled runtime. AGPL-3.0-or-later; bundled Pi original components: MIT, see PI-LICENSE.txt." },
+  banner: { js: "// BK CUT controlled runtime. AGPL-3.0-or-later; bundled Pi original components: MIT, see PI-LICENSE.txt." },
 });
 await build({
   entryPoints: [resolve(packageRoot, "src/browser-entry.ts")],

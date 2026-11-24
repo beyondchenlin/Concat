@@ -57,8 +57,12 @@ public final class BKCatRuntime {
     private static final Map<String, BKCatRuntime> INSTANCES = new HashMap<>();
     private static final String BRIDGE = "BKCatAndroid";
     private static Lifecycle lifecycle;
+    private static final BKCatRuntimePolicy.MessageBudget NATIVE_DELIVERY_BUDGET =
+            new BKCatRuntimePolicy.MessageBudget(BKCatRuntimePolicy.MAX_QUEUED_MESSAGE_BYTES);
 
     private final BKCatRuntimePolicy policy = new BKCatRuntimePolicy();
+    private final BKCatRuntimePolicy.MessageBudget incomingBudget =
+            new BKCatRuntimePolicy.MessageBudget(BKCatRuntimePolicy.MAX_QUEUED_MESSAGE_BYTES);
     private final AtomicBoolean disposed = new AtomicBoolean(false);
     private final Activity activity;
     private final String instance;
@@ -77,9 +81,9 @@ public final class BKCatRuntime {
         ACTIVITY_FINISHING("activity-finishing", "Android activity is finishing"),
         ACTIVITY_DESTROYED("activity-destroyed", "Android activity was destroyed"),
         ACTIVITY_REPLACED("activity-replaced", "Android activity was replaced"),
-        ACTIVITY_PAUSED("activity-paused", "安卓应用已转入后台。"),
-        ACTIVITY_STOPPED("activity-stopped", "安卓应用已停止显示。"),
-        ACTIVITY_SAVED("activity-saved", "安卓应用正在保存状态。"),
+        ACTIVITY_PAUSED("activity-paused", "lifecycle.activityPaused"),
+        ACTIVITY_STOPPED("activity-stopped", "lifecycle.activityStopped"),
+        ACTIVITY_SAVED("activity-saved", "lifecycle.activitySaved"),
         OBSERVER_UNAVAILABLE("observer-unavailable", "Android lifecycle observer is unavailable"),
         PREVIOUS_COMPONENT_OPEN("previous-component-open", "The preceding Android runtime has not closed"),
         INITIAL_FOCUS_TIMEOUT("initial-focus-timeout", "Android window did not become foreground-ready"),
@@ -259,20 +263,28 @@ public final class BKCatRuntime {
 
     /** The string is data, never interpolated as source code. */
     public static void send(final String instance, final String message) {
+        BKCatRuntimePolicy.Reservation reservation = NATIVE_DELIVERY_BUDGET.reserve(
+                BKCatRuntimePolicy.messageBytes(message));
+        if (reservation == null) throw new IllegalStateException("Android UI rejected native delivery");
         if (!UI.post(() -> {
-            BKCatRuntime fragment = INSTANCES.get(instance);
-            if (fragment == null || fragment.webView == null) return;
-            if (!fragment.policy.canMessage(fragment.webView.getUrl(), message)) return;
-            // JSON string quoting also escapes line separators for every JS engine.
-            String quoted = JSONObject.quote(message)
-                    .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029");
             try {
-                fragment.webView.evaluateJavascript(
-                        "window.__BKCatDeliver(" + quoted + ");", null);
-            } catch (RuntimeException error) {
-                fragment.dispose(StopReason.NATIVE_DELIVERY_FAILED);
-            }
-        })) throw new IllegalStateException("Android UI rejected native delivery");
+                BKCatRuntime fragment = INSTANCES.get(instance);
+                if (fragment == null || fragment.webView == null) return;
+                if (!fragment.policy.canMessage(fragment.webView.getUrl(), message)) return;
+                // JSON string quoting also escapes line separators for every JS engine.
+                String quoted = JSONObject.quote(message)
+                        .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029");
+                try {
+                    fragment.webView.evaluateJavascript(
+                            "window.__BKCatDeliver(" + quoted + ");", null);
+                } catch (RuntimeException error) {
+                    fragment.dispose(StopReason.NATIVE_DELIVERY_FAILED);
+                }
+            } finally { reservation.close(); }
+        })) {
+            reservation.close();
+            throw new IllegalStateException("Android UI rejected native delivery");
+        }
     }
 
     public static void close(final String instance) {
@@ -351,22 +363,31 @@ public final class BKCatRuntime {
         @JavascriptInterface
         public void postMessage(final String message) {
             if (!policy.active()) return;
-            if (message == null || message.length() > BKCatRuntimePolicy.MAX_MESSAGE_CHARS
-                    || message.getBytes(StandardCharsets.UTF_8).length
-                            > BKCatRuntimePolicy.MAX_MESSAGE_CHARS) {
+            int bytes = BKCatRuntimePolicy.messageBytes(message);
+            if (bytes < 0) {
                 if (!UI.post(() -> dispose(StopReason.MESSAGE_TOO_LARGE))) {
                     queueUnavailable(StopReason.UI_MESSAGE_REJECTED);
                 }
+                return;
+            }
+            BKCatRuntimePolicy.Reservation reservation = incomingBudget.reserve(bytes);
+            if (reservation == null) {
+                queueUnavailable(StopReason.UI_MESSAGE_REJECTED);
                 return;
             }
             // JavaScript-interface calls arrive on WebView's background thread.
             // A pause/navigation posted ahead of this callback wins on the UI
             // thread; no stale callback is forwarded to the native dispatcher.
             if (!UI.post(() -> {
-                if (webView != null && policy.canMessage(webView.getUrl(), message)) {
-                    runtimeMessage(instance, message);
-                }
-            })) queueUnavailable(StopReason.UI_MESSAGE_REJECTED);
+                try {
+                    if (webView != null && policy.canMessage(webView.getUrl(), message)) {
+                        runtimeMessage(instance, message);
+                    }
+                } finally { reservation.close(); }
+            })) {
+                reservation.close();
+                queueUnavailable(StopReason.UI_MESSAGE_REJECTED);
+            }
         }
     }
 

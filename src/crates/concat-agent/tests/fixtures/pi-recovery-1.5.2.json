@@ -1,0 +1,54 @@
+{
+  "piVersion": "1.5.2",
+  "piCommit": "d36266e06669c6991a7c9509d1da04d18d30378d",
+  "generatorSha256": "30670a84aa1a97f4a20fbf24825d3027073deb2de4c79b13c5f1de32ddfb92d7",
+  "databaseSha256": "22d7362999974428517dad616620024af55424b4cef2f9927a6beb47e17682a6",
+  "databaseBytes": 122880,
+  "createdBy": "unmodified pinned openNodeSqliteStorage + SqliteStorage.commit",
+  "sourceRowsSha256": "c589893a58a4df5293ee5d1784bfbd7224557e9e1bd21340046a267747dcefe8",
+  "sourceCommitSha256": "84ec01957bf84844b2debee8e00a67bd53f52f8e207489ab405a625a6a5fbdb8",
+  "externalModelCalls": 0,
+  "userDataIncluded": false,
+  "taskIndexes": [
+    {
+      "id": 4,
+      "indexedKind": "\"pi.generation\"",
+      "recordKind": "pi.generation"
+    },
+    {
+      "id": 6,
+      "indexedKind": "\"pi.tool\"",
+      "recordKind": "pi.tool"
+    },
+    {
+      "id": 13,
+      "indexedKind": "\"pi.generation\"",
+      "recordKind": "pi.generation"
+    },
+    {
+      "id": 15,
+      "indexedKind": "\"pi.tool\"",
+      "recordKind": "pi.tool"
+    },
+    {
+      "id": 17,
+      "indexedKind": "\"pi.generation\"",
+      "recordKind": "pi.generation"
+    },
+    {
+      "id": 19,
+      "indexedKind": "\"pi.tool\"",
+      "recordKind": "pi.tool"
+    },
+    {
+      "id": 28,
+      "indexedKind": "\"pi.generation\"",
+      "recordKind": "pi.generation"
+    },
+    {
+      "id": 30,
+      "indexedKind": "\"pi.tool\"",
+      "recordKind": "pi.tool"
+    }
+  ]
+}

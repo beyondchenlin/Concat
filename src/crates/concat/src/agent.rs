@@ -374,6 +374,9 @@ fn journaled_edit(
                 .map_err(|_| ApiError::failed("native refusal record is invalid"))?);
         }
     };
+    #[cfg(feature = "bk-cat-native-probe")]
+    probe::crash::checkpoint(probe::crash::Point::Intent, operation_id, None)
+        .map_err(ApiError::failed)?;
     let reply = match execute(request) {
         Ok(reply) => reply,
         Err(error) => {
@@ -386,6 +389,9 @@ fn journaled_edit(
             return Err(error);
         }
     };
+    #[cfg(feature = "bk-cat-native-probe")]
+    probe::crash::checkpoint(probe::crash::Point::Applied, operation_id, Some(&reply))
+        .map_err(ApiError::failed)?;
     let session = reply
         .get("sessionId")
         .and_then(Value::as_u64)
@@ -410,6 +416,9 @@ fn journaled_edit(
     }
     journal.record_receipt(operation_id, session, revision, &reply)
         .map_err(|error| ApiError::failed(format!("native edit applied but its receipt was not persisted: {error}; reconcile before retry")))?;
+    #[cfg(feature = "bk-cat-native-probe")]
+    probe::crash::checkpoint(probe::crash::Point::Receipt, operation_id, Some(&reply))
+        .map_err(ApiError::failed)?;
     Ok(reply)
 }
 

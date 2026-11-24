@@ -240,12 +240,20 @@ mod java {
         let method = unsafe {
             jni::NativeMethod::from_raw_parts(
                 jni_str!("filesPicked"),
-                jni_str!("([Ljava/lang/String;)V"),
+                jni_str!("(J[Ljava/lang/String;[Ljava/lang/String;[Ljava/lang/String;)V"),
                 super::picker::files_picked as *mut c_void,
             )
         };
-        // SAFETY: as above.
-        unsafe { env.register_native_methods(&class, &[method]) }?;
+        // SAFETY: matches copyProgress(long,int,int,long,long): boolean.
+        let progress = unsafe {
+            jni::NativeMethod::from_raw_parts(
+                jni_str!("copyProgress"),
+                jni_str!("(JIIJJ)Z"),
+                super::picker::copy_progress as *mut c_void,
+            )
+        };
+        // SAFETY: both signatures are the exact Java declarations.
+        unsafe { env.register_native_methods(&class, &[method, progress]) }?;
         env.new_global_ref(class)
     }
 }
@@ -261,7 +269,7 @@ mod java {
 #[cfg(target_os = "android")]
 mod picker {
     use std::path::PathBuf;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     use jni::objects::{JObjectArray, JString};
     use jni::{JavaVM, jni_sig, jni_str, sys};
@@ -269,46 +277,156 @@ mod picker {
 
     type Picked = Box<dyn FnOnce(Vec<PathBuf>) + Send>;
 
-    /// The pick in flight, waiting for Java to answer.
-    static PENDING: Mutex<Option<Picked>> = Mutex::new(None);
+    type CopyFailures = (Vec<PathBuf>, Vec<(String, String)>);
+    struct Pending {
+        transfer: concat::PickTransfer,
+        picked: Picked,
+        metadata: Arc<Mutex<Option<CopyFailures>>>,
+    }
+    /// Both answer and progress are bound to the same native request identity.
+    static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
+
+    fn take(id: u64) -> Option<Pending> {
+        let mut slot = PENDING.lock().ok()?;
+        if slot
+            .as_ref()
+            .is_some_and(|pending| pending.transfer.id() == id)
+        {
+            slot.take()
+        } else {
+            None
+        }
+    }
 
     /// Hands the window's crate a picker that runs on this activity.
     pub fn install(app: &AndroidApp) {
         let app = app.clone();
-        concat::install_file_picker(Box::new(move |kinds, on_picked| {
+        concat::install_file_picker(Box::new(move |kinds, transfer, on_picked| {
+            let id = transfer.id();
+            let completion_app = app.clone();
+            let metadata = Arc::new(Mutex::new(None::<CopyFailures>));
+            let completed_metadata = Arc::clone(&metadata);
+            transfer.on_settled(move |accepted| {
+                // Java owns precisely this selection's new copies until the
+                // current native UI accepts them. A cancellation also wakes
+                // the original callback, never the newer pending request.
+                if let Err(error) = settle(&completion_app, id, accepted) {
+                    log::error!("import: finalizing selection {id} failed: {error}");
+                    if !accepted {
+                        if let Some(pending) = take(id) {
+                            (pending.picked)(Vec::new());
+                        }
+                    }
+                    return Err(error.to_string());
+                }
+                if accepted {
+                    if let Some((paths, failures)) = completed_metadata
+                        .lock()
+                        .ok()
+                        .and_then(|mut slot| slot.take())
+                    {
+                        concat::record_platform_import_failures(paths, failures);
+                    }
+                } else {
+                    if let Some(pending) = take(id) {
+                        (pending.picked)(Vec::new());
+                    }
+                    if let Ok(mut slot) = completed_metadata.lock() {
+                        slot.take();
+                    }
+                }
+                Ok(())
+            });
             let previous = PENDING
                 .lock()
-                .map(|mut slot| slot.replace(on_picked))
+                .map(|mut slot| {
+                    slot.replace(Pending {
+                        transfer: transfer.clone(),
+                        picked: on_picked,
+                        metadata,
+                    })
+                })
                 .ok()
                 .flatten();
             if let Some(previous) = previous {
-                // A pick was already up; the one that asked first is told
-                // it got nothing rather than left waiting for ever.
-                previous(Vec::new());
+                previous.transfer.cancel();
+                (previous.picked)(Vec::new());
             }
-            if let Err(error) = pick(&app, &kinds) {
-                log::error!(
-                    "import: showing the document picker failed: {error}; nothing was picked"
-                );
-                if let Some(pending) = PENDING.lock().ok().and_then(|mut slot| slot.take()) {
-                    pending(Vec::new());
+            if !transfer.pending() {
+                if let Some(pending) = take(id) {
+                    (pending.picked)(Vec::new());
                 }
+                return;
+            }
+            if let Err(error) = pick(&app, &kinds, id) {
+                log::error!("import: showing the document picker failed: {error}");
+                transfer.cancel();
             }
         }));
     }
 
-    fn pick(app: &AndroidApp, kinds: &concat::PickKinds) -> jni::errors::Result<()> {
+    fn pick(app: &AndroidApp, kinds: &concat::PickKinds, request: u64) -> jni::errors::Result<()> {
         let types = mime_types(kinds).join(",");
         super::java::with_class(app, |env, activity, class| {
             let types = env.new_string(&types)?;
             env.call_static_method(
                 class,
                 jni_str!("pick"),
-                jni_sig!("(Landroid/app/Activity;Ljava/lang/String;)V"),
-                &[activity.into(), (&types).into()],
+                jni_sig!("(Landroid/app/Activity;Ljava/lang/String;J)V"),
+                &[activity.into(), (&types).into(), (request as i64).into()],
             )?;
             Ok(())
         })
+    }
+
+    fn settle(app: &AndroidApp, request: u64, accepted: bool) -> Result<(), String> {
+        let acknowledged = super::java::with_class(app, |env, _, class| {
+            env.call_static_method(
+                class,
+                jni_str!("finishPick"),
+                jni_sig!("(JZ)Z"),
+                &[(request as i64).into(), accepted.into()],
+            )?
+            .z()
+        })
+        .map_err(|error| error.to_string())?;
+        if acknowledged {
+            Ok(())
+        } else {
+            Err("import.cancelled".to_owned())
+        }
+    }
+
+    /// A retired selection cannot publish progress for another request.
+    pub(super) unsafe extern "system" fn copy_progress(
+        _env: *mut sys::JNIEnv,
+        _class: sys::jclass,
+        request: sys::jlong,
+        completed: sys::jint,
+        total: sys::jint,
+        bytes: sys::jlong,
+        size: sys::jlong,
+    ) -> sys::jboolean {
+        std::panic::catch_unwind(|| {
+            if completed < 0 || total < 0 || completed > total || bytes < 0 || size < 0 {
+                return false;
+            }
+            let transfer = PENDING.lock().ok().and_then(|slot| {
+                slot.as_ref()
+                    .filter(|pending| pending.transfer.id() == request as u64)
+                    .map(|pending| pending.transfer.clone())
+            });
+            transfer.is_some_and(|transfer| {
+                transfer.progress(concat::PickProgress {
+                    completed: completed as u32,
+                    total: total as u32,
+                    copied_bytes: bytes as u64,
+                    total_bytes: size as u64,
+                })
+            })
+        })
+        .unwrap_or(false)
+        .into()
     }
 
     /// The picker's MIME types for what is asked: media by its families,
@@ -342,7 +460,10 @@ mod picker {
     pub(super) unsafe extern "system" fn files_picked(
         _env: *mut sys::JNIEnv,
         _class: sys::jclass,
+        request: sys::jlong,
         paths: sys::jobjectArray,
+        failed_names: sys::jobjectArray,
+        failures: sys::jobjectArray,
     ) {
         let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let read = JavaVM::singleton().and_then(|vm| {
@@ -354,20 +475,35 @@ mod picker {
                         let item = array.get_element(env, index)?;
                         out.push(PathBuf::from(item.mutf8_chars(env)?.to_string()));
                     }
-                    Ok::<_, jni::errors::Error>(out)
+                    // SAFETY: both arrays are arguments from the same Java frame.
+                    let names = unsafe { JObjectArray::<JString>::from_raw(env, failed_names) };
+                    let errors = unsafe { JObjectArray::<JString>::from_raw(env, failures) };
+                    let mut failed = Vec::new();
+                    for index in 0..names.len(env)?.min(errors.len(env)?) {
+                        let name = names.get_element(env, index)?.mutf8_chars(env)?.to_string();
+                        let error = errors
+                            .get_element(env, index)?
+                            .mutf8_chars(env)?
+                            .to_string();
+                        failed.push((name, error));
+                    }
+                    Ok::<_, jni::errors::Error>((out, failed))
                 })
             });
-            let paths = match read {
-                Ok(paths) => paths,
+            let (paths, failures) = match read {
+                Ok(result) => result,
                 Err(error) => {
                     log::error!(
                         "import: reading the picked files failed: {error}; nothing was picked"
                     );
-                    Vec::new()
+                    (Vec::new(), vec![(String::new(), error.to_string())])
                 }
             };
-            if let Some(pending) = PENDING.lock().ok().and_then(|mut slot| slot.take()) {
-                pending(paths);
+            if let Some(pending) = take(request as u64) {
+                if let Ok(mut slot) = pending.metadata.lock() {
+                    *slot = Some((paths.clone(), failures));
+                }
+                (pending.picked)(paths);
             }
         }));
         if answered.is_err() {

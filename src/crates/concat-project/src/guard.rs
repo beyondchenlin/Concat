@@ -247,8 +247,24 @@ pub(crate) fn check_effects(
     after: &Project,
     locked: &HashSet<String>,
 ) -> Result<(), GuardError> {
+    // Recompute the only non-clip effect admitted here from the old native
+    // format and the actual inserted clips. Never trust after.extra or a
+    // caller-provided format as evidence that matching was legitimate.
+    let mut expected = before.clone();
+    for (old, new) in expected.timelines.iter_mut().zip(&after.timelines) {
+        std::sync::Arc::make_mut(old).clips = new.clips.clone();
+    }
+    crate::initial_format::after(&mut expected, crate::initial_format::before(before));
     let mut outside = after.clone();
     outside.timelines = before.timelines.clone();
+    let field = crate::initial_format::FIELD;
+    if outside.extra.get(field) == expected.extra.get(field) {
+        if let Some(value) = before.extra.get(field) {
+            outside.extra.insert(field.to_owned(), value.clone());
+        } else {
+            outside.extra.remove(field);
+        }
+    }
     if outside != *before || before.timelines.len() != after.timelines.len() {
         return Err(GuardError::UnsupportedEffect);
     }
@@ -256,6 +272,13 @@ pub(crate) fn check_effects(
     for (old, new) in before.timelines.iter().zip(&after.timelines) {
         let mut metadata = (**new).clone();
         metadata.clips = old.clips.clone();
+        if expected
+            .timelines
+            .iter()
+            .any(|timeline| timeline.id == new.id && timeline.video == new.video)
+        {
+            metadata.video = old.video;
+        }
         if metadata != **old {
             return Err(GuardError::UnsupportedEffect);
         }
@@ -272,6 +295,53 @@ pub(crate) fn check_effects(
         }
     }
     reject_locked(affected, locked)
+}
+
+/// Final editor admission also validates the existing first-HDR projection.
+/// Leaf checks happen before that follow-up, so only this final boundary may
+/// normalize the exact colour derived from native media and actual clips.
+pub(crate) fn check_final_effects(
+    before: &Project,
+    after: &Project,
+    locked: &HashSet<String>,
+    template: bool,
+) -> Result<(), GuardError> {
+    let mut expected = before.clone();
+    for (old, new) in expected.timelines.iter_mut().zip(&after.timelines) {
+        std::sync::Arc::make_mut(old).clips = new.clips.clone();
+    }
+    // Established and manually configured projects retain the pre-existing
+    // colour boundary. Only this new draft's genuine first-format transaction
+    // can admit the native HDR follow-up alongside its first visual insertion.
+    crate::initial_format::after(&mut expected, crate::initial_format::before(before));
+    let first_match = crate::initial_format::read(before).state
+        == crate::initial_format::State::Waiting
+        && crate::initial_format::read(&expected).state == crate::initial_format::State::Matched;
+    if !first_match {
+        return if template {
+            check_template_effects(before, after, locked)
+        } else {
+            check_effects(before, after, locked)
+        };
+    }
+    crate::editor::follow_first_hdr(&mut expected, before);
+    let mut checked = after.clone();
+    for ((old, actual), expected) in before
+        .timelines
+        .iter()
+        .zip(&mut checked.timelines)
+        .zip(&expected.timelines)
+    {
+        if actual.video.color_space != expected.video.color_space {
+            return Err(GuardError::UnsupportedEffect);
+        }
+        std::sync::Arc::make_mut(actual).video.color_space = old.video.color_space;
+    }
+    if template {
+        check_template_effects(before, &checked, locked)
+    } else {
+        check_effects(before, &checked, locked)
+    }
 }
 
 /// A template may append exactly five native role lanes, and nothing else.

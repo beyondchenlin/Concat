@@ -48,8 +48,29 @@ pub struct Language {
     pub name: String,
 }
 
-/// The code the interface starts in, and the language of the keys.
+/// The base inventory and missing-entry fallback language.
 pub const ENGLISH: &str = "en";
+
+/// Used only when the user has never explicitly selected a language.
+pub const DEFAULT_LOCALE: &str = "zh-Hans";
+
+pub fn startup_locale(saved: Option<&str>) -> &str {
+    saved
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(DEFAULT_LOCALE)
+}
+
+/// App status codes are stable data; historical or diagnostic text is preserved.
+pub(crate) fn task_status(value: &str) -> String {
+    match value {
+        "agent.runningChat" => t("agent.runningChat"),
+        "agent.runningWriting" => t("agent.runningWriting"),
+        "agent.runningEdit" => t("agent.runningEdit"),
+        "agent.receiving" => t("agent.receiving"),
+        "agent.sendNeedsRecovery" => t("agent.sendNeedsRecovery"),
+        _ => value.to_owned(),
+    }
+}
 
 /// The locales the app ships, as `(code, file)`. `en.json` is the
 /// inventory - every key, with its English - which is what a translator
@@ -230,6 +251,52 @@ pub fn select(code: &str, dirs: &AppDirs) {
     }
 }
 
+/// Bind the same translation callbacks on the production window and native UI tests.
+pub(crate) fn install(app: &crate::ui::App) {
+    use slint::ComponentHandle;
+    let words = app.global::<crate::ui::I18n>();
+    words.on_lookup(|_, key| t(&key).into());
+    words.on_lookup1(|_, key, a| tf(&key, &[&a]).into());
+    words.on_lookup2(|_, key, a, b| tf(&key, &[&a, &b]).into());
+    words.on_lookup_upper(|_, key| t(&key).to_uppercase().into());
+    words.set_lang(current().into());
+}
+
+/// Stable language identities; names are the language's own spelling.
+pub fn language_choices() -> &'static [(String, String)] {
+    static CHOICES: OnceLock<Vec<(String, String)>> = OnceLock::new();
+    CHOICES.get_or_init(|| {
+        BUILT_IN
+            .iter()
+            .filter_map(|(code, text)| parse(text).map(|(name, _)| ((*code).to_owned(), name)))
+            .collect()
+    })
+}
+
+pub fn language_choice_index(code: &str) -> i32 {
+    language_choices()
+        .iter()
+        .position(|(value, _)| value == code)
+        .map_or(0, |index| (index + 1) as i32)
+}
+
+pub fn language_choice_code(index: i32) -> Option<String> {
+    usize::try_from(index - 1)
+        .ok()
+        .and_then(|index| language_choices().get(index))
+        .map(|(code, _)| code.clone())
+}
+
+pub fn language_choice_labels() -> Vec<slint::SharedString> {
+    std::iter::once(t("language.followInterface").into())
+        .chain(
+            language_choices()
+                .iter()
+                .map(|(_, name)| name.as_str().into()),
+        )
+        .collect()
+}
+
 /// The code of the language the interface is in.
 pub fn current() -> String {
     active()
@@ -260,12 +327,31 @@ pub fn tf(key: &str, args: &[&dyn Display]) -> String {
     fill(&t(key), args)
 }
 
-/// `{0}`, `{1}`, ... in `text` replaced by `args`.
+/// Replace placeholders in the original template only. Arguments may contain
+/// literal braces, other placeholder spellings or user-controlled text; none
+/// of their contents may be interpreted by a later interpolation pass.
 fn fill(text: &str, args: &[&dyn Display]) -> String {
-    let mut out = text.to_owned();
-    for (index, arg) in args.iter().enumerate() {
-        out = out.replace(&format!("{{{index}}}"), &arg.to_string());
+    let values: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+    let mut out = String::with_capacity(text.len());
+    let mut remaining = text;
+    while let Some(open) = remaining.find('{') {
+        out.push_str(&remaining[..open]);
+        let suffix = &remaining[open + 1..];
+        let digits = suffix.bytes().take_while(u8::is_ascii_digit).count();
+        let canonical = digits > 0 && (digits == 1 || !suffix.starts_with('0'));
+        let value = (canonical && suffix.as_bytes().get(digits) == Some(&b'}'))
+            .then(|| suffix[..digits].parse::<usize>().ok())
+            .flatten()
+            .and_then(|index| values.get(index));
+        if let Some(value) = value {
+            out.push_str(value);
+            remaining = &suffix[digits + 1..];
+        } else {
+            out.push('{');
+            remaining = suffix;
+        }
     }
+    out.push_str(remaining);
     out
 }
 
@@ -431,6 +517,23 @@ mod tests {
     fn placeholders_fill_in_order() {
         assert_eq!(fill("{1} of {0}", &[&3, &"a"]), "a of 3");
         assert_eq!(fill("plain", &[&1]), "plain");
+    }
+
+    #[test]
+    fn interpolation_never_reinterprets_argument_text() {
+        assert_eq!(
+            fill("{0} / {1}", &[&"Keep {1} and {0} exactly", &"approval"]),
+            "Keep {1} and {0} exactly / approval"
+        );
+        assert_eq!(fill("{1}{0}{1}", &[&"{1}", &"{0}"]), "{0}{1}{0}");
+        assert_eq!(
+            fill("正文 {0}；{9} / {00} / {{0}} / {broken", &[&"文字{1}"]),
+            "正文 文字{1}；{9} / {00} / {文字{1}} / {broken"
+        );
+        assert_eq!(
+            fill("{999999999999999999999999999999} {0}", &[&"ok"]),
+            "{999999999999999999999999999999} ok"
+        );
     }
 
     /// A key no locale translates reads in English; one nothing lists at

@@ -67,6 +67,11 @@ pub enum SettingsMsg {
     MagneticChanged(bool),
     DownloadSourceChanged(i32),
     DownloadBaseEdited(String),
+    DefaultProjectLocation(String),
+    DefaultMatchMedia(bool),
+    DefaultProjectWidth(f32),
+    DefaultProjectHeight(f32),
+    DefaultProjectRate(f32),
     ServerEnabledChanged(bool),
     /// The address half of where the server listens; the port is its own
     /// field, so a person types "127.0.0.1" and "7420" and never a colon.
@@ -149,6 +154,28 @@ pub struct ModelState {
 }
 
 impl ModelState {
+    /// Translate the built-in transcriber descriptions at display time only.
+    /// Model identities, filenames and download state stay intact.
+    fn transcriber_row(&self) -> ModelData {
+        let mut row = self.row();
+        if let Some((name, note)) = transcriber_display(&self.id) {
+            row.name = name.into();
+            row.note = note.into();
+        }
+        row
+    }
+
+    /// Translate only the two built-in voice model descriptions. Custom or
+    /// future voice identities keep their original labels and descriptions.
+    fn voice_row(&self) -> ModelData {
+        let mut row = self.row();
+        if let Some((name, note)) = voice_display(&self.id) {
+            row.name = name.into();
+            row.note = note.into();
+        }
+        row
+    }
+
     /// The model as one row of the sheet's list.
     fn row(&self) -> ModelData {
         let total = self.megabytes;
@@ -185,6 +212,47 @@ impl ModelState {
                 .into(),
             manual: self.failure.is_some() && model_sources(&self.id).is_some(),
         }
+    }
+}
+
+/// Stable built-in identities select presentation keys; display text never
+/// selects a model or affects the download/activation path. Family names are
+/// upstream proper names and remain Tiny, Base and Small in every language.
+fn transcriber_display(id: &str) -> Option<(String, String)> {
+    let (family, english_only, note) = match id {
+        "tiny.en" => ("Tiny", true, t("settings.transcriberTinyEnglishHint")),
+        "tiny" => ("Tiny", false, t("settings.transcriberTinyMultilingualHint")),
+        "base.en" => ("Base", true, t("settings.transcriberBaseEnglishHint")),
+        "base" => ("Base", false, t("settings.transcriberBaseMultilingualHint")),
+        "small.en" => ("Small", true, t("settings.transcriberSmallEnglishHint")),
+        "small" => (
+            "Small",
+            false,
+            t("settings.transcriberSmallMultilingualHint"),
+        ),
+        _ => return None,
+    };
+    let name = if english_only {
+        tf("settings.transcriberEnglishModel", &[&family])
+    } else {
+        tf("settings.transcriberMultilingualModel", &[&family])
+    };
+    Some((name, note))
+}
+
+/// The speech core's stable built-in identifiers select only presentation.
+/// User voice names and unrecognized model identities remain external data.
+fn voice_display(id: &str) -> Option<(String, String)> {
+    match id {
+        "chatterbox-turbo-q8" => Some((
+            t("settings.voiceStudioModel"),
+            t("settings.voiceStudioHint"),
+        )),
+        "system-voice" => Some((
+            t("settings.voiceSystemModel"),
+            t("settings.voiceSystemHint"),
+        )),
+        _ => None,
     }
 }
 
@@ -270,17 +338,66 @@ pub struct SettingsPane {
     install_cancel: Arc<AtomicBool>,
 }
 
+/// The production language selector callback, shared with native UI regression
+/// tests. It uses the same reducer and publication order as other settings.
+pub(crate) fn language_changed_from_ui(index: i32) {
+    crate::host::Shell::with(|shell, app| {
+        shell
+            .studio
+            .borrow_mut()
+            .handle(Msg::Settings(SettingsMsg::LanguageChanged(index)));
+        shell.studio.borrow_mut().refresh_art();
+        shell.studio.borrow().publish(&app, &shell.models);
+    });
+}
+
 impl SettingsPane {
     /// Applies one message. The studio is the rest of the window; while
     /// this runs the studio's copy of the pane is a blank it must not read.
     pub fn update(&mut self, msg: SettingsMsg, studio: &mut Studio) {
         match msg {
+            SettingsMsg::DefaultProjectLocation(value) => {
+                studio.prefs.new_project_defaults.location =
+                    (!value.trim().is_empty()).then(|| value.trim().to_owned());
+                studio.prefs.save(&studio.host.dirs);
+            }
+            SettingsMsg::DefaultMatchMedia(value) => {
+                studio.prefs.new_project_defaults.match_media = value;
+                studio.prefs.save(&studio.host.dirs);
+            }
+            SettingsMsg::DefaultProjectWidth(value) => {
+                if value.is_finite() {
+                    studio.prefs.new_project_defaults.width = value
+                        .round()
+                        .clamp(2.0, concat_core::frame::MAX_SIDE as f32)
+                        as u32
+                        & !1;
+                }
+                studio.prefs.save(&studio.host.dirs);
+            }
+            SettingsMsg::DefaultProjectHeight(value) => {
+                if value.is_finite() {
+                    studio.prefs.new_project_defaults.height = value
+                        .round()
+                        .clamp(2.0, concat_core::frame::MAX_SIDE as f32)
+                        as u32
+                        & !1;
+                }
+                studio.prefs.save(&studio.host.dirs);
+            }
+            SettingsMsg::DefaultProjectRate(value) => {
+                let (num, den) = crate::studio::custom_rate(f64::from(value));
+                studio.prefs.new_project_defaults.rate_num = num;
+                studio.prefs.new_project_defaults.rate_den = den;
+                studio.prefs.save(&studio.host.dirs);
+            }
             SettingsMsg::Restore => {
                 self.language = studio
                     .languages
                     .iter()
                     .position(|language| {
-                        Some(language.code.as_str()) == studio.prefs.locale.as_deref()
+                        language.code.as_str()
+                            == i18n::startup_locale(studio.prefs.locale.as_deref())
                     })
                     .unwrap_or(0);
                 self.playhead_stops = studio.prefs.playhead_stops_at_end;
@@ -358,10 +475,16 @@ impl SettingsPane {
                     log::info!("settings: Language {}", language.code);
                     self.language = index;
                     studio.prefs.locale = Some(language.code.clone());
-                    // The words change on the publish that follows: Rust's
-                    // on their way through `t`, the tree's through
-                    // `I18n.lang`.
+                    let changed = i18n::current() != language.code;
                     i18n::select(&language.code, &studio.host.dirs);
+                    if changed {
+                        // The settings reducer currently owns Studio. Rebuild
+                        // the other native display projections after that
+                        // borrow ends, without starting or resuming any work.
+                        let _ = slint::invoke_from_event_loop(
+                            crate::embedded::refresh_language_from_ui,
+                        );
+                    }
                 }
                 studio.prefs.save(&studio.host.dirs);
             }
@@ -979,16 +1102,20 @@ impl SettingsPane {
 
     /// The transcriber list's rows.
     pub fn transcriber_rows(&self) -> Vec<ModelData> {
-        self.transcribers.iter().map(ModelState::row).collect()
+        self.transcribers
+            .iter()
+            .map(ModelState::transcriber_row)
+            .collect()
     }
 
     /// The voice list's rows.
     pub fn voice_rows(&self) -> Vec<ModelData> {
-        self.voices.iter().map(ModelState::row).collect()
+        self.voices.iter().map(ModelState::voice_row).collect()
     }
 
     /// The sheet as Slint shows it.
     pub fn data(&self, studio: &Studio) -> SettingsData {
+        let defaults = studio.prefs.new_project_defaults.video();
         SettingsData {
             open: self.open,
             tab: self.tab,
@@ -1025,6 +1152,14 @@ impl SettingsPane {
             magnetic: studio.prefs.magnetic(),
             download_source: self.download_source as i32,
             download_base: self.download_base.as_str().into(),
+            model_download_location: studio.host.dirs.data.to_string_lossy().as_ref().into(),
+            default_project_location: crate::panes::start::effective_location(studio).into(),
+            default_match_media: studio.prefs.new_project_defaults.match_media,
+            default_project_max_side: concat_core::frame::MAX_SIDE as f32,
+            default_project_width: defaults.width as f32,
+            default_project_height: defaults.height as f32,
+            default_project_rate: crate::studio::fps_of(defaults.rate_num, defaults.rate_den)
+                as f32,
             server_enabled: studio.prefs.server.enabled,
             server_host: split_listen(&studio.prefs.server.listen).0.into(),
             server_port: i32::from(split_listen(&studio.prefs.server.listen).1),
@@ -1153,12 +1288,13 @@ const LOG_LEVEL_NAMES: [&str; 5] = ["Errors only", "Warnings", "Normal", "Debug"
 
 /// The download sources as the sheet names them, in
 /// [`SourcePreference::ALL`]'s order, for the log's line.
-const DOWNLOAD_SOURCE_NAMES: [&str; 5] = [
+const DOWNLOAD_SOURCE_NAMES: [&str; 6] = [
     "Automatic",
     "Concat's mirror",
     "hf-mirror.com",
     "Original source",
     "Custom URL",
+    "ModelScope",
 ];
 
 /// A switch's state as the log says it.
@@ -1193,6 +1329,149 @@ pub fn new_token() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transcriber_language_changes_only_presentation_and_keeps_model_state() {
+        let _language = i18n::language_lock();
+        let previous = i18n::current();
+        let root = std::env::temp_dir().join(format!(
+            "bk-cut-transcriber-presentation-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let dirs = concat_host::AppDirs::under(&root);
+        for (id, family, english_only) in [
+            ("tiny.en", "Tiny", true),
+            ("tiny", "Tiny", false),
+            ("base.en", "Base", true),
+            ("base", "Base", false),
+            ("small.en", "Small", true),
+            ("small", "Small", false),
+        ] {
+            let source = ModelState {
+                id: id.into(),
+                name: "Original model name".into(),
+                note: "Original model description".into(),
+                megabytes: 80.0,
+                accuracy: 3,
+                installed: true,
+                active: true,
+                fetched: Some(20.0),
+                unpacking: false,
+                failure: None,
+            };
+            let mut english_note = String::new();
+            for code in ["en", "zh-Hans"] {
+                i18n::select(code, &dirs);
+                let row = source.transcriber_row();
+                let qualifier = match (code, english_only) {
+                    ("en", true) => "English",
+                    ("en", false) => "Multilingual",
+                    (_, true) => "英语",
+                    (_, false) => "多语言",
+                };
+                assert_eq!(row.name.as_str(), format!("{family} ({qualifier})"));
+                assert!(!row.note.starts_with("settings."));
+                assert!(!row.note.is_empty());
+                if code == "en" {
+                    english_note = row.note.to_string();
+                } else {
+                    assert_ne!(row.note.as_str(), english_note);
+                }
+                assert_eq!(row.id.as_str(), id);
+                assert!(row.installed && row.active && row.downloading);
+                assert!((row.progress - 0.25).abs() < f32::EPSILON);
+                assert_eq!(row.accuracy, 3);
+                // The general row retains original external data.
+                assert_eq!(source.row().name.as_str(), "Original model name");
+                assert_eq!(source.row().note.as_str(), "Original model description");
+                assert_eq!(source.id, id);
+                assert_eq!(source.name, "Original model name");
+                assert_eq!(source.note, "Original model description");
+            }
+        }
+        assert!(transcriber_display("unknown-model").is_none());
+        i18n::select(&previous, &dirs);
+        assert!(
+            !root.exists(),
+            "display translation does not create configuration or model files"
+        );
+    }
+
+    #[test]
+    fn voice_language_changes_only_builtin_presentation_and_keeps_custom_names() {
+        let _language = i18n::language_lock();
+        let previous = i18n::current();
+        let root = std::env::temp_dir().join(format!(
+            "bk-cut-voice-presentation-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let dirs = concat_host::AppDirs::under(&root);
+        let mut pane = SettingsPane::default();
+        for id in ["chatterbox-turbo-q8", "system-voice", "my-custom-voice"] {
+            pane.voices.push(ModelState {
+                id: id.into(),
+                name: "My custom voice name".into(),
+                note: "My custom voice description".into(),
+                megabytes: 80.0,
+                accuracy: 3,
+                installed: true,
+                active: true,
+                fetched: Some(20.0),
+                unpacking: false,
+                failure: None,
+            });
+        }
+        let mut english_notes = Vec::new();
+        for code in ["en", "zh-Hans"] {
+            i18n::select(code, &dirs);
+            let rows = pane.voice_rows();
+            assert_eq!(rows.len(), 3);
+            let expected = if code == "en" {
+                ["Studio voice", "Phone voice", "My custom voice name"]
+            } else {
+                ["录音室语音", "手机语音", "My custom voice name"]
+            };
+            for (index, (source, row)) in pane.voices.iter().zip(rows).enumerate() {
+                assert_eq!(row.name.as_str(), expected[index]);
+                assert_eq!(row.id.as_str(), source.id);
+                assert!(row.installed && row.active && row.downloading);
+                assert!((row.progress - 0.25).abs() < f32::EPSILON);
+                assert_eq!(row.accuracy, 3);
+                assert_eq!(row.size.as_str(), "80 MB");
+                if index < 2 {
+                    assert!(!row.note.is_empty());
+                    assert!(!row.note.starts_with("settings."));
+                    if code == "en" {
+                        english_notes.push(row.note.to_string());
+                    } else {
+                        assert_ne!(row.note.as_str(), english_notes[index]);
+                    }
+                } else {
+                    assert_eq!(row.note.as_str(), "My custom voice description");
+                }
+                assert_eq!(source.name, "My custom voice name");
+                assert_eq!(source.note, "My custom voice description");
+                assert_eq!(source.row().name.as_str(), source.name);
+                assert_eq!(source.row().note.as_str(), source.note);
+            }
+        }
+        assert!(voice_display("my-custom-voice").is_none());
+        assert!(voice_display("tiny").is_none());
+        assert!(transcriber_display("system-voice").is_none());
+        i18n::select(&previous, &dirs);
+        assert!(
+            !root.exists(),
+            "display translation does not create configuration or model files"
+        );
+    }
 
     #[test]
     fn a_token_is_thirty_two_hex_digits_and_never_the_same_twice() {

@@ -13,17 +13,22 @@ import { McpClient } from "@bk-cat/pi-reference/mcp/client";
 import { normalizeMcpInputSchema } from "@bk-cat/pi-reference/mcp/input-schema";
 import { toLlmContent } from "@bk-cat/pi-reference/mcp/content";
 import { RuntimeRefused } from "./gate.ts";
+import { taskLanguages, languageInstructions } from "./languages.ts";
 import { argumentObject, conversationOptions, submissionDraft, nativeTaskInput, type NativeTaskInput } from "./commands.ts";
 import { nativeModels, type ModelConfiguration } from "./models.ts";
+import { nativeModelConfiguration } from "./model-configuration.ts";
 import { EMBEDDED_TOOLS, guardedDatabase, guardedStorage, NativeMcpTransport } from "./native-adapters.ts";
 import type { EngineOpenOptions, PiEngine, PiEngineFactory, SchedulingAction } from "./ports.ts";
 import { discardOriginalWork, reviewDiscardStorage } from "./recovery-discard.ts";
+import { nativeRecoveryScope, nativeResumeInput, assertRecoveryIdentity } from "./commands.ts";
+import { reviewResumeStorage, reviewResumeInspection } from "./recovery-resume.ts";
 
 /** Builds only the original pinned Pi Harness and portable SqliteStorage. */
 export function piEngineFactory(configuration: ModelConfiguration): PiEngineFactory {
   return {
     async open(options: EngineOpenOptions): Promise<PiEngine> {
       const { ports, gate, lease, grant } = options;
+      const recovery = grant.resumeTask === undefined ? undefined : nativeRecoveryScope(grant.resumeTask);
       gate.assertStorageWrite(lease);
       const database = await ports.sqlite.open(lease, {
         expectedSchemaVersion: CURRENT_SQLITE_SCHEMA_VERSION,
@@ -35,6 +40,7 @@ export function piEngineFactory(configuration: ModelConfiguration): PiEngineFact
       let storage: SqliteStorage | undefined;
       let harness: Harness | undefined;
       const nativeTask: NativeTaskState = {};
+      const taskConfiguration = { current: recovery === undefined ? configuration : nativeModelConfiguration(recovery.modelConfiguration) };
       try {
         gate.assertStorageWrite(lease);
         storage = await SqliteStorage.open(guardedDatabase(database, gate, lease));
@@ -84,13 +90,14 @@ export function piEngineFactory(configuration: ModelConfiguration): PiEngineFact
           // every live record before allowing that write to a shared store.
           await reviewDiscardStorage(ownedStorage, grant.discardConversationIds, gate, lease, context);
         }
+        if (recovery !== undefined) await reviewResumeStorage(ownedStorage, recovery, gate, lease, context);
         harness = await Harness.open(ownedStorage, {
-          models: nativeModels(configuration, ports, gate, lease),
+          models: nativeModels(() => taskConfiguration.current, ports, gate, lease),
           registry,
           settings: {
             stream: { transport: "sse", maxRetries: 0 },
             retry: { enabled: false, maxRetries: 0 },
-            compaction: { enabled: false },
+            compaction: { enabled: true, backgroundTokens: 0 },
             afterFailedRun: "keep",
             toolExecution: "sequential",
           },
@@ -107,6 +114,10 @@ export function piEngineFactory(configuration: ModelConfiguration): PiEngineFact
         }, context);
         const opened = harness;
         gate.assertStorageWrite(lease);
+        if (recovery !== undefined) {
+          reviewResumeInspection(await opened.inspect(context), recovery);
+          gate.assertStorageWrite(lease);
+        }
         if (grant.discardConversationIds !== undefined) {
           await discardOriginalWork(opened, grant.discardConversationIds, gate, lease, context);
           await reviewDiscardStorage(ownedStorage, grant.discardConversationIds, gate, lease, context, true);
@@ -135,7 +146,7 @@ export function piEngineFactory(configuration: ModelConfiguration): PiEngineFact
           },
           async run(action, raw) {
             gate.assertReady(lease);
-            return runOriginal(opened, ownedStorage, action, raw, options, configuration, tools, nativeTask);
+            return runOriginal(opened, ownedStorage, action, raw, options, taskConfiguration, tools, nativeTask);
           },
           async close() {
             const results = await Promise.allSettled([opened.close(BACKGROUND_CONTEXT), client.close()]);
@@ -149,7 +160,7 @@ export function piEngineFactory(configuration: ModelConfiguration): PiEngineFact
           client.close(),
         ]);
         if (grant.discardConversationIds !== undefined && !(error instanceof RuntimeRefused)) {
-          throw new RuntimeRefused("原版会话核对或取消失败，已有记录保留，运行组件未进入就绪状态。");
+          throw new RuntimeRefused("agent.errorRecoveryChanged");
         }
         throw error;
       }
@@ -160,22 +171,64 @@ export function piEngineFactory(configuration: ModelConfiguration): PiEngineFact
 /** Direct calls into original Pi. No custom scheduling, retry or task loop. */
 async function runOriginal(
   harness: Harness, storage: Storage, action: SchedulingAction, raw: unknown, options: EngineOpenOptions,
-  configuration: ModelConfiguration, tools: readonly ToolRegistration[], nativeTask: NativeTaskState,
+  taskConfiguration: { current: ModelConfiguration }, tools: readonly ToolRegistration[], nativeTask: NativeTaskState,
 ): Promise<unknown> {
   const { gate, lease } = options;
   const context = withAbortSignal(gate.signal, BACKGROUND_CONTEXT);
   const input = raw === undefined ? {} : argumentObject(raw);
   gate.assertReady(lease);
   switch (action) {
+    case "nativeResume": {
+      const admitted = nativeResumeInput(raw);
+      const scope = options.grant.resumeTask === undefined ? undefined : nativeRecoveryScope(options.grant.resumeTask);
+      if (!scope || nativeTask.active || nativeTask.recoveryConsumed) throw new RuntimeRefused("agent.errorRecoveryChanged");
+      assertRecoveryIdentity(scope, admitted);
+      reviewResumeInspection(await harness.inspect(context), scope);
+      gate.assertReady(lease);
+      const configuration = nativeModelConfiguration(admitted.modelConfiguration);
+      const model = configuration.native;
+      if (!model) throw new RuntimeRefused("agent.errorRecoverySnapshotInvalid");
+      const conversation = await harness.conversation(admitted.conversationId as ConversationId, context);
+      gate.assertReady(lease);
+      if (!conversation) throw new RuntimeRefused("agent.errorRecoveryScope");
+      // Original history/checkpoints remain untouched. Configure only the
+      // current native authority context and the captured task's languages.
+      await conversation.configure({
+        model:{provider:model.id,modelId:model.model},
+        instructions:taskInstructions(admitted) + "\nNative recovery facts for this original task:\n" + admitted.nativeContext,
+        maxTurns:null,
+        tools:tools.filter((tool) => admitted.mode === "edit" || tool.name !== "edit_apply_guarded"),
+        compaction:{enabled:true,backgroundTokens:0},
+      }, context);
+      gate.assertReady(lease);
+      taskConfiguration.current = configuration;
+      nativeTask.recoveryConsumed = true;
+      nativeTask.active = {...admitted, resumed:true};
+      gate.authorizeNetwork(lease, admitted.networkPermit);
+      try {
+        // This is the pinned scheduler's own continuation. Unsafe persisted
+        // tool intent receives its original interruption outcome, never a rerun.
+        harness.resume();
+        return {resumed:true, taskId:admitted.taskId, conversationId:admitted.conversationId, submissionId:admitted.submissionId};
+      } catch (error) {
+        gate.finishNetwork(admitted.networkPermit);
+        nativeTask.active = undefined;
+        throw error;
+      }
+    }
+
     case "nativeSubmit": {
       const input = nativeTaskInput(raw);
+      if (nativeTask.active) throw new RuntimeRefused("another native task is active");
+      const configuration = input.modelConfiguration === undefined ? taskConfiguration.current
+        : nativeModelConfiguration(input.modelConfiguration);
       const model = configuration.native;
       if (!model || !options.ports.tasks) throw new RuntimeRefused("native model settings or task binding are unavailable");
-      if (nativeTask.active) throw new RuntimeRefused("another native task is active");
       if (model.protocol === "openai-responses" && model.maxOutputTokens < 16) {
         throw new RuntimeRefused("the responses protocol requires an output limit of at least 16 tokens");
       }
       nativeTask.active = { ...input };
+      taskConfiguration.current = configuration;
       try {
         // Pi.submit resumes the shared scheduler. Do not use a new input to
         // reactivate interrupted tasks anywhere in this store.
@@ -184,17 +237,16 @@ async function runOriginal(
         if (unfinished.tasks.length || unfinished.submissions.length) {
           throw new RuntimeRefused("unfinished durable work requires explicit native reconciliation");
         }
-        const instructions = input.mode === "script"
-          ? "按用户要求创作或改写中文文案。最终回答只包含文案正文。当前任务只允许读取信息，不得修改剪辑工程。"
-          : input.mode === "edit"
-            ? "在当前原生工程中按用户明确选择的文案版本和任务要求剪辑。先读取工程和时间线，仅使用受保护编辑工具；工具拒绝时说明实际原因，不得宣称执行成功。"
-            : "回答用户关于当前工程的问题。当前任务只允许读取信息，不得修改剪辑工程。";
+        const languages = taskLanguages(input.languages);
+        const instructions = taskInstructions(input);
         const change: AgentChange = {
           // Null also clears a four-turn cap persisted by an older conversation.
           // The original Pi scheduler can continue until the user stops it.
           model: { provider: model.id, modelId: model.model }, instructions, maxTurns: null,
           tools: tools.filter((tool) => input.mode === "edit" || tool.name !== "edit_apply_guarded"),
-          compaction: { enabled: false },
+          // Original Pi uses contextWindow <= 0 as unknown; no invented
+          // capacity or product-wide request/token budget is introduced.
+          compaction: { enabled: true, backgroundTokens: 0 },
         };
         const conversation = input.conversationId === undefined
           ? await harness.createConversation({ ownership: { kind: "ownerless" }, agent: change }, context)
@@ -212,7 +264,7 @@ async function runOriginal(
           // Original Pi persists display data beside the full model input in
           // the same entry. It never becomes instructions or edit authority.
           ...(input.displayText === undefined ? {} : {
-            entry: { kind: "bk-cat.user", data: { schemaVersion: 1, text: input.displayText } },
+            entry: { kind: "bk-cat.user", data: { schemaVersion: 2, text: input.displayText, languages: { ...languages } } },
           }),
         }, context);
         gate.assertReady(lease);
@@ -235,6 +287,12 @@ async function runOriginal(
         if (!submission) throw new RuntimeRefused("native durable submission is missing");
         const result = await submission.wait(context);
         gate.assertReady(lease);
+        if (active.resumed) {
+          // Finish original local drain/compaction cleanup before retiring the
+          // restored task's authority. No replacement input is submitted.
+          await harness.waitForIdle(context);
+          gate.assertReady(lease);
+        }
         if (result.conversationId !== active.conversationId || result.requestId !== active.taskId) {
           throw new RuntimeRefused("durable submission identity changed");
         }
@@ -306,8 +364,18 @@ async function runOriginal(
   }
 }
 
+function taskInstructions(input: Pick<NativeTaskInput, "mode" | "languages">): string {
+  const base = input.mode === "script"
+    ? "Create or revise a writing candidate as requested. This task may read information but must not change the editing project."
+    : input.mode === "edit"
+      ? "在当前原生工程中按用户明确选择的文案版本和任务要求剪辑。先读取工程和时间线，仅使用受保护编辑工具；工具拒绝时说明实际原因，不得宣称执行成功。"
+      : "回答用户关于当前工程的问题。当前任务只允许读取信息，不得修改剪辑工程。";
+  return base + "\n" + languageInstructions(taskLanguages(input.languages), input.mode === "script");
+}
+
 interface NativeTaskState {
-  active?: NativeTaskInput & { conversationId?: number; submissionId?: number };
+  active?: NativeTaskInput & { conversationId?: number; submissionId?: number; resumed?: boolean };
+  recoveryConsumed?: boolean;
 }
 
 function id(value: unknown): number {

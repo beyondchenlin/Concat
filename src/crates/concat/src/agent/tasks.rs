@@ -5,12 +5,12 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use concat_agent::configuration::{ConfigurationSnapshot, ConfigurationStore};
+use concat_agent::configuration::{ConfigurationSnapshot, ConfigurationStore, ModelChannel};
 use concat_agent::conversations::{
     ConversationBindings, inspect_latest, inspect_project_conversations,
 };
 use concat_agent::credentials::{CredentialStore, platform_store};
-use concat_agent::network::{ModelNetwork, ModelRequest, runtime_configuration};
+use concat_agent::network::{ModelNetwork, ModelRequest, runtime_configuration_for};
 use concat_agent::operations::Invocation;
 use concat_agent::scripts::{ScriptStore, VersionBinding};
 use serde_json::{Value, json};
@@ -21,7 +21,8 @@ use crate::live::CurrentProject;
 use crate::panes::script::GenerationRequest;
 use crate::studio::Studio;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum TaskMode {
     Chat,
     Script,
@@ -64,9 +65,70 @@ fn contains_main_template(value: &Value) -> bool {
     }
 }
 
+/// Immutable per-task language policy; independent from permissions and models.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct TaskLanguages {
+    pub(crate) interface_language: String,
+    pub(crate) reply_language: String,
+    pub(crate) content_language: String,
+}
+
+impl TaskLanguages {
+    fn validate(&self) -> Result<(), String> {
+        if [
+            &self.interface_language,
+            &self.reply_language,
+            &self.content_language,
+        ]
+        .iter()
+        .any(|value| {
+            !crate::i18n::BUILT_IN
+                .iter()
+                .any(|(code, _)| *code == value.as_str())
+        }) {
+            return Err("agent.errorRecoverySnapshotInvalid".into());
+        }
+        Ok(())
+    }
+    pub(crate) fn capture(reply: Option<&str>, content: Option<&str>) -> Self {
+        let interface = crate::i18n::current();
+        let valid = |value: &str| crate::i18n::BUILT_IN.iter().any(|(code, _)| *code == value);
+        let interface = if valid(&interface) {
+            interface
+        } else {
+            "en".into()
+        };
+        Self {
+            reply_language: reply
+                .filter(|value| valid(value))
+                .unwrap_or(&interface)
+                .to_owned(),
+            content_language: content
+                .filter(|value| valid(value))
+                .unwrap_or(&interface)
+                .to_owned(),
+            interface_language: interface,
+        }
+    }
+}
+
+impl Default for TaskLanguages {
+    fn default() -> Self {
+        Self {
+            interface_language: "zh-Hans".into(),
+            reply_language: "zh-Hans".into(),
+            content_language: "zh-Hans".into(),
+        }
+    }
+}
+
 /// Captured on the native UI thread before any asynchronous preparation.
 #[derive(Clone)]
 pub(crate) struct SubmissionIntent {
+    pub languages: TaskLanguages,
+    /// Native-captured next-task selection, independent of the app default.
+    pub model: Option<ModelChannel>,
     pub id: String,
     pub project: CurrentProject,
     pub mode: TaskMode,
@@ -84,7 +146,7 @@ impl SubmissionIntent {
     fn runtime_payload(&self, input: &str, permit: &str, conversation: Option<u64>) -> Value {
         let mut payload = json!({
             "method": "runtime.submit", "taskId": self.id, "networkPermit": permit,
-            "input": input, "mode": self.mode.as_str(),
+            "input": input, "mode": self.mode.as_str(), "languages": self.languages,
         });
         // Internal callers predating display metadata have an empty UI draft.
         // Their complete model input remains the compatible display fallback.
@@ -134,6 +196,104 @@ struct PreparedInput {
     conversation: Option<u64>,
 }
 
+/// Non-secret choices captured once before original Pi admission.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DurableTaskMetadata {
+    version: u32,
+    mode: TaskMode,
+    languages: TaskLanguages,
+    model: ModelChannel,
+    model_configuration: Value,
+    input: String,
+    ui_draft: String,
+    selected: Option<VersionBinding>,
+    generation_snapshot: Option<Value>,
+}
+impl DurableTaskMetadata {
+    fn validate(&self) -> Result<(), String> {
+        self.languages.validate()?;
+        let model = &self.model_configuration;
+        if self.version != 1
+            || self.input.trim().is_empty()
+            || self.input.len() > 512 * 1024
+            || self.ui_draft.len() > 256 * 1024
+            || (self.mode == TaskMode::Script) != self.generation_snapshot.is_some()
+            || model["id"].as_str() != Some(self.model.id.as_str())
+            || model["version"].as_str() != Some(self.model.version.to_string().as_str())
+            || model["providerId"].as_str() != Some(self.model.provider_id.as_str())
+            || model["protocol"].as_str() != Some(self.model.protocol.as_str())
+            || model["endpoint"].as_str() != Some(self.model.endpoint.as_str())
+            || model["model"].as_str() != Some(self.model.model.as_str())
+            || model["requestTimeoutMs"].as_u64() != Some(u64::from(self.model.request_timeout_ms))
+            || model["maxOutputTokens"].as_u64() != Some(u64::from(self.model.max_output_tokens))
+        {
+            return Err("agent.errorRecoverySnapshotInvalid".into());
+        }
+        Ok(())
+    }
+}
+
+/// Native recovery scope; the original durable submission is never replaced.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RecoveryTaskScope {
+    pub(crate) snapshot: concat_agent::task_snapshots::TaskSnapshot,
+    pub(crate) submission_id: u64,
+    pub(crate) task_ids: Vec<u64>,
+    invocations: Vec<concat_agent::operations::Invocation>,
+    metadata: DurableTaskMetadata,
+}
+impl RecoveryTaskScope {
+    pub(crate) fn value(&self) -> Value {
+        json!({"taskId":self.snapshot.request_id, "conversationId":self.snapshot.conversation_id,
+            "submissionId":self.submission_id, "taskIds":self.task_ids, "mode":self.metadata.mode.as_str(),
+            "languages":self.metadata.languages, "modelConfiguration":self.metadata.model_configuration})
+    }
+}
+
+/// UI restoration uses this native object, never event-supplied configuration.
+#[derive(Clone)]
+pub(crate) struct RecoveredTask {
+    pub(crate) id: String,
+    pub(crate) project: CurrentProject,
+    pub(crate) mode: TaskMode,
+    pub(crate) languages: TaskLanguages,
+    pub(crate) model: ModelChannel,
+    pub(crate) input: String,
+    pub(crate) ui_draft: String,
+    pub(crate) selected: Option<VersionBinding>,
+    pub(crate) generation_snapshot: Option<Value>,
+    pub(crate) conversation_id: u64,
+    pub(crate) submission_id: u64,
+}
+
+/// A previous edit counts only when its original tool identity belongs to this
+/// same submitted input and the native journal proves a changed, saved version
+/// whose exact document still occupies the current project file.
+fn recovered_saved_change(
+    scope: &RecoveryTaskScope,
+    review: &concat_agent::operations::RecoveryReview,
+) -> bool {
+    use concat_agent::operations::RecoveryState;
+    review.project_path == scope.snapshot.project_path
+        && review.operations.iter().any(|operation| {
+            operation.current_project
+                && operation.project_path == scope.snapshot.project_path
+                && operation.invocation.conversation_id == scope.snapshot.conversation_id
+                && scope.invocations.contains(&operation.invocation)
+                && matches!(
+                    operation.state,
+                    RecoveryState::SavedNotNotified | RecoveryState::Notified
+                )
+                && operation.receipt.is_some()
+                && operation.saved.is_some()
+                && operation.current_file_matches_save
+                && operation
+                    .result_revision
+                    .is_some_and(|revision| revision > operation.expected_revision)
+        })
+}
+
 #[derive(Clone)]
 struct AuthorizedTask {
     id: String,
@@ -144,6 +304,8 @@ struct AuthorizedTask {
     conversation: Option<u64>,
     expected_conversation: Option<u64>,
     changed_by_native_tool: bool,
+    metadata: Option<DurableTaskMetadata>,
+    recovered_submission: Option<u64>,
     network: Arc<ModelNetwork>,
 }
 
@@ -158,6 +320,242 @@ pub(crate) struct NativeTasks {
 }
 
 impl NativeTasks {
+    /// Read original task identity and its immutable native choices. This
+    /// cannot initialize files, open the vault, or grant model/tool authority.
+    pub(crate) fn recovery_task_scope(
+        &self,
+        project: &CurrentProject,
+    ) -> Result<Option<RecoveryTaskScope>, String> {
+        let bindings = self.recovery_conversations(project)?;
+        let work =
+            concat_agent::sqlite::inspect_interrupted_work(&self.bridge.owner, &self.bridge.token)
+                .map_err(|_| "agent.errorRecoverySnapshotInvalid")?;
+        if work.tasks.is_empty() && work.submissions.is_empty() {
+            return Ok(None);
+        }
+        if work.submissions.len() > 1 {
+            return Err("agent.errorRecoveryScope".into());
+        }
+        let submission = work
+            .submissions
+            .first()
+            .or(work.draining_submission.as_ref())
+            .ok_or("agent.errorRecoveryScope")?;
+        if submission["type"].as_str() != Some("input")
+            || !matches!(
+                submission["status"].as_str(),
+                Some("queued" | "placed" | "done" | "unanswered")
+            )
+        {
+            return Err("agent.errorRecoveryScope".into());
+        }
+        let submission_id = submission["id"]
+            .as_u64()
+            .ok_or("agent.errorRecoveryScope")?;
+        let conversation = submission["conversationId"]
+            .as_u64()
+            .ok_or("agent.errorRecoveryScope")?;
+        let request = submission["requestId"]
+            .as_str()
+            .ok_or("agent.errorRecoverySnapshotMissing")?;
+        let snapshot =
+            concat_agent::task_snapshots::inspect(&self.bridge.owner, &self.bridge.token, request)?
+                .ok_or("agent.errorRecoverySnapshotMissing")?;
+        if snapshot.conversation_id != conversation
+            || snapshot.project_id != project.project_id
+            || snapshot.project_path != project.path
+            || !bindings.contains(&conversation)
+        {
+            return Err("agent.errorRecoveryScope".into());
+        }
+        let metadata: DurableTaskMetadata = serde_json::from_value(snapshot.metadata.clone())
+            .map_err(|_| "agent.errorRecoverySnapshotInvalid")?;
+        metadata.validate()?;
+        if let Some(generation) = &metadata.generation_snapshot {
+            let ticket = &generation["ticket"];
+            let valid_text = |value: &Value| {
+                value
+                    .as_str()
+                    .is_some_and(|text| !text.is_empty() && text.len() <= 4096)
+            };
+            if generation["schema"] != 1
+                || generation
+                    .as_object()
+                    .is_none_or(|object| object.len() != 4)
+                || generation["requestId"].as_str() != Some(request)
+                || generation["prompt"]
+                    .as_str()
+                    .is_none_or(|prompt| prompt.is_empty() || prompt.len() > 512 * 1024)
+                || ticket.as_object().is_none_or(|object| object.len() != 5)
+                || ticket["projectId"].as_str() != Some(project.project_id.as_str())
+                || !valid_text(&ticket["documentId"])
+                || ticket["revision"].as_u64().is_none()
+                || ticket["editRevision"].as_u64().is_none()
+                || ticket["sha256"].as_str().is_none_or(|hash| {
+                    hash.len() != 64
+                        || !hash
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                })
+            {
+                return Err("agent.errorRecoverySnapshotInvalid".into());
+            }
+            let scripts = ScriptStore::open_read_only(
+                &self
+                    .bridge
+                    .dirs
+                    .data
+                    .join("bk-cat")
+                    .join("script-workspaces"),
+            )
+            .map_err(|_| "agent.errorRecoverySnapshotInvalid")?;
+            let current = scripts
+                .load(&project.project_id)
+                .map_err(|_| "agent.errorRecoverySnapshotInvalid")?
+                .ok_or("agent.errorRecoverySnapshotMissing")?;
+            if ticket["documentId"].as_str() != Some(current.document_id.as_str()) {
+                return Err("agent.errorRecoverySnapshotInvalid".into());
+            }
+        }
+        self.store
+            .assert_connection_current(&metadata.model)
+            .map_err(|_| "agent.errorRecoveryConnectionChanged")?;
+        if let Some(selected) = &metadata.selected {
+            if selected.project_id != project.project_id {
+                return Err("agent.errorRecoveryScope".into());
+            }
+            let scripts = ScriptStore::open_read_only(
+                &self
+                    .bridge
+                    .dirs
+                    .data
+                    .join("bk-cat")
+                    .join("script-workspaces"),
+            )
+            .map_err(|error| error.to_string())?;
+            // Preserve the selected old version; a newer hand-edited draft is
+            // not substituted into the original task.
+            scripts
+                .resolve_binding(selected)
+                .map_err(|error| error.to_string())?;
+        }
+        let mut task_ids = Vec::new();
+        for task in &work.tasks {
+            if task["conversationId"].as_u64() != Some(conversation)
+                || task["abortRequested"] == true
+                || task["background"] == true
+            {
+                return Err("agent.errorRecoveryScope".into());
+            }
+            let task_id = task["id"].as_u64().ok_or("agent.errorRecoveryScope")?;
+            if task_id > 9_007_199_254_740_991 {
+                return Err("agent.errorRecoveryScope".into());
+            }
+            task_ids.push(task_id);
+        }
+        if submission_id > 9_007_199_254_740_991 {
+            return Err("agent.errorRecoveryScope".into());
+        }
+        let invocations = concat_agent::sqlite::inspect_submission_invocations(
+            &self.bridge.owner,
+            &self.bridge.token,
+            conversation,
+            submission_id,
+        )
+        .map_err(|_| "agent.errorRecoverySnapshotInvalid")?;
+        Ok(Some(RecoveryTaskScope {
+            snapshot,
+            submission_id,
+            task_ids,
+            invocations,
+            metadata,
+        }))
+    }
+
+    /// Final native admission after original Pi's local open/review. No
+    /// request is sent until the runtime subsequently calls original resume.
+    pub(crate) fn prepare_recovery(
+        &self,
+        expected: &RecoveryTaskScope,
+        project: &CurrentProject,
+        review: &concat_agent::operations::RecoveryReview,
+    ) -> Result<Value, String> {
+        if self.recovery_task_scope(project)?.as_ref() != Some(expected) {
+            return Err("agent.errorRecoveryChanged".into());
+        }
+        if self
+            .task
+            .lock()
+            .map_err(|_| "agent.sessionUnavailable")?
+            .is_some()
+        {
+            return Err("agent.errorRecoveryChanged".into());
+        }
+        let snapshot = self.store.load().map_err(|error| error.to_string())?;
+        let network = Arc::new(ModelNetwork::authorize_selected(
+            Arc::clone(&self.bridge.owner),
+            self.bridge.token.clone(),
+            self.store.clone(),
+            snapshot,
+            platform_store().map_err(|error| error.to_string())?,
+            expected.metadata.model.clone(),
+        )?);
+        let permit = random_capability()?;
+        let metadata = &expected.metadata;
+        let context = json!({"project": {
+            "path":project.path,"projectId":project.project_id,
+            "expectedSession":project.session_id,"expectedRevision":project.revision},
+            "operationRecovery":review.facts(),
+            "oldPlans":"Previous write calls must not be replayed. Read the current native project before creating a new plan. Unknown outcomes are not success; an applied receipt alone is not a saved project."
+        }).to_string();
+        let payload = json!({"taskId":expected.snapshot.request_id, "conversationId":expected.snapshot.conversation_id,
+            "submissionId":expected.submission_id, "networkPermit":permit,
+            "input":metadata.input, "mode":metadata.mode.as_str(), "languages":metadata.languages,
+            "modelConfiguration":metadata.model_configuration, "nativeContext":context});
+        let mut task = self.task.lock().map_err(|_| "agent.sessionUnavailable")?;
+        if task.is_some() {
+            return Err("agent.errorRecoveryChanged".into());
+        }
+        *self
+            .network
+            .lock()
+            .map_err(|_| "agent.sessionUnavailable")? = Some(Arc::clone(&network));
+        *task = Some(AuthorizedTask {
+            id: expected.snapshot.request_id.clone(),
+            permit,
+            project: project.clone(),
+            mode: metadata.mode,
+            selected: metadata.selected.clone(),
+            expected_conversation: Some(expected.snapshot.conversation_id),
+            conversation: Some(expected.snapshot.conversation_id),
+            changed_by_native_tool: recovered_saved_change(expected, review),
+            metadata: Some(metadata.clone()),
+            recovered_submission: Some(expected.submission_id),
+            network,
+        });
+        Ok(payload)
+    }
+
+    /// A short-lived native projection for the matching runtime.resumed event.
+    pub(crate) fn recovered_task(&self) -> Option<RecoveredTask> {
+        let task = self.task.lock().ok()?;
+        let task = task.as_ref()?;
+        let metadata = task.metadata.as_ref()?;
+        Some(RecoveredTask {
+            id: task.id.clone(),
+            project: task.project.clone(),
+            mode: task.mode,
+            languages: metadata.languages.clone(),
+            model: metadata.model.clone(),
+            input: metadata.input.clone(),
+            ui_draft: metadata.ui_draft.clone(),
+            selected: metadata.selected.clone(),
+            generation_snapshot: metadata.generation_snapshot.clone(),
+            conversation_id: task.conversation?,
+            submission_id: task.recovered_submission?,
+        })
+    }
+
     pub(crate) fn new(bridge: Arc<AgentBridge>) -> Self {
         Self {
             store: crate::panes::agent_settings::configuration_store(&bridge.dirs),
@@ -170,8 +568,14 @@ impl NativeTasks {
 
     pub(crate) fn model_configuration(&self) -> Result<Value, String> {
         let snapshot = self.store.load().map_err(|error| error.to_string())?;
-        let configuration = runtime_configuration(&snapshot).unwrap_or(Value::Null);
-        *self.startup.lock().map_err(|_| "模型配置状态不可用。")? = Some(snapshot);
+        let configuration = snapshot
+            .active()
+            .map(|channel| runtime_configuration_for(&self.store, &snapshot, channel))
+            .unwrap_or(Value::Null);
+        *self
+            .startup
+            .lock()
+            .map_err(|_| "modelSettings.configurationUnavailable")? = Some(snapshot);
         Ok(configuration)
     }
 
@@ -186,35 +590,46 @@ impl NativeTasks {
             || intent.input.len() > 256 * 1024
             || intent.ui_draft.len() > 256 * 1024
         {
+            // Admission is unchanged; the display distinguishes missing text
+            // from the bounded transport error without deriving authority from it.
             return Err(SubmissionError::RejectedInput(
-                "请输入有效内容，每次请求最多256千字节。",
+                if intent.input.trim().is_empty() {
+                    "agent.enterRequest"
+                } else {
+                    "runtime.inputTooLarge"
+                },
             ));
         }
-        if self.task.lock().map_err(|_| "任务状态不可用。")?.is_some() {
-            return Err("已有任务正在执行，请等待完成或停止后重新连接。".into());
-        }
-        let snapshot = self
-            .startup
+        if self
+            .task
             .lock()
-            .map_err(|_| "模型配置状态不可用。")?
-            .clone()
-            .ok_or("请先连接聊天运行组件。")?;
+            .map_err(|_| "agent.sessionUnavailable")?
+            .is_some()
+        {
+            return Err("runtime.taskBusy".into());
+        }
+        let snapshot = self.store.load().map_err(|error| error.to_string())?;
+        let selected = intent
+            .model
+            .as_ref()
+            .or_else(|| snapshot.active())
+            .ok_or("agent.errorModelRequired")?;
         self.store
-            .assert_current(&snapshot)
+            .assert_connection_current(selected)
             .map_err(|error| error.to_string())?;
         let current = self
             .bridge
             .live
             .current_project()
             .map_err(|error| error.to_string())?
-            .ok_or("当前没有打开的工程。")?;
+            .ok_or("agent.openProject")?;
         if current != intent.project {
-            return Err("工程已切换或修改，本次请求未发送；请重新确认。".into());
+            return Err("runtime.stateChanged".into());
         }
         if concat_host::project_identity::read_persisted(Path::new(&current.path))?.as_deref()
             != Some(current.project_id.as_str())
         {
-            return Err("请先保存当前原生工程的持久身份，再发送模型任务。".into());
+            return Err("agent.reopenIdentity".into());
         }
         // History and selected scripts share the existing native location
         // registry. A copied manifest must not inherit another live folder's
@@ -224,7 +639,7 @@ impl NativeTasks {
             if intent.mode == TaskMode::Edit {
                 if let Some(selected) = intent.selected.as_ref() {
                     if selected.project_id != current.project_id {
-                        return Err("所选文案不属于当前工程。".into());
+                        return Err("script.errorVersion".into());
                     }
                     let scripts = ScriptStore::open_read_only(
                         &self
@@ -240,14 +655,14 @@ impl NativeTasks {
                         .map_err(|error| error.to_string())?
                         != *selected
                     {
-                        return Err("本次剪辑选版已改变，请重新发送。".into());
+                        return Err("script.errorStale".into());
                     }
                     let version = scripts
                         .resolve_binding(selected)
                         .map_err(|error| error.to_string())?;
                     input = format!(
                         "原生捕获的本次剪辑依据（不可改写版本声明）：{}\n文案正文：\n{}\n\n用户要求：\n{}\n\n先读取当前工程；只能使用已实际导入且可用的素材。空时间线使用顶层applySingleMainTemplate类型化计划，由原生一次创建主视频、字幕、贴片文字、音乐和配音角色轨；已存在片段时不能使用该模板替换它们，应使用现有轨道的精确编辑。必须按真实时长生成一个精确批次；素材或轨道不具备时明确说明缺口，禁止虚构。媒体新增仅使用addMediaClipExact或受限applySingleMainTemplate，禁止自动寻找空隙、嵌套模板及通用建轨。调用一次edit_apply_guarded提交完整批次。",
-                        serde_json::to_string(selected).map_err(|_| "文案绑定无法编码。")?,
+                        serde_json::to_string(selected).map_err(|_| "runtime.invalidRequest")?,
                         version.content,
                         input
                     );
@@ -266,7 +681,7 @@ impl NativeTasks {
                     || generation.session_id() != current.session_id
                     || generation.project_revision() != current.revision
                 {
-                    return Err("文案生成上下文已失效，未发送模型任务。".into());
+                    return Err("runtime.stateChanged".into());
                 }
                 input = format!(
                     "本次只生成独立文案候选，不得修改原生工程。原生文案源摘要：{}。只返回候选正文，不包裹代码块。\n{}",
@@ -320,25 +735,53 @@ impl NativeTasks {
         credentials: impl FnOnce() -> Result<Arc<dyn CredentialStore>, String>,
     ) -> Result<T, SubmissionError> {
         if prepared.input.len() > 512 * 1024 {
-            return Err(SubmissionError::RejectedInput(
-                "所选文案与请求合计超过本次模型输入上限，请缩短内容后重试。",
-            ));
+            return Err(SubmissionError::RejectedInput("runtime.inputTooLarge"));
         }
         let permit = random_capability()?;
-        let payload = intent.runtime_payload(&prepared.input, &permit, prepared.conversation);
+        let selected = intent
+            .model
+            .as_ref()
+            .or_else(|| prepared.snapshot.active())
+            .cloned()
+            .ok_or("agent.errorModelRequired")?;
+        self.store
+            .assert_connection_current(&selected)
+            .map_err(|error| error.to_string())?;
+        let mut payload = intent.runtime_payload(&prepared.input, &permit, prepared.conversation);
+        payload["modelConfiguration"] =
+            runtime_configuration_for(&self.store, &prepared.snapshot, &selected);
+        let metadata = DurableTaskMetadata {
+            version: 1,
+            mode: intent.mode,
+            languages: intent.languages.clone(),
+            model: selected.clone(),
+            model_configuration: payload["modelConfiguration"].clone(),
+            input: intent.input.clone(),
+            ui_draft: intent.ui_draft.clone(),
+            selected: intent.selected.clone(),
+            generation_snapshot: intent
+                .generation
+                .as_ref()
+                .map(GenerationRequest::recovery_snapshot),
+        };
+        metadata.validate()?;
         let encoded = encode(payload)?;
-        let network = Arc::new(ModelNetwork::authorize(
+        let network = Arc::new(ModelNetwork::authorize_selected(
             Arc::clone(&self.bridge.owner),
             self.bridge.token.clone(),
             self.store.clone(),
             prepared.snapshot,
             credentials()?,
+            selected,
         )?);
-        let mut task = self.task.lock().map_err(|_| "任务状态不可用。")?;
+        let mut task = self.task.lock().map_err(|_| "agent.sessionUnavailable")?;
         if task.is_some() {
-            return Err("已有任务进入执行，本次请求未发送。".into());
+            return Err("runtime.taskBusy".into());
         }
-        *self.network.lock().map_err(|_| "模型接收状态不可用。")? = Some(Arc::clone(&network));
+        *self
+            .network
+            .lock()
+            .map_err(|_| "agent.sessionUnavailable")? = Some(Arc::clone(&network));
         *task = Some(AuthorizedTask {
             id: intent.id.clone(),
             permit,
@@ -348,6 +791,8 @@ impl NativeTasks {
             expected_conversation: prepared.conversation,
             conversation: None,
             changed_by_native_tool: false,
+            metadata: Some(metadata),
+            recovered_submission: None,
             network,
         });
         Ok(encoded)
@@ -357,16 +802,16 @@ impl NativeTasks {
     /// its scheduler. The native task id was issued by the explicit UI action.
     pub(crate) fn bind(&self, id: &str, conversation: u64) -> Result<(), String> {
         if conversation > 9_007_199_254_740_991 {
-            return Err("会话编号超出原版运行组件范围。".into());
+            return Err("runtime.invalidRequest".into());
         }
         let captured = self
             .task
             .lock()
-            .map_err(|_| "任务状态不可用。")?
+            .map_err(|_| "agent.sessionUnavailable")?
             .as_ref()
             .filter(|task| task.id == id)
             .cloned()
-            .ok_or("本次任务未获原生授权。")?;
+            .ok_or("permission.taskScope")?;
         let task = &captured;
         task.network.check_current()?;
         if task
@@ -374,7 +819,7 @@ impl NativeTasks {
             .is_some_and(|value| value != conversation)
             || task.conversation.is_some_and(|value| value != conversation)
         {
-            return Err("原版会话不属于本次任务绑定。".into());
+            return Err("permission.taskScope".into());
         }
         let bindings = ConversationBindings::open(&self.bridge.owner, &self.bridge.token)
             .map_err(|error| error.to_string())?;
@@ -382,21 +827,37 @@ impl NativeTasks {
             .bind(&task.project.project_id, task.mode.as_str(), conversation)
             .map_err(|error| error.to_string())?;
         task.network.check_current()?;
-        let mut current = self.task.lock().map_err(|_| "任务状态不可用。")?;
+        if let Some(metadata) = &task.metadata {
+            concat_agent::task_snapshots::persist(
+                &self.bridge.owner,
+                &self.bridge.token,
+                &concat_agent::task_snapshots::TaskSnapshot {
+                    schema_version: 1,
+                    request_id: task.id.clone(),
+                    conversation_id: conversation,
+                    project_id: task.project.project_id.clone(),
+                    project_path: task.project.path.clone(),
+                    metadata: serde_json::to_value(metadata)
+                        .map_err(|_| "agent.errorRecoverySnapshotInvalid")?,
+                },
+            )?;
+        }
+        task.network.check_current()?;
+        let mut current = self.task.lock().map_err(|_| "agent.sessionUnavailable")?;
         let task = current
             .as_mut()
             .filter(|task| task.id == captured.id && task.permit == captured.permit)
-            .ok_or("会话绑定期间原生任务已退役。")?;
+            .ok_or("permission.taskScope")?;
         task.conversation = Some(conversation);
         Ok(())
     }
 
     pub(crate) fn network(&self, permit: &str) -> Result<Arc<ModelNetwork>, String> {
-        let task = self.task.lock().map_err(|_| "任务状态不可用。")?;
+        let task = self.task.lock().map_err(|_| "agent.sessionUnavailable")?;
         let task = task
             .as_ref()
             .filter(|task| task.permit == permit && task.conversation.is_some())
-            .ok_or("模型请求许可已失效或没有绑定原版会话。")?;
+            .ok_or("permission.taskScope")?;
         Ok(Arc::clone(&task.network))
     }
 
@@ -404,10 +865,10 @@ impl NativeTasks {
         let expected = self
             .task
             .lock()
-            .map_err(|_| "任务状态不可用。")?
+            .map_err(|_| "agent.sessionUnavailable")?
             .as_ref()
             .map(|task| task.project.clone())
-            .ok_or("没有已授权任务。")?;
+            .ok_or("permission.taskScope")?;
         let current = self
             .bridge
             .live
@@ -419,7 +880,7 @@ impl NativeTasks {
                 && value.path == expected.path
         }) {
             self.cancel();
-            return Err("工程已切换，模型请求许可失效。".into());
+            return Err("permission.taskScope".into());
         }
         self.network(permit)?.open(request)
     }
@@ -435,19 +896,19 @@ impl NativeTasks {
         let task = self
             .task
             .lock()
-            .map_err(|_| "任务状态不可用。")?
+            .map_err(|_| "agent.sessionUnavailable")?
             .as_ref()
             .cloned()
-            .ok_or("工具调用没有本次原生任务授权。")?;
-        let invocation = invocation.ok_or("工具调用缺少原版会话身份。")?;
+            .ok_or("permission.taskScope")?;
+        let invocation = invocation.ok_or("permission.missingInvocation")?;
         if task.conversation != Some(invocation.conversation_id) {
-            return Err("工具调用不属于当前已绑定会话。".into());
+            return Err("permission.taskScope".into());
         }
         task.network.check_current()?;
         let name = message
             .pointer("/params/name")
             .and_then(Value::as_str)
-            .ok_or("工具名称缺失。")?
+            .ok_or("permission.invalidArguments")?
             .to_owned();
         if name == "concat_version" {
             return Ok(());
@@ -458,43 +919,41 @@ impl NativeTasks {
             let args = message
                 .pointer("/params/arguments")
                 .and_then(Value::as_object)
-                .ok_or("只读目录工具参数无效。")?;
+                .ok_or("permission.invalidArguments")?;
             if (name == "template_list" && !args.is_empty())
                 || (name == "effects_list"
                     && (args.keys().any(|key| key != "kind")
                         || args.get("kind").is_some_and(|kind| !kind.is_string())))
             {
-                return Err("只读目录工具不得携带工程路径或未审查的参数。".into());
+                return Err("permission.invalidArguments".into());
             }
             return Ok(());
         }
         let args = message
             .pointer_mut("/params/arguments")
             .and_then(Value::as_object_mut)
-            .ok_or("工具参数无效。")?;
+            .ok_or("permission.invalidArguments")?;
         if args.get("path").and_then(Value::as_str) != Some(task.project.path.as_str()) {
-            return Err("工具仅可访问本次原生任务绑定的当前工程。".into());
+            return Err("permission.taskScope".into());
         }
         if name == "edit_apply_guarded" {
             if task.mode != TaskMode::Edit {
-                return Err("本次为只读任务，原生权限层拒绝修改工程。".into());
+                return Err("permission.readOnlyTask".into());
             }
             // The user may directly edit the current timeline without first
             // choosing a script. Full-video template generation is different:
             // it remains bound to a verified, explicitly selected version.
             if task.selected.is_none() && args.get("command").is_none_or(contains_main_template) {
-                return Err(
-                    "按文案生成整片前，请先保存并选择文案版本；直接剪辑仍可使用精确批次。".into(),
-                );
+                return Err("script.errorSelection".into());
             }
             if args.get("expectedSession").and_then(Value::as_u64) != Some(task.project.session_id)
                 || args.get("expectedRevision").and_then(Value::as_u64)
                     != Some(task.project.revision)
             {
-                return Err("剪辑计划没有使用本次原生捕获的工程会话与版本。".into());
+                return Err("permission.editContextChanged".into());
             }
         } else if !matches!(name.as_str(), "project_get" | "timeline_read") {
-            return Err("此工具不在本次原生任务权限内。".into());
+            return Err("permission.taskScope".into());
         }
         Ok(())
     }
@@ -507,9 +966,9 @@ impl NativeTasks {
         session: u64,
         revision: u64,
     ) -> Result<(), String> {
-        let task = self.task.lock().map_err(|_| "任务状态不可用。")?;
-        let task = task.as_ref().ok_or("本次剪辑授权已结束。")?;
-        let current = studio.session.as_ref().ok_or("当前工程已关闭。")?;
+        let task = self.task.lock().map_err(|_| "agent.sessionUnavailable")?;
+        let task = task.as_ref().ok_or("permission.taskScope")?;
+        let current = studio.session.as_ref().ok_or("agent.openProject")?;
         if task.mode != TaskMode::Edit
             || task.project.session_id != session
             || task.project.revision != revision
@@ -517,13 +976,13 @@ impl NativeTasks {
             || current.revision() != revision
             || current.project_identity() != task.project.project_id
         {
-            return Err("工程已变化或本次任务没有剪辑权限，旧计划被拒绝。".into());
+            return Err("permission.editContextChanged".into());
         }
         if let Some(selected) = task.selected.as_ref()
             && (!studio.script.selection_settled()
                 || studio.script.selected_binding().as_ref() != Some(selected))
         {
-            return Err("文案选版已改变或正在保存，本次旧计划被拒绝。".into());
+            return Err("permission.editContextChanged".into());
         }
         Ok(())
     }
@@ -542,24 +1001,24 @@ impl NativeTasks {
         let reply = response
             .pointer("/result/structuredContent")
             .filter(|value| value.is_object())
-            .ok_or("原生剪辑工具未返回可核对的工程回执。")?;
+            .ok_or("runtime.editReceiptUnconfirmed")?;
         let task = self
             .task
             .lock()
-            .map_err(|_| "任务状态不可用。")?
+            .map_err(|_| "runtime.editReceiptUnconfirmed")?
             .as_ref()
             .filter(|task| {
                 task.mode == TaskMode::Edit && task.conversation == Some(invocation.conversation_id)
             })
             .cloned()
-            .ok_or("原生剪辑结果不属于当前任务。")?;
+            .ok_or("runtime.editReceiptUnconfirmed")?;
         let journal = self
             .bridge
             .journal
             .lock()
-            .map_err(|_| "原生编辑记录不可用。")?
+            .map_err(|_| "runtime.editReceiptUnconfirmed")?
             .clone()
-            .ok_or("原生编辑记录尚未打开。")?;
+            .ok_or("runtime.editReceiptUnconfirmed")?;
         let native_receipt = journal
             .changed_receipt(
                 invocation,
@@ -567,15 +1026,13 @@ impl NativeTasks {
                 task.project.session_id,
                 task.project.revision,
             )
-            .map_err(|_| "无法核对原生剪辑写入记录，未确认剪辑完成。")?;
+            .map_err(|_| "runtime.editReceiptUnconfirmed")?;
         let Some(native_receipt) = native_receipt else {
             if reply["revision"]
                 .as_u64()
                 .is_some_and(|revision| revision > task.project.revision)
             {
-                return Err(
-                    "原生剪辑回执声称已修改，但缺少匹配的持久操作记录；请核对工程。".into(),
-                );
+                return Err("runtime.editReceiptUnconfirmed".into());
             }
             return Ok(());
         };
@@ -583,9 +1040,12 @@ impl NativeTasks {
         // the journal stores the full native editor response. Compare the
         // precise adapter projection, not the two different wire shapes.
         if concat_mcp::summary::view(&native_receipt) != *reply {
-            return Err("剪辑工具响应与持久的原生工程回执不一致，请核对工程。".into());
+            return Err("runtime.editReceiptUnconfirmed".into());
         }
-        let mut current = self.task.lock().map_err(|_| "任务状态不可用。")?;
+        let mut current = self
+            .task
+            .lock()
+            .map_err(|_| "runtime.editReceiptUnconfirmed")?;
         let current = current
             .as_mut()
             .filter(|current| {
@@ -593,18 +1053,18 @@ impl NativeTasks {
                     && current.permit == task.permit
                     && current.conversation == task.conversation
             })
-            .ok_or("核对剪辑回执期间原生任务已退役。")?;
+            .ok_or("runtime.editReceiptUnconfirmed")?;
         current.changed_by_native_tool = true;
         Ok(())
     }
 
     pub(crate) fn finish(&self, id: &str, conversation: u64) -> Result<bool, String> {
-        let mut task = self.task.lock().map_err(|_| "任务状态不可用。")?;
+        let mut task = self.task.lock().map_err(|_| "agent.sessionUnavailable")?;
         if !task
             .as_ref()
             .is_some_and(|task| task.id == id && task.conversation == Some(conversation))
         {
-            return Err("拒绝了不属于当前任务的完成回调。".into());
+            return Err("permission.taskScope".into());
         }
         let edited = task
             .as_ref()
@@ -614,7 +1074,7 @@ impl NativeTasks {
         }
         self.network
             .lock()
-            .map_err(|_| "模型接收状态不可用。")?
+            .map_err(|_| "agent.sessionUnavailable")?
             .take();
         Ok(edited)
     }
@@ -659,7 +1119,7 @@ impl NativeTasks {
         if concat_host::project_identity::read_persisted(Path::new(&project.path))?.as_deref()
             != Some(project.project_id.as_str())
         {
-            return Err("当前工程真实位置或持久身份已改变，未允许放弃旧任务。".into());
+            return Err("agent.errorRecoveryChanged".into());
         }
         let root = self
             .bridge
@@ -712,8 +1172,7 @@ impl NativeTasks {
             .data
             .join("bk-cat")
             .join("script-workspaces");
-        std::fs::create_dir_all(&root)
-            .map_err(|_| "无法核对工程持久归属，未读取会话或发送模型任务。".to_owned())?;
+        std::fs::create_dir_all(&root).map_err(|_| "agent.sessionUnavailable".to_owned())?;
         concat_agent::script_locations::with_project_location(
             &root,
             &project.project_id,
@@ -777,6 +1236,8 @@ pub(crate) mod tests {
         );
         for mode in [TaskMode::Chat, TaskMode::Script, TaskMode::Edit] {
             let mut intent = SubmissionIntent {
+                languages: crate::agent::tasks::TaskLanguages::default(),
+                model: None,
                 id: TASK.into(),
                 project: CurrentProject {
                     project_id: PROJECT.into(),
@@ -812,6 +1273,8 @@ pub(crate) mod tests {
     fn oversized_user_display_is_rejected_before_another_task_or_credential_access() {
         let fixture = Fixture::new(TaskMode::Chat, None);
         let intent = SubmissionIntent {
+            languages: crate::agent::tasks::TaskLanguages::default(),
+            model: None,
             id: "not-admitted".into(),
             project: fixture.project(),
             mode: TaskMode::Chat,
@@ -824,7 +1287,44 @@ pub(crate) mod tests {
         let reads = fixture.credentials.reads.load(Ordering::SeqCst);
         assert_eq!(
             fixture.tasks.prepare(&intent, Ok).unwrap_err().to_string(),
-            "请输入有效内容，每次请求最多256千字节。"
+            "runtime.inputTooLarge"
+        );
+        assert_eq!(fixture.credentials.reads.load(Ordering::SeqCst), reads);
+        assert_eq!(
+            fixture.tasks.task.lock().unwrap().as_ref().unwrap().id,
+            TASK
+        );
+        fixture.network.check_current().unwrap();
+    }
+
+    #[test]
+    fn empty_input_and_busy_task_keep_distinct_codes_without_admitting_work() {
+        let fixture = Fixture::new(TaskMode::Chat, None);
+        let reads = fixture.credentials.reads.load(Ordering::SeqCst);
+        let mut intent = SubmissionIntent {
+            languages: TaskLanguages::default(),
+            model: None,
+            id: "not-admitted".into(),
+            project: fixture.project(),
+            mode: TaskMode::Chat,
+            input: " \n\t".into(),
+            ui_draft: " \n\t".into(),
+            reference_keys: vec![],
+            selected: None,
+            generation: None,
+        };
+        for language in ["en", "zh-Hans", "ja"] {
+            intent.languages.interface_language = language.into();
+            assert_eq!(
+                fixture.tasks.prepare(&intent, Ok).unwrap_err().to_string(),
+                "agent.enterRequest"
+            );
+        }
+        intent.input = "A new valid request".into();
+        intent.ui_draft = intent.input.clone();
+        assert_eq!(
+            fixture.tasks.prepare(&intent, Ok).unwrap_err().to_string(),
+            "runtime.taskBusy"
         );
         assert_eq!(fixture.credentials.reads.load(Ordering::SeqCst), reads);
         assert_eq!(
@@ -844,6 +1344,8 @@ pub(crate) mod tests {
         let vault_opens = AtomicUsize::new(0);
         let draft = "\u{1}".repeat(200_000);
         let mut intent = SubmissionIntent {
+            languages: crate::agent::tasks::TaskLanguages::default(),
+            model: None,
             id: "bounded-native-input".into(),
             project: project.clone(),
             mode: TaskMode::Chat,
@@ -860,24 +1362,42 @@ pub(crate) mod tests {
             )
             .map_err(SubmissionError::from)
         };
-        let error = fixture
-            .tasks
-            .admit_prepared(
-                &intent,
-                PreparedInput {
-                    project: project.clone(),
-                    snapshot: snapshot.clone(),
-                    input: format!("原生完整上下文\n{}", intent.input),
-                    conversation: None,
-                },
-                encode,
-                || {
-                    vault_opens.fetch_add(1, Ordering::SeqCst);
-                    Ok(fixture.credentials.clone())
-                },
-            )
-            .unwrap_err();
-        assert!(matches!(error, SubmissionError::RejectedInput(_)));
+        let Err(error) = fixture.tasks.admit_prepared(
+            &intent,
+            PreparedInput {
+                project: project.clone(),
+                snapshot: snapshot.clone(),
+                input: format!("原生完整上下文\n{}", intent.input),
+                conversation: None,
+            },
+            |payload| {
+                // This bounded user/native input fits the larger current
+                // bridge budget. Exercise a caller-owned complete-envelope
+                // failure with explicit test padding, never a larger draft.
+                let valid = encode(payload.clone())?;
+                let limit = concat_agent::transport::MAX_BRIDGE_FRAME_BYTES;
+                assert!(valid.len() < limit);
+                crate::embedded::encode_frame(
+                    "actual-component-with-complete-envelope",
+                    json!({
+                        "id": format!("native:{}", u64::MAX),
+                        "payload": payload,
+                        "fixtureEnvelopePadding": " ".repeat(limit),
+                    }),
+                )
+                .map_err(SubmissionError::from)
+            },
+            || {
+                vault_opens.fetch_add(1, Ordering::SeqCst);
+                Ok(fixture.credentials.clone())
+            },
+        ) else {
+            panic!("the oversized complete frame must be rejected before authority");
+        };
+        assert!(matches!(
+            error,
+            SubmissionError::RejectedInput("runtime.inputTooLarge")
+        ));
         assert_eq!(vault_opens.load(Ordering::SeqCst), 0);
         assert_eq!(
             fixture.credentials.reads.load(Ordering::SeqCst),
@@ -1033,6 +1553,8 @@ pub(crate) mod tests {
             expected_conversation,
             conversation: None,
             changed_by_native_tool: false,
+            metadata: None,
+            recovered_submission: None,
             network: Arc::clone(&network),
         });
         (network, credentials)
@@ -1137,6 +1659,112 @@ pub(crate) mod tests {
                 .unwrap(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn recovery_completion_requires_this_inputs_native_receipt_and_exact_saved_document() {
+        use concat_agent::operations::{Admission, inspect_recovery};
+        let fixture = Fixture::new(TaskMode::Chat, None);
+        let project = fixture.project();
+        write_native_identity(Path::new(&project.path), PROJECT);
+        let original = fixture.tasks.startup.lock().unwrap().clone().unwrap();
+        let channel = original.active().unwrap().clone();
+        let metadata = DurableTaskMetadata {
+            version: 1,
+            mode: TaskMode::Edit,
+            languages: TaskLanguages::default(),
+            model: channel.clone(),
+            model_configuration: runtime_configuration_for(
+                &fixture.tasks.store,
+                &original,
+                &channel,
+            ),
+            input: "original edit".into(),
+            ui_draft: "original edit".into(),
+            selected: None,
+            generation_snapshot: None,
+        };
+        let invocation = fixture.invocation(CONVERSATION);
+        let mut scope = RecoveryTaskScope {
+            snapshot: concat_agent::task_snapshots::TaskSnapshot {
+                schema_version: 1,
+                request_id: TASK.into(),
+                conversation_id: CONVERSATION,
+                project_id: PROJECT.into(),
+                project_path: project.path.clone(),
+                metadata: serde_json::to_value(&metadata).unwrap(),
+            },
+            submission_id: 22,
+            task_ids: vec![89],
+            invocations: vec![invocation.clone()],
+            metadata,
+        };
+        let journal = fixture.bridge.journal.lock().unwrap().clone().unwrap();
+        let request = json!({"method":"edit.applyGuarded","path":project.path,"expectedSession":17,"expectedRevision":3});
+        let Admission::New(id) = journal
+            .prepare(&invocation, &request, &project.path, 17, 3)
+            .unwrap()
+        else {
+            panic!("new intent")
+        };
+        let inspect = || {
+            inspect_recovery(&fixture.bridge.owner, &fixture.bridge.token, &project.path).unwrap()
+        };
+        assert!(
+            !recovered_saved_change(&scope, &inspect()),
+            "unknown intent is never success"
+        );
+        journal
+            .record_receipt(id, 17, 4, &json!({"sessionId":17,"revision":4}))
+            .unwrap();
+        assert!(
+            !recovered_saved_change(&scope, &inspect()),
+            "applied without save is not recovered saved work"
+        );
+        let document: Value = serde_json::from_slice(
+            &std::fs::read(Path::new(&project.path).join("concat.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            journal
+                .record_saved_document(&project.path, 17, 4, &document)
+                .unwrap(),
+            1
+        );
+        assert!(recovered_saved_change(&scope, &inspect()));
+        scope.invocations[0].call_id = "another-input-call".into();
+        assert!(
+            !recovered_saved_change(&scope, &inspect()),
+            "same conversation does not imply same original input"
+        );
+        scope.invocations[0] = invocation;
+        std::fs::write(
+            Path::new(&project.path).join("concat.json"),
+            b"{\"changed-after-save\":true}",
+        )
+        .unwrap();
+        assert!(
+            !recovered_saved_change(&scope, &inspect()),
+            "an overwritten document is not the proven saved output"
+        );
+        let early = Invocation {
+            conversation_id: CONVERSATION,
+            task_id: 90,
+            call_id: "save-before-receipt".into(),
+        };
+        let Admission::New(_id)=journal.prepare(&early,&json!({"method":"edit.applyGuarded","path":project.path,"expectedSession":17,"expectedRevision":4}),&project.path,17,4).unwrap() else {panic!("early intent")};
+        let document = json!({"changed-after-save":true});
+        assert_eq!(
+            journal
+                .record_saved_document(&project.path, 17, 5, &document)
+                .unwrap(),
+            0
+        );
+        scope.invocations = vec![early];
+        assert!(
+            !recovered_saved_change(&scope, &inspect()),
+            "an early save alone does not prove the operation applied"
+        );
     }
 
     #[test]
@@ -1356,7 +1984,10 @@ pub(crate) mod tests {
             bindings.bind(project, mode, CONVERSATION).unwrap();
             drop(bindings);
             assert!(fixture.tasks.bind(TASK, CONVERSATION).is_err());
-            assert!(fixture.tasks.bind(TASK, 9_007_199_254_740_992).is_err());
+            assert_eq!(
+                fixture.tasks.bind(TASK, 9_007_199_254_740_992).unwrap_err(),
+                "runtime.invalidRequest"
+            );
             assert!(fixture.tasks.network(PERMIT).is_err());
             assert_eq!(
                 inspect_latest(&fixture.bridge.owner, &fixture.bridge.token, project, mode)
@@ -1383,8 +2014,19 @@ pub(crate) mod tests {
                     message["params"]["arguments"] = json!({});
                 }
                 fixture.authorize(&mut message, CONVERSATION).unwrap();
-                assert!(fixture.authorize(&mut message, CONVERSATION + 1).is_err());
-                assert!(fixture.tasks.authorize_tool(&mut message, None).is_err());
+                assert_eq!(
+                    fixture
+                        .authorize(&mut message, CONVERSATION + 1)
+                        .unwrap_err(),
+                    "permission.taskScope"
+                );
+                assert_eq!(
+                    fixture
+                        .tasks
+                        .authorize_tool(&mut message, None)
+                        .unwrap_err(),
+                    "permission.missingInvocation"
+                );
             }
             let mut filtered_effects = fixture.message("effects_list");
             filtered_effects["params"]["arguments"] = json!({"kind":"effect"});
@@ -1394,23 +2036,32 @@ pub(crate) mod tests {
             for tool in ["effects_list", "template_list"] {
                 // A model cannot smuggle another project's path or arbitrary
                 // input through globally read-only metadata tools.
-                assert!(
+                assert_eq!(
                     fixture
                         .authorize(&mut fixture.message(tool), CONVERSATION)
-                        .is_err()
+                        .unwrap_err(),
+                    "permission.invalidArguments"
                 );
             }
             for tool in ["edit_apply_guarded", "project_delete", "media_upload"] {
-                assert!(
+                assert_eq!(
                     fixture
                         .authorize(&mut fixture.message(tool), CONVERSATION)
-                        .is_err()
+                        .unwrap_err(),
+                    if tool == "edit_apply_guarded" {
+                        "permission.readOnlyTask"
+                    } else {
+                        "permission.taskScope"
+                    }
                 );
             }
             for tool in ["project_get", "timeline_read"] {
                 let mut message = fixture.message(tool);
                 message["params"]["arguments"]["path"] = json!("another-project");
-                assert!(fixture.authorize(&mut message, CONVERSATION).is_err());
+                assert_eq!(
+                    fixture.authorize(&mut message, CONVERSATION).unwrap_err(),
+                    "permission.taskScope"
+                );
             }
         }
     }
@@ -1434,7 +2085,14 @@ pub(crate) mod tests {
         ] {
             let mut message = valid.clone();
             message["params"]["arguments"][field] = wrong;
-            assert!(fixture.authorize(&mut message, CONVERSATION).is_err());
+            assert_eq!(
+                fixture.authorize(&mut message, CONVERSATION).unwrap_err(),
+                if field == "path" {
+                    "permission.taskScope"
+                } else {
+                    "permission.editContextChanged"
+                }
+            );
         }
         // A selected version permits the full-video template path.
         let mut selected_template = valid.clone();
@@ -1483,7 +2141,33 @@ pub(crate) mod tests {
                 "owner" => fixture.bridge.stop(),
                 _ => {
                     let prior = fixture.tasks.store.load().unwrap();
-                    fixture.tasks.store.select(&prior, None).unwrap();
+                    let bound = prior.active().unwrap().clone();
+                    let unselected = fixture.tasks.store.select(&prior, None).unwrap();
+                    assert!(unselected.active().is_none());
+                    // The application default is independent of the captured
+                    // task. Only a change to its actual connection revokes it.
+                    fixture.network.check_current().unwrap();
+                    fixture.tasks.bind(TASK, CONVERSATION).unwrap();
+                    fixture
+                        .authorize(&mut fixture.message("project_get"), CONVERSATION)
+                        .unwrap();
+                    let changed = fixture
+                        .tasks
+                        .store
+                        .save_channel(
+                            &unselected,
+                            Some(&bound.id),
+                            ChannelDraft {
+                                label: bound.label.clone(),
+                                protocol: bound.protocol,
+                                endpoint: bound.endpoint.clone(),
+                                model: bound.model.clone(),
+                                request_timeout_ms: bound.request_timeout_ms + 1,
+                                max_output_tokens: bound.max_output_tokens,
+                            },
+                        )
+                        .unwrap();
+                    assert_ne!(changed.channel(&bound.id).unwrap().version, bound.version);
                 }
             }
             assert!(fixture.network.check_current().is_err());
@@ -1533,18 +2217,20 @@ pub(crate) mod tests {
         let response = json!({"jsonrpc":"2.0","id":1,"result":{
             "isError":false,"structuredContent":reply,
         }});
-        assert!(
+        assert_eq!(
             fixture
                 .tasks
                 .record_edit_result(&invocation, &response)
-                .is_err(),
+                .unwrap_err(),
+            "runtime.editReceiptUnconfirmed",
             "a fabricated positive result cannot bypass the operation journal"
         );
-        assert!(
+        assert_eq!(
             fixture
                 .tasks
                 .record_edit_result(&invocation, &json!({"result":{"isError":false}}))
-                .is_err()
+                .unwrap_err(),
+            "runtime.editReceiptUnconfirmed"
         );
         fixture
             .tasks
@@ -1603,11 +2289,12 @@ pub(crate) mod tests {
             "real native receipts are not MCP summaries"
         );
         let response = json!({"result":{"isError":false,"structuredContent":summary}});
-        assert!(
+        assert_eq!(
             fixture
                 .tasks
                 .record_edit_result(&invocation, &response)
-                .is_err()
+                .unwrap_err(),
+            "runtime.editReceiptUnconfirmed"
         );
         journal
             .record_receipt(
@@ -1621,29 +2308,32 @@ pub(crate) mod tests {
             call_id: "not-the-original-call".into(),
             ..invocation.clone()
         };
-        assert!(
+        assert_eq!(
             fixture
                 .tasks
                 .record_edit_result(&forged, &response)
-                .is_err()
+                .unwrap_err(),
+            "runtime.editReceiptUnconfirmed"
         );
         let cross_conversation = Invocation {
             conversation_id: CONVERSATION + 1,
             ..invocation.clone()
         };
-        assert!(
+        assert_eq!(
             fixture
                 .tasks
                 .record_edit_result(&cross_conversation, &response)
-                .is_err()
+                .unwrap_err(),
+            "runtime.editReceiptUnconfirmed"
         );
         let mut inaccurate = response.clone();
         inaccurate["result"]["structuredContent"]["timeline"]["id"] = json!("forged");
-        assert!(
+        assert_eq!(
             fixture
                 .tasks
                 .record_edit_result(&invocation, &inaccurate)
-                .is_err()
+                .unwrap_err(),
+            "runtime.editReceiptUnconfirmed"
         );
         fixture
             .tasks

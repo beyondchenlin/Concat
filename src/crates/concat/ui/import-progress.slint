@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 BK CUT contributors
+import { I18n } from "i18n.slint";
+import { Theme } from "theme/theme.slint";
+import { Modal, Button, Progress } from "primitives/modal.slint";
+
+export global ImportUi {
+    in-out property <bool> active;
+    in-out property <float> progress;
+    in-out property <string> message;
+    callback cancel-requested();
+}
+
+export component ImportProgress inherits Modal {
+    floating: true;
+    open: ImportUi.active;
+    title: I18n.t("import.title");
+    dismissable: true;
+    closed => { ImportUi.cancel-requested(); }
+    VerticalLayout {
+        padding: 20px;
+        spacing: 16px;
+        Text { text: ImportUi.message; color: Theme.fg; font-size: Theme.fs; wrap: word-wrap; }
+        Progress { value: ImportUi.progress; }
+        Text { text: I18n.t("import.cancelHint"); color: Theme.fg-muted; font-size: Theme.fs; wrap: word-wrap; }
+        Button { label: I18n.t("common.cancel"); clicked => { ImportUi.cancel-requested(); } }
+    }
+}

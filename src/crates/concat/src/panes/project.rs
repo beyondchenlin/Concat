@@ -47,6 +47,10 @@ pub struct ProjectPane {
     pub color_space: ColorSpace,
     /// What shows where no picture covers the frame.
     pub canvas: [u8; 4],
+    frame_edited: bool,
+    rate_edited: bool,
+    color_edited: bool,
+    canvas_edited: bool,
 }
 
 /// The colour list's rows, in the sheet's order.
@@ -81,6 +85,10 @@ impl ProjectPane {
                     custom_rate: (num, den),
                     color_space: video.color_space,
                     canvas: video.canvas,
+                    frame_edited: false,
+                    rate_edited: false,
+                    color_edited: false,
+                    canvas_edited: false,
                 };
             }
             ProjectMsg::Close => self.open = false,
@@ -90,6 +98,7 @@ impl ProjectPane {
                 if index == OUTPUTS.len() && self.size < OUTPUTS.len() {
                     self.custom_size = self.frame();
                 }
+                self.frame_edited |= self.size != index;
                 self.size = index;
             }
             ProjectMsg::RateChanged(index) => {
@@ -97,20 +106,30 @@ impl ProjectPane {
                 if index == RATES.len() && self.rate < RATES.len() {
                     self.custom_rate = self.rate();
                 }
+                self.rate_edited |= self.rate != index;
                 self.rate = index;
             }
             ProjectMsg::CustomWidth(width) => {
+                self.frame_edited = true;
                 self.custom_size = custom_frame(width, self.custom_size.1 as f32);
             }
             ProjectMsg::CustomHeight(height) => {
+                self.frame_edited = true;
                 self.custom_size = custom_frame(self.custom_size.0 as f32, height);
             }
-            ProjectMsg::CustomFps(fps) => self.custom_rate = custom_rate(f64::from(fps)),
+            ProjectMsg::CustomFps(fps) => {
+                self.rate_edited = true;
+                self.custom_rate = custom_rate(f64::from(fps));
+            }
             ProjectMsg::ColorSpaceChanged(index) => {
+                self.color_edited = true;
                 self.color_space =
                     COLOR_SPACES[(index.max(0) as usize).min(COLOR_SPACES.len() - 1)];
             }
-            ProjectMsg::CanvasChanged(canvas) => self.canvas = canvas,
+            ProjectMsg::CanvasChanged(canvas) => {
+                self.canvas_edited = true;
+                self.canvas = canvas;
+            }
             ProjectMsg::Apply => self.apply(studio),
         }
     }
@@ -128,12 +147,22 @@ impl ProjectPane {
             return;
         };
         let mut video = session.video();
-        video.width = width;
-        video.height = height;
-        video.rate_num = num;
-        video.rate_den = den;
-        video.color_space = sheet.color_space;
-        video.canvas = sheet.canvas;
+        // An import may finish while this sheet is open. Only fields the
+        // person actually edited can override that newer native state.
+        if sheet.frame_edited {
+            video.width = width;
+            video.height = height;
+        }
+        if sheet.rate_edited {
+            video.rate_num = num;
+            video.rate_den = den;
+        }
+        if sheet.color_edited {
+            video.color_space = sheet.color_space;
+        }
+        if sheet.canvas_edited {
+            video.canvas = sheet.canvas;
+        }
         if let Err(error) = session.prepare_save((!name.is_empty()).then_some(name.as_str())) {
             // Keep the edited form available when the session refuses the
             // name; neither the title nor the video settings have changed.
@@ -180,6 +209,7 @@ impl ProjectPane {
             open: self.open,
             name: self.name.as_str().into(),
             folder,
+            initial_format: format_status(studio.project()).into(),
             timeline: studio.timeline().name.as_str().into(),
             size: self.size as i32,
             rate: self.rate as i32,
@@ -199,4 +229,28 @@ impl ProjectPane {
             ),
         }
     }
+}
+
+fn format_status(project: &concat_project::model::Project) -> String {
+    use crate::i18n::{t, tf};
+    use concat_project::initial_format::{self, State};
+    let value = initial_format::read(project);
+    let mut status = match value.state {
+        State::Waiting => t("project.formatWaiting"),
+        State::Matched => {
+            let source = value
+                .media_id
+                .as_ref()
+                .and_then(|id| project.media_by_id(id))
+                .map(|item| item.name.as_str())
+                .unwrap_or("");
+            tf("project.formatMatched", &[&source])
+        }
+        State::UserSet => t("project.formatUserSet"),
+        State::Disabled => t("project.formatDisabled"),
+    };
+    if value.used_default_rate {
+        status.push_str(&format!(" · {}", t("project.formatDefaultRate")));
+    }
+    status
 }

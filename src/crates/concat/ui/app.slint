@@ -10,6 +10,7 @@
 // embeds the same five so a title is set in the face the interface is.
 // Licensed under the SIL Open Font License; see LICENSE-HankenGrotesk.txt.
 import { I18n } from "i18n.slint";
+import { ImportUi, ImportProgress } from "import-progress.slint";
 import "../../concat-text/fonts/HankenGrotesk-Regular.ttf";
 import "../../concat-text/fonts/HankenGrotesk-Medium.ttf";
 import "../../concat-text/fonts/HankenGrotesk-SemiBold.ttf";
@@ -120,6 +121,7 @@ import {
 import { SpeedRamp } from "inspector/speed-ramp.slint";
 
 export {
+    ImportUi,
     ScriptUi,
     ScriptVersionData,
     AgentUi,
@@ -205,7 +207,7 @@ export {
     NewVoiceData,
 }
 export component App inherits Window {
-    title: "Concat";
+    title: "BK CUT";
     // The taskbar's and Alt-Tab's picture on Windows, and the window
     // list's on X11. A Mac takes its Dock icon from the bundle and ignores
     // this; the .exe's own, for Explorer, is embedded by build.rs.
@@ -285,7 +287,7 @@ export component App inherits Window {
     // Read their animated geometry without covering the strip they leave free.
     public pure function content-overlay-covers(x: float, y: float) -> bool {
         let sheet-y = y - root.sheets-top / 1px;
-        return captions-overlay.covers-point(x, y) || speech-overlay.covers-point(x, y)
+        return import-progress-overlay.covers-point(x, y) || captions-overlay.covers-point(x, y) || speech-overlay.covers-point(x, y)
             || (sheet-y >= 0 && (
                 new-project-overlay.covers-point(x, sheet-y) || export-overlay.covers-point(x, sheet-y)
                 || settings-overlay.covers-point(x, sheet-y) || model-settings-overlay.covers-point(x, sheet-y)
@@ -317,6 +319,7 @@ export component App inherits Window {
 
     /// Put up the new-project sheet, and take it down again.
     callback start-compose();
+    callback start-new-files();
     callback start-dismiss();
     callback start-name-edited(name: string);
     callback start-location-edited(path: string);
@@ -446,6 +449,8 @@ export component App inherits Window {
     callback export-name-edited(name: string);
     callback export-browse();
     callback export-rate-changed(index: int);
+    callback export-resolution-changed(index: int);
+    callback export-long-edge-changed(value: float);
     callback export-codec-changed(index: int);
     callback export-ten-bit-changed(on: bool);
     callback export-hdr-changed(on: bool);
@@ -454,6 +459,7 @@ export component App inherits Window {
     callback export-cancel();
     callback export-reveal();
     callback export-again();
+    callback export-use-current();
 
     callback settings-closed();
     callback settings-page-changed(index: int);
@@ -473,6 +479,11 @@ export component App inherits Window {
     callback settings-magnetic-changed(on: bool);
     callback settings-download-source-changed(index: int);
     callback settings-download-base-edited(text: string);
+    callback settings-default-project-location-edited(text: string);
+    callback settings-default-match-media-changed(on: bool);
+    callback settings-default-project-width-changed(value: float);
+    callback settings-default-project-height-changed(value: float);
+    callback settings-default-project-rate-changed(value: float);
     callback settings-server-enabled-changed(on: bool);
     callback settings-server-host-edited(text: string);
     callback settings-server-port-edited(port: int);
@@ -876,6 +887,7 @@ export component App inherits Window {
                 capcut: root.capcut;
 
                 compose => { root.start-compose(); }
+                new-files => { root.start-new-files(); }
                 open => { root.start-open(); }
                 import-capcut => { root.start-import-capcut(); }
                 open-settings => { root.open-settings(); }
@@ -1139,6 +1151,8 @@ export component App inherits Window {
         name-edited(name) => { root.export-name-edited(name); }
         browse => { root.export-browse(); }
         rate-changed(index) => { root.export-rate-changed(index); }
+        resolution-changed(index) => { root.export-resolution-changed(index); }
+        long-edge-changed(value) => { root.export-long-edge-changed(value); }
         codec-changed(index) => { root.export-codec-changed(index); }
         ten-bit-changed(on) => { root.export-ten-bit-changed(on); }
         hdr-changed(on) => { root.export-hdr-changed(on); }
@@ -1147,6 +1161,7 @@ export component App inherits Window {
         cancel => { root.export-cancel(); }
         reveal => { root.export-reveal(); }
         again => { root.export-again(); }
+        use-current => { root.export-use-current(); }
     }
 
     settings-overlay := SettingsDialog {
@@ -1193,6 +1208,11 @@ export component App inherits Window {
         magnetic-changed(on) => { root.settings-magnetic-changed(on); }
         download-source-changed(index) => { root.settings-download-source-changed(index); }
         download-base-edited(text) => { root.settings-download-base-edited(text); }
+        default-project-location-edited(text) => { root.settings-default-project-location-edited(text); }
+        default-match-media-changed(on) => { root.settings-default-match-media-changed(on); }
+        default-project-width-changed(value) => { root.settings-default-project-width-changed(value); }
+        default-project-height-changed(value) => { root.settings-default-project-height-changed(value); }
+        default-project-rate-changed(value) => { root.settings-default-project-rate-changed(value); }
         server-enabled-changed(on) => { root.settings-server-enabled-changed(on); }
         server-host-edited(text) => { root.settings-server-host-edited(text); }
         server-port-edited(port) => { root.settings-server-port-edited(port); }
@@ -1316,6 +1336,8 @@ export component App inherits Window {
     // for. Only its card takes events, so covering the window costs the
     // window nothing; and it is under the tooltip layer so the card's own
     // close button can be named over it.
+    import-progress-overlay := ImportProgress { width: root.width; height: root.height; }
+
     ToastLayer {
         x: 0;
         y: 0;

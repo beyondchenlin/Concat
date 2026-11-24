@@ -214,8 +214,12 @@ test("built browser bootstrap answers native commands and opens no writable stor
     assert.deepEqual(nativeMethods, ["ownership.acquire", "recovery.read"]);
     await assert.rejects(command("native-start", { method: "runtime.start", storageId: "bootstrap-isolated" }), /repeated/);
     await assert.rejects(command("native-disallowed-resume", { method: "runtime.dispatch", action: "resume" }), /reconciliation/);
+    for (let index=0;index<4100;index++) await command(`explicit-read-${index}`,{method:"runtime.inspect"});
+    await assert.rejects(command("native-start", {method:"runtime.inspect"}),/repeated/,
+      "the original identity remains rejected after the former lifetime ceiling");
+    assert.equal(nativeMethods.filter(method=>method==="recovery.read").length,4101);
     await command("native-stop", { method: "runtime.stop" });
-    assert.deepEqual(nativeMethods, ["ownership.acquire", "recovery.read", "ownership.revoke", "ownership.drainAndRelease"]);
+    assert.deepEqual(nativeMethods.filter(method=>method!=="recovery.read"), ["ownership.acquire", "ownership.revoke", "ownership.drainAndRelease"]);
     await assert.rejects(command("native-restart", { method: "runtime.start", storageId: "bootstrap-isolated" }), /one host/);
     assert.equal(forbiddenFetch, 0);
   } finally { pagehide?.(); delete sandbox.BKCatNative; }
@@ -291,6 +295,7 @@ function fixture(file, generation, configured, transport, options = {}) {
   const snapshot = () => ({
     snapshotId: `reconciled-${generation}`, projectSession: "1", projectRevision: "0", sessionRevision: "0",
     schemaVersion: existsSync(file) ? 2 : "empty", hasInterruptedWork: options.interrupted === true,
+    hasUnfinishedPi:options.interrupted === true,
   });
   const ports = {
     ownership: {
@@ -299,7 +304,8 @@ function fixture(file, generation, configured, transport, options = {}) {
         assert.equal(approval.snapshotId, read.snapshotId); granted = true;
         if (options.discardConversationIds !== undefined) assert.equal(approval.decision, "discard");
         return { generation: lease.generation, snapshotId: read.snapshotId, allowInitializeEmptyStore: read.schemaVersion === "empty",
-          ...(options.discardConversationIds === undefined ? {} : { discardConversationIds: options.discardConversationIds }) };
+          ...(options.discardConversationIds === undefined ? {} : { discardConversationIds: options.discardConversationIds }),
+          ...(options.resumeTask === undefined ? {} : {resumeTask:options.resumeTask}) };
       },
       async revoke() { sqlite.revoke(); },
       async drainAndRelease() { assert.equal(sqlite.isClosed(), true, "SQLite closes before ownership release"); },
@@ -307,6 +313,18 @@ function fixture(file, generation, configured, transport, options = {}) {
     },
     recovery: {
       async read() { snapshotReads++; return snapshot(); },
+      async resumeVerified() {
+        verificationCalls++;
+        assert.ok(options.resumeTask,"only an original-task native scope may continue");
+        assert.equal(runtime.phase,"activating");
+        assert.equal(networkCalls,0,"final native verification precedes all model activity");
+        await options.verifyResume?.();
+        const {taskIds:_taskIds,...original}=options.resumeTask;
+        taskBindings.push({taskId:original.taskId,conversationId:original.conversationId});
+        return { ...original,networkPermit:"fresh-original-resume-permit",input:"保留这条被停止的真实输入",
+          nativeContext:JSON.stringify({expectedSession:22,expectedRevision:4,operationRecovery:{
+            uncertain:true,rule:"Do not replay recorded native edits. Unconfirmed work is not success."}}) };
+      },
       async discardVerified() {
         verificationCalls++;
         assert.ok(options.discardConversationIds, "only explicit native discard can request completion verification");
@@ -475,7 +493,7 @@ test("original native input persists separate display metadata with unchanged mo
     assert.equal(inputs.length, 1, "one submitted user action must still produce exactly one input entry");
     const entry = JSON.parse(JSON.stringify(inputs[0]));
     assert.equal(entry.kind, "bk-cat.user");
-    assert.deepEqual(entry.data, { schemaVersion: 1, text: displayText });
+    assert.deepEqual(entry.data, { schemaVersion: 2, text: displayText, languages: { interfaceLanguage: "zh-Hans", replyLanguage: "zh-Hans", contentLanguage: "zh-Hans" } });
     assert.equal(entry.model.length, 1);
     assert.equal(entry.model[0].content, fullInput);
     assert.deepEqual(conversationPresentation(live.value).messages.filter((message) => message.role === "user"),
@@ -530,6 +548,86 @@ test("original native input persists separate display metadata with unchanged mo
 
 // The pinned Pi scheduler must run beyond the old cap, even when the saved
 // conversation still contains the previous four-turn setting.
+test("original automatic compaction persists a summary and keeps language policy across reopen", { timeout: 60000 }, async () => {
+  const directory = mkdtempSync(resolve(tmpdir(), "bkcut-compaction-"));
+  const file = resolve(directory, "session.sqlite3");
+  const configuration = api.nativeModelConfiguration({ ...nativeConfiguration(),
+    contextWindow: 65536, contextSource: "official-directory:deterministic-compaction-fixture", maxOutputTokens: 2048 });
+  let requests = 0;
+  const first = fixture(file, 1, configuration, async () => {
+    requests++;
+    return completionResponse([{ delta: { role: "assistant", content: "Preserved task context and language policy." } }, { finish: "stop" }]);
+  });
+  let reopened;
+  try {
+    const start = await first.runtime.start();
+    await first.runtime.confirmRecovery({ snapshotId: start.snapshotId, decision: "continue", approvalId: "compaction-open" });
+    let conversationId;
+    const languages = { interfaceLanguage: "en", replyLanguage: "ja", contentLanguage: "fr" };
+    for (let index = 0; index < 4; index++) {
+      const taskId = `compaction-task-${index}`;
+      const admitted = await first.runtime.dispatch("nativeSubmit", {
+        taskId, networkPermit: `compaction-permit-${index}`, conversationId,
+        input: `Task ${index}: ` + "history context ".repeat(12000), displayText: `Original request ${index}`,
+        mode: "chat", languages,
+      });
+      conversationId = admitted.conversationId;
+      const finished = await first.runtime.dispatch("nativeWait", { taskId });
+      assert.equal(finished.status, "done", finished.status === "done" ? undefined : durableFailure(file));
+    }
+    assert.ok(requests > 4, "the original compaction must make a real request through the controlled fixture transport");
+    const db = new DatabaseSync(file, { readOnly: true });
+    let storedEntries;
+    try { storedEntries = db.prepare("SELECT id, record FROM entries ORDER BY id").all(); }
+    finally { db.close(); }
+    const records = storedEntries.map((row) => JSON.parse(row.record));
+    const summaries = records.filter((record) => record.kind === "pi.compaction");
+    assert.ok(summaries.length > 0, "the original summary must be committed in SQLite");
+    for (const entry of summaries) {
+      const before = JSON.stringify(entry);
+      assert.equal(entry.model.length, 1);
+      assert.equal(entry.model[0].role, "user", "the original Pi model context still uses its user message representation");
+      assert.equal(entry.model[0].content.length, 1);
+      assert.equal(entry.model[0].content[0].type, "text");
+      const originalSummary = entry.model[0].content[0].text;
+      assert.equal(typeof originalSummary, "string");
+      assert.deepEqual(conversationPresentation({ entries: [entry] }).messages,
+        [{ role: "compaction", text: originalSummary }]);
+      assert.equal(JSON.stringify(entry), before, "displaying an actual original summary cannot rewrite it");
+    }
+    const users = records.filter((record) => record.kind === "bk-cat.user");
+    assert.equal(users.length, 4, "compaction must retain original display records");
+    for (const entry of users) assert.deepEqual(entry.data.languages, languages);
+    await first.runtime.stop();
+    reopened = fixture(file, 2, configuration);
+    const recovery = await reopened.runtime.start();
+    await reopened.runtime.confirmRecovery({ snapshotId: recovery.snapshotId, decision: "continue", approvalId: "compaction-reopen" });
+    const view = await reopened.runtime.observeConversation(conversationId, () => {});
+    const restored = JSON.parse(JSON.stringify(view.value));
+    assert.ok(restored.entries.some((entry) => summaries.some((summary) => summary.id === entry.id)), "the original compacted context must reopen");
+    const originalView = JSON.stringify(view.value);
+    const displayed = conversationPresentation(view.value);
+    const restoredSummaries = restored.entries.filter((entry) => entry.kind === "pi.compaction");
+    assert.ok(restoredSummaries.length > 0);
+    for (const entry of restoredSummaries) {
+      assert.ok(displayed.messages.some((message) => message.role === "compaction" && message.text === entry.model[0].content[0].text),
+        "the reopened original summary must retain its dedicated display kind and untouched body");
+    }
+    assert.equal(JSON.stringify(view.value), originalView);
+    const verify = new DatabaseSync(file, { readOnly: true });
+    try {
+      assert.deepEqual(verify.prepare("SELECT id, record FROM entries ORDER BY id").all(), storedEntries,
+        "reopening and projecting must preserve every persisted history record byte for byte");
+    } finally { verify.close(); }
+    assert.equal(reopened.networkCalls(), 0, "reopening alone must never call a model");
+    view.detach();
+  } finally {
+    await first.runtime.stop().catch(() => {});
+    await reopened?.runtime.stop().catch(() => {});
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("native model task clears legacy four-turn cap and completes eight sequential requests", { timeout: 30000 }, async () => {
   const directory = mkdtempSync(resolve(tmpdir(), "bkcat-unlimited-pi-"));
   const file = resolve(directory, "session.sqlite3");
@@ -593,13 +691,14 @@ function durableRecords(file) {
 
 /** This seeds real interrupted records by stopping the production original
  * tool path, not by synthesizing a task graph or setting a fake success. */
-async function interruptedToolStore(file) {
+async function interruptedToolStore(file, options = {}) {
   let entered;
   const toolEntered = new Promise((resolve) => { entered = resolve; });
   const first = fixture(file, 1, api.nativeModelConfiguration(nativeConfiguration()), async () => completionResponse([
-    { delta: { role: "assistant", tool_calls: [{ index: 0, id: "interrupted-project-read", type: "function", function: { name: "project_get", arguments: "{}" } }] } },
+    { delta: { role: "assistant", tool_calls: [{ index: 0, id: "interrupted-project-read", type: "function", function: { name: options.toolName ?? "project_get", arguments: "{}" } }] } },
     { finish: "tool_calls" },
   ]), {
+    authorize: options.authorize,
     tool(_message, signal, invocation) {
       return new Promise((_resolve, reject) => {
         signal.throwIfAborted();
@@ -612,7 +711,8 @@ async function interruptedToolStore(file) {
     const snapshot = await first.runtime.start();
     await first.runtime.confirmRecovery({ snapshotId: snapshot.snapshotId, decision: "continue", approvalId: "native-seed" });
     const admitted = await first.runtime.dispatch("nativeSubmit", {
-      taskId: "interrupted-read", networkPermit: "seed-only-permit", input: "保留这条被停止的真实输入", mode: "chat",
+      taskId: "interrupted-read", networkPermit: "seed-only-permit", input: "保留这条被停止的真实输入", displayText:"保留这条被停止的真实输入", mode: options.mode ?? "chat",
+      ...(options.languages ? {languages:options.languages} : {}), modelConfiguration:nativeConfiguration(),
     });
     const invocation = await toolEntered;
     assert.equal(invocation.conversationId, admitted.conversationId);
@@ -632,6 +732,117 @@ async function interruptedToolStore(file) {
     return { admitted, records, live };
   } finally { await first.runtime.stop().catch(() => {}); }
 }
+
+
+
+test("explicit original-task continuation keeps the same submission and language snapshots without replaying a previously dispatched unsafe edit", {timeout:30000}, async()=>{
+  const directory=mkdtempSync(resolve(tmpdir(),"bkcut-original-resume-"));
+  const file=resolve(directory,"session.sqlite3");
+  const languages={interfaceLanguage:"en",replyLanguage:"ja",contentLanguage:"fr"};
+  let reopened;
+  try {
+    const seeded=await interruptedToolStore(file,{mode:"edit",toolName:"edit_apply_guarded",languages,
+      authorize:async()=>({approved:true,ticket:"original-edit-approval"})});
+    const scope={taskId:"interrupted-read",conversationId:seeded.admitted.conversationId,
+      submissionId:seeded.admitted.submissionId,taskIds:seeded.live.map(record=>record.id),
+      mode:"edit",languages,modelConfiguration:nativeConfiguration()};
+    let calls=0; const executed=[];
+    // Current defaults deliberately differ. Only the native-captured original
+    // configuration may be selected for this resumed durable task.
+    const today=api.nativeModelConfiguration({...nativeConfiguration(),id:"different-default",model:"new-default"});
+    reopened=fixture(file,2,today,async(_lease,permit,input,init)=>{
+      assert.equal(permit,"fresh-original-resume-permit");
+      const request=JSON.parse(await new Request(input,init).text());
+      assert.equal(request.model,"explicit-model");
+      const text=JSON.stringify(request.messages);
+      assert.match(text,/Use Japanese for ordinary replies/);
+      assert.match(text,/Use French for writing candidates/);
+      assert.match(text,/expectedSession.*22/);
+      assert.match(text,/Unconfirmed work is not success/);
+      assert.ok(request.messages.some(message=>message.role==="tool"&&/interrupt/i.test(JSON.stringify(message))),
+        "the pinned original unsafe replay policy must report interruption to the continued model");
+      calls++;
+      return calls===1 ? completionResponse([
+        {delta:{role:"assistant",tool_calls:[{index:0,id:"fresh-approved-edit",type:"function",function:{name:"edit_apply_guarded",arguments:JSON.stringify({expectedSession:22,expectedRevision:4})}}]}},
+        {finish:"tool_calls"},
+      ]):completionResponse([{delta:{role:"assistant",content:"元のタスクを確認して続行しました。"}},{finish:"stop"}]);
+    },{interrupted:true,resumeTask:scope,traceTasks:true,
+      authorize:async(message,_signal,invocation)=>{
+        assert.equal(invocation.callId,"fresh-approved-edit");
+        assert.equal(message.params.arguments.expectedSession,22);
+        assert.equal(message.params.arguments.expectedRevision,4);
+        return {approved:true,ticket:"new-owner-explicit-approval"};
+      },
+      tool:async(message,_signal,invocation,ticket)=>{
+        assert.equal(invocation.callId,"fresh-approved-edit");assert.equal(ticket,"new-owner-explicit-approval");
+        executed.push(invocation.callId);
+        return nativeJsonReply({jsonrpc:"2.0",id:message.id,result:{content:[{type:"text",text:"New native edit fixture receipt"}]}});
+      }});
+    const initial=await reopened.runtime.start();
+    assert.equal(reopened.networkCalls(),0);
+    assert.deepEqual(durableRecords(file),seeded.records,"read-only recovery does not mutate an interrupted original task");
+    await assert.rejects(reopened.runtime.dispatch("nativeResume",{}),/reconciliation/);
+    const accepted=await reopened.runtime.confirmRecovery({snapshotId:initial.snapshotId,decision:"continue",approvalId:"native-review-original-task"});
+    assert.equal(accepted.resumed,true);assert.equal(accepted.taskId,scope.taskId);
+    assert.equal(accepted.conversationId,scope.conversationId);assert.equal(accepted.submissionId,scope.submissionId);
+    const result=await reopened.runtime.dispatch("nativeWait",{taskId:scope.taskId});
+    assert.equal(result.status,"done",result.status==="done"?undefined:durableFailure(file));
+    assert.equal(result.submissionId,scope.submissionId);assert.equal(result.conversationId,scope.conversationId);
+    assert.equal(calls,2);assert.equal(reopened.verificationCalls(),1);
+    assert.deepEqual(executed,["fresh-approved-edit"],"the old dispatched edit must never be replayed");
+    assert.equal(reopened.approvalCalls.length,1,"only the new invocation asks for a new native approval");
+    const after=durableRecords(file);
+    assert.equal(after.submissions.length,seeded.records.submissions.length,"resume cannot create a replacement submission");
+    for(const entry of seeded.records.entries) assert.deepEqual(after.entries.find(row=>row.id===entry.id),entry,
+      "original transcript and language snapshot remain unchanged");
+    const user=after.entries.map(row=>JSON.parse(row.record)).find(record=>record.kind==="bk-cat.user");
+    assert.deepEqual(user.data.languages,languages);
+    assert.equal(after.tasks.some(row=>row.status!=="terminal"),false);
+    await assert.rejects(reopened.runtime.dispatch("nativeResume",{...scope,networkPermit:"duplicate"}),/snapshot|argument|Changed|recovery/i);
+    assert.equal(forbiddenFetch,0);
+  } finally { await reopened?.runtime.stop().catch(()=>{});rmSync(directory,{recursive:true,force:true}); }
+});
+
+async function interruptedRequestStore(file) {
+  let entered;
+  const requestEntered=new Promise(resolve=>{entered=resolve;});
+  const first=fixture(file,1,api.nativeModelConfiguration(nativeConfiguration()),async(_lease,_permit,_input,init)=>
+    new Promise((_resolve,reject)=>{
+      const signal=init.signal;signal.throwIfAborted();
+      signal.addEventListener("abort",()=>reject(signal.reason),{once:true});entered();
+    }));
+  try {
+    const start=await first.runtime.start();
+    await first.runtime.confirmRecovery({snapshotId:start.snapshotId,decision:"continue",approvalId:"seed-request"});
+    const admitted=await first.runtime.dispatch("nativeSubmit",{taskId:"interrupted-read",networkPermit:"seed-request-only",
+      input:"保留这条被停止的真实输入",mode:"chat",modelConfiguration:nativeConfiguration()});
+    await requestEntered;await first.runtime.stop();
+    const records=durableRecords(file);
+    const live=records.tasks.map(row=>JSON.parse(row.record)).filter(record=>record.state.status!=="terminal");
+    assert.equal(live.length,1);assert.equal(live[0].state.checkpoint.phase,"request");
+    assert.equal(first.networkCalls(),1);
+    return {admitted,records,live};
+  } finally {await first.runtime.stop().catch(()=>{});}
+}
+
+test("original-task resume refuses model checkpoint drift before changing the original stored task",{timeout:20000},async()=>{
+  const directory=mkdtempSync(resolve(tmpdir(),"bkcut-original-resume-model-"));
+  const file=resolve(directory,"session.sqlite3"); let reopened;
+  try {
+    const seeded=await interruptedRequestStore(file);
+    const scope={taskId:"interrupted-read",conversationId:seeded.admitted.conversationId,
+      submissionId:seeded.admitted.submissionId,taskIds:seeded.live.map(record=>record.id),mode:"chat",
+      languages:{interfaceLanguage:"zh-Hans",replyLanguage:"zh-Hans",contentLanguage:"zh-Hans"},
+      modelConfiguration:{...nativeConfiguration(),model:"different-from-checkpoint"}};
+    reopened=fixture(file,2,api.nativeModelConfiguration(nativeConfiguration()),async()=>{throw new Error("must not call");},
+      {interrupted:true,resumeTask:scope});
+    const initial=await reopened.runtime.start();
+    await assert.rejects(reopened.runtime.confirmRecovery({snapshotId:initial.snapshotId,decision:"continue",approvalId:"drift"}),/agent.errorRecoveryConnectionChanged/);
+    assert.equal(reopened.runtime.phase,"closed");
+    assert.deepEqual(durableRecords(file),seeded.records);
+    assert.equal(reopened.networkCalls(),0);assert.equal(reopened.verificationCalls(),0);
+  } finally {await reopened?.runtime.stop().catch(()=>{});rmSync(directory,{recursive:true,force:true});}
+});
 
 test("explicit current-project discard marks every original task before cancellation-only draining, preserves history and permits a new explicit request", { timeout: 20000 }, async () => {
   const directory = mkdtempSync(resolve(tmpdir(), "bkcat-original-discard-"));
@@ -739,7 +950,7 @@ test("original-store discard rejects other projects, unknown records and deferre
       try {
         const snapshot = await f.runtime.start();
         await assert.rejects(f.runtime.confirmRecovery({ snapshotId: snapshot.snapshotId, decision: "discard", approvalId: `native-refuse-${label}` }),
-          /其他工程|未经审核|延期网络轮询|未知历史任务状态/);
+          /agent.errorRecovery(?:Scope|SnapshotInvalid|OtherProject)/);
         assert.equal(f.runtime.phase, "closed");
         assert.deepEqual(durableRecords(file), before, "all original task/submission/history records must remain byte-for-byte equal after rejection");
         assert.equal(f.networkCalls(), 0); assert.equal(f.credentialReads(), 0); assert.equal(f.taskBindings.length, 0);
@@ -936,36 +1147,21 @@ test("all three original adapters use the explicit service base and output ceili
   }
 });
 
-test("verified DeepSeek Flash context metadata is scoped to the exact official HTTPS origin and model", () => {
-  const official = {
-    ...nativeConfiguration(), endpoint: "https://api.deepseek.com/", model: "deepseek-flash",
-    maxOutputTokens: 4096, requestTimeoutMs: 60000,
-  };
-  const modelOf = (raw) => api.nativeModelConfiguration(raw).providers[0].getModels()[0];
-  for (const endpoint of ["https://api.deepseek.com/", "https://api.deepseek.com/v1", "https://api.deepseek.com:443/"]) {
-    const configuration = api.nativeModelConfiguration({ ...official, endpoint });
-    const model = configuration.providers[0].getModels()[0];
-    assert.equal(model.contextWindow, 1048576);
-    assert.equal(model.maxTokens, 4096, "service context capacity never raises the user output ceiling");
-    assert.equal(configuration.native.maxOutputTokens, 4096);
-    assert.equal(configuration.native.requestTimeoutMs, 60000);
-    assert.equal(model.reasoning, false, "this fix must not change thinking mode");
-    assert.equal(model.compat.thinkingFormat, "openai");
+test("native context capacity requires explicit provenance instead of model-name guessing", () => {
+  const unknown = api.nativeModelConfiguration({ ...nativeConfiguration(),
+    endpoint: "https://api.deepseek.com/", model: "deepseek-flash", maxOutputTokens: 4096 });
+  assert.equal(unknown.contextKnown, false);
+  assert.equal(unknown.providers[0].getModels()[0].contextWindow, 0);
+  const supplied = api.nativeModelConfiguration({ ...nativeConfiguration(),
+    contextWindow: 1048576, contextSource: "official-directory:isolated-fixture" });
+  assert.equal(supplied.contextKnown, true);
+  assert.equal(supplied.contextSource, "official-directory:isolated-fixture");
+  assert.equal(supplied.providers[0].getModels()[0].contextWindow, 1048576);
+  for (const contextWindow of [0, -1, 1.5, NaN, 100000001]) {
+    assert.throws(() => api.nativeModelConfiguration({ ...nativeConfiguration(), contextWindow,
+      contextSource: "isolated-fixture" }));
   }
-  for (const override of [
-    { endpoint: "https://api.deepseek.com.attacker.invalid/" },
-    { endpoint: "https://proxy.invalid/api.deepseek.com/" },
-    { endpoint: "https://sub.api.deepseek.com/" },
-    { endpoint: "https://api.deepseek.com:8443/" },
-    { endpoint: "http://127.0.0.1/" },
-    { model: "deepseek-v4-flash" },
-    { model: "deepseek-chat" },
-    { model: "DEEPSEEK-FLASH" },
-    { protocol: "openai-responses" },
-    { protocol: "anthropic-messages" },
-  ]) assert.equal(modelOf({ ...official, ...override }).contextWindow, 32768, JSON.stringify(override));
-  assert.equal(modelOf({ ...official, endpoint: "https://proxy.invalid/", maxOutputTokens: 20000 }).contextWindow, 40000,
-    "unverified models retain their prior admission behavior");
+  assert.throws(() => api.nativeModelConfiguration({ ...nativeConfiguration(), contextWindow: 32768 }));
 });
 
 test("original output budgeting no longer clips the verified official model to one token after 29k history", { timeout: 20000 }, async () => {
@@ -989,6 +1185,7 @@ test("original output budgeting no longer clips the verified official model to o
   const { nativeModels, ExecutionGate, buildBaseOptions, estimateContextTokens } = sandbox.PiModelBudgetContract;
   const configuration = api.nativeModelConfiguration({
     ...nativeConfiguration(), endpoint: "https://api.deepseek.com/", model: "deepseek-flash",
+    contextWindow: 1048576, contextSource: "official-directory:isolated-fixture",
     maxOutputTokens: 4096, requestTimeoutMs: 60000,
   });
   const lease = { storageId: "model-budget", generation: "1", handle: "model-budget-owner" };
@@ -1145,4 +1342,66 @@ test("built production bootstrap submits through native task binding, streams th
     detached?.(); delete sandbox.BKCatNative;
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+
+test("original interrupted model request settles with its original interruption instead of silently sending and charging it twice",{timeout:20000},async()=>{
+  const directory=mkdtempSync(resolve(tmpdir(),"bkcut-original-request-resume-"));
+  const file=resolve(directory,"session.sqlite3");let reopened;
+  try {
+    const seeded=await interruptedRequestStore(file);
+    const scope={taskId:"interrupted-read",conversationId:seeded.admitted.conversationId,
+      submissionId:seeded.admitted.submissionId,taskIds:seeded.live.map(record=>record.id),mode:"chat",
+      languages:{interfaceLanguage:"zh-Hans",replyLanguage:"zh-Hans",contentLanguage:"zh-Hans"},modelConfiguration:nativeConfiguration()};
+    reopened=fixture(file,2,api.nativeModelConfiguration(nativeConfiguration()),async()=>{throw new Error("must not retry interrupted model request");},
+      {interrupted:true,resumeTask:scope});
+    const start=await reopened.runtime.start();
+    await reopened.runtime.confirmRecovery({snapshotId:start.snapshotId,decision:"continue",approvalId:"review-interrupted-request"});
+    const ended=await reopened.runtime.dispatch("nativeWait",{taskId:scope.taskId});
+    assert.equal(ended.submissionId,scope.submissionId);assert.equal(ended.status,"unanswered");
+    assert.equal(ended.reason,"interrupted");assert.equal(ended.text,"");assert.equal(reopened.networkCalls(),0);
+    assert.equal(durableRecords(file).submissions.length,seeded.records.submissions.length);
+  } finally {await reopened?.runtime.stop().catch(()=>{});rmSync(directory,{recursive:true,force:true});}
+});
+
+
+test("built browser reports a local project review distinctly and retires without ready, observation or task continuation",{timeout:10000},async()=>{
+  const listeners=new Set();const sent=[];const methods=[];const waiting=new Map();let pagehide;
+  const receive=message=>{for(const listener of [...listeners])listener({data:JSON.stringify(message)});};
+  sandbox.addEventListener=(type,callback)=>{if(type==="pagehide")pagehide=callback;};
+  sandbox.BKCatNative={
+    addEventListener(_type,callback){listeners.add(callback);},removeEventListener(_type,callback){listeners.delete(callback);},
+    postMessage(serialized){
+      const message=JSON.parse(serialized);sent.push(message);
+      if(message.payload){
+        methods.push(message.payload.method);let result;
+        switch(message.payload.method){
+          case "ownership.acquire":result={storageId:"review-only",generation:"1",handle:"review-only-owner"};break;
+          case "recovery.read":result={snapshotId:"snapshot",projectSession:"1",projectRevision:"0",sessionRevision:"0",schemaVersion:2,hasInterruptedWork:true,hasUnfinishedPi:true};break;
+          case "ownership.confirm":
+            assert.equal(message.payload.approval.decision,"review");
+            result={generation:"1",snapshotId:"snapshot",allowInitializeEmptyStore:false,reconciledOperations:true,reviewedOnly:true,remainingOtherOperations:2};break;
+          case "ownership.revoke":case "ownership.drainAndRelease":result=null;break;
+          default:throw new Error(`Review-only path reached an unauthorized method: ${message.payload.method}`);
+        }
+        queueMicrotask(()=>receive({channel:"bk-cat-runtime-v1",id:message.id,result}));
+      }else if(message.id&&waiting.has(message.id)){
+        const pending=waiting.get(message.id);waiting.delete(message.id);
+        if(message.error)pending.reject(new Error(message.error.message));else pending.resolve(message.result);
+      }
+    },
+  };
+  const command=(id,payload)=>new Promise((resolve,reject)=>{waiting.set(id,{resolve,reject});receive({channel:"bk-cat-runtime-v1",id,payload});});
+  vm.runInContext(readFileSync(resolve(packageRoot,"dist/bootstrap.js"),"utf8"),sandbox,{filename:"review-only-bootstrap.js"});
+  try{
+    await command("review-start",{method:"runtime.start",storageId:"review-only"});
+    const result=await command("review-confirm",{method:"runtime.confirmRecovery",approval:{snapshotId:"snapshot",decision:"review",approvalId:"native-review-action"}});
+    assert.deepEqual(result,{reviewed:true,remainingOtherOperations:2});
+    await new Promise(resolve=>setTimeout(resolve,0));
+    assert.equal(sent.filter(message=>message.event==="runtime.reviewed").length,1);
+    assert.equal(sent.some(message=>message.event==="runtime.resumed"||message.event==="conversation.presentation"||message.event==="task.completed"),false);
+    assert.equal(sent.some(message=>message.event==="runtime.phase"&&message.phase==="ready"),false);
+    assert.equal(sent.some(message=>message.event==="runtime.phase"&&message.phase==="closed"),true);
+    assert.deepEqual(methods,["ownership.acquire","recovery.read","ownership.confirm","ownership.revoke","ownership.drainAndRelease"]);
+  }finally{pagehide?.();delete sandbox.BKCatNative;}
 });

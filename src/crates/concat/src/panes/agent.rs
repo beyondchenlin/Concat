@@ -4,13 +4,18 @@
 //! This owns no model client, scheduler, persistence or editable project.
 //! Visible messages are bounded projections of the original persisted session.
 
+use concat_agent::configuration::catalogue::ModelChoice;
+use concat_agent::configuration::{ChannelId, ConfigurationSnapshot, ModelChannel};
+use concat_agent::credentials::{CredentialScope, CredentialStatus, platform_store};
 use concat_agent::{OwnerStatus, Phase};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::rc::Rc;
 
 use crate::host::Shell;
+use crate::i18n::{t, tf};
 use crate::ui::{
-    AgentCallUi, AgentMessageData, AgentStatusData, AgentSuggestion, AgentUi, App, ScriptUi,
+    AgentCallUi, AgentMessageData, AgentMessageRole, AgentStatusData, AgentSuggestion, AgentUi,
+    App, ScriptUi,
 };
 
 /// Facts supplied by the native platform host. Never store credentials in
@@ -45,10 +50,16 @@ pub struct AgentTask {
 #[derive(Default)]
 /// The conversation's native presentation state, with no execution authority.
 pub struct AgentPane {
+    /// Isolated availability injected only into this unit-test pane.
+    #[cfg(test)]
+    pub(crate) credential_store_fixture:
+        Option<std::sync::Arc<dyn concat_agent::credentials::CredentialStore>>,
     /// Native facts required before submitting a new request.
     pub readiness: AgentReadiness,
     /// The currently observed task, if any.
     pub task: AgentTask,
+    task_connection: Option<String>,
+    model_choices: Vec<ModelChoice>,
     /// A user-facing failure reported by the real runtime or native bridge.
     pub error: String,
     /// Actual configuration or secure-store failure; never a secret value.
@@ -56,6 +67,9 @@ pub struct AgentPane {
     /// Read-only recovery evidence from the current, authenticated component.
     pub recovery_summary: String,
     pub can_recover: bool,
+    pub resume_interrupted: bool,
+    pub can_review_current: bool,
+    operation_facts: Option<serde_json::Value>,
     /// Explicit cancellation of reviewed interrupted work, never fee consent.
     pub can_discard: bool,
     pub can_review: bool,
@@ -128,11 +142,17 @@ impl MediaReference {
 
 /// A short excerpt for the compact transcript. The complete record stays
 /// intact and can always be expanded; the UI never alters durable Pi history.
-fn message_preview(author: &str, body: &str) -> (String, bool) {
+fn message_preview(role: AgentMessageRole, body: &str) -> (String, bool) {
+    if role == AgentMessageRole::Compaction {
+        // A system summary always starts folded. Expanding still shows
+        // its untouched original body, including the original Pi wrapper.
+        return (t("agent.compactionPreview"), true);
+    }
     // This runs as streaming text changes: cap scans to a few hundred
     // characters/lines, even when a tool returned a very large payload.
-    let collapsible =
-        author == "执行结果" || body.chars().nth(360).is_some() || body.lines().take(9).count() > 8;
+    let collapsible = role == AgentMessageRole::Tool
+        || body.chars().nth(360).is_some()
+        || body.lines().take(9).count() > 8;
     if !collapsible {
         return (String::new(), false);
     }
@@ -141,20 +161,265 @@ fn message_preview(author: &str, body: &str) -> (String, bool) {
         .map(str::trim)
         .find(|line| !line.is_empty() && !line.starts_with("```") && *line != "{" && *line != "[")
         .unwrap_or_else(|| body.trim());
-    let limit = if author == "执行结果" { 120 } else { 220 };
+    let limit = if role == AgentMessageRole::Tool {
+        120
+    } else {
+        220
+    };
     let mut excerpt: String = line.chars().take(limit).collect();
     if line.chars().nth(limit).is_some() || body.trim().len() > line.len() {
         excerpt.push('…');
     }
-    let preview = if author == "执行结果" {
-        format!("工具返回：{excerpt}")
+    let preview = if role == AgentMessageRole::Tool {
+        tf("agent.toolPreview", &[&excerpt])
     } else {
         excerpt
     };
     (preview, true)
 }
 
+fn role_label(role: AgentMessageRole) -> String {
+    match role {
+        AgentMessageRole::User => crate::i18n::t("agent.roleUser"),
+        AgentMessageRole::Assistant => crate::i18n::t("agent.roleAssistant"),
+        AgentMessageRole::Tool => crate::i18n::t("agent.roleTool"),
+        AgentMessageRole::Compaction => crate::i18n::t("agent.roleCompaction"),
+    }
+}
+
+/// Codes are protocol data. Localized prose and provider diagnostics cannot
+/// enable credential, billing, permission or project-identity actions.
+fn error_presentation(raw: &str) -> (String, String, String) {
+    if raw.is_empty() {
+        return (String::new(), String::new(), String::new());
+    }
+    let (candidate, diagnostic) = raw.split_once('\n').unwrap_or((raw, ""));
+    let code = match candidate {
+        "agent.chatNotReady" => "agent.chatNotReady",
+        "agent.closedDetail" => "agent.closedDetail",
+        "agent.configureBeforeSend" => "agent.configureBeforeSend",
+        "agent.errorUnexpected" => "agent.errorUnexpected",
+        "agent.notReady" => "agent.notReady",
+        "agent.reviewBeforeContinue" => "agent.reviewBeforeContinue",
+        "agent.stopDetail" => "agent.stopDetail",
+        "agent.stopping" => "agent.stopping",
+        "permission.alreadyPending" => "permission.alreadyPending",
+        "permission.stateUnavailable" => "permission.stateUnavailable",
+        "agent.enterRequest" => "agent.enterRequest",
+        "agent.reopenIdentity" => "agent.reopenIdentity",
+        "modelSettings.configurationUnavailable" => "modelSettings.configurationUnavailable",
+        "permission.editContextChanged" => "permission.editContextChanged",
+        "permission.invalidArguments" => "permission.invalidArguments",
+        "permission.missingInvocation" => "permission.missingInvocation",
+        "permission.missingTicket" => "permission.missingTicket",
+        "permission.onlyGuarded" => "permission.onlyGuarded",
+        "permission.readOnlyTask" => "permission.readOnlyTask",
+        "permission.taskScope" => "permission.taskScope",
+        "runtime.editReceiptUnconfirmed" => "runtime.editReceiptUnconfirmed",
+        "runtime.invalidRequest" => "runtime.invalidRequest",
+        "runtime.approvalDeliveryFailed" => "runtime.approvalDeliveryFailed",
+        "runtime.inputTooLarge" => "runtime.inputTooLarge",
+        "runtime.platformFailed" => "runtime.platformFailed",
+        "runtime.saveNotificationUnconfirmed" => "runtime.saveNotificationUnconfirmed",
+        "runtime.submissionUnconfirmed" => "runtime.submissionUnconfirmed",
+        "runtime.unsupportedPlatform" => "runtime.unsupportedPlatform",
+        "script.generationFailed" => "script.generationFailed",
+        "script.stopped" => "script.stopped",
+        "script.waitOperation" => "script.waitOperation",
+        "script.acceptChanged" => "script.acceptChanged",
+        "script.candidateSaveFailed" => "script.candidateSaveFailed",
+        "script.changedAfterGeneration" => "script.changedAfterGeneration",
+        "script.componentBound" => "script.componentBound",
+        "script.componentStopped" => "script.componentStopped",
+        "script.documentMissing" => "script.documentMissing",
+        "script.editExhausted" => "script.editExhausted",
+        "script.emptyResult" => "script.emptyResult",
+        "script.errorCandidate" => "script.errorCandidate",
+        "script.errorConnection" => "script.errorConnection",
+        "script.errorDatabase" => "script.errorDatabase",
+        "script.errorFormat" => "script.errorFormat",
+        "script.errorInput" => "script.errorInput",
+        "script.errorIo" => "script.errorIo",
+        "script.errorLimit" => "script.errorLimit",
+        "script.errorMissing" => "script.errorMissing",
+        "script.errorReadOnly" => "script.errorReadOnly",
+        "script.errorSelection" => "script.errorSelection",
+        "script.errorStale" => "script.errorStale",
+        "script.errorVersion" => "script.errorVersion",
+        "script.finishFirst" => "script.finishFirst",
+        "script.identitySaveFailed" => "script.identitySaveFailed",
+        "script.invalidPath" => "script.invalidPath",
+        "script.invalidVersion" => "script.invalidVersion",
+        "script.lateStopped" => "script.lateStopped",
+        "script.legacyCopyFailed" => "script.legacyCopyFailed",
+        "script.legacyMissing" => "script.legacyMissing",
+        "script.localInterrupted" => "script.localInterrupted",
+        "script.locationCheck" => "script.locationCheck",
+        "script.locationOther" => "script.locationOther",
+        "script.locationUnreadable" => "script.locationUnreadable",
+        "script.openStorageFailed" => "script.openStorageFailed",
+        "script.projectChanged" => "script.projectChanged",
+        "script.projectClosing" => "script.projectClosing",
+        "script.recoveryInvalid" => "script.recoveryInvalid",
+        "script.reopen" => "script.reopen",
+        "script.requireInstruction" => "script.requireInstruction",
+        "script.requireText" => "script.requireText",
+        "script.saveBeforeSelect" => "script.saveBeforeSelect",
+        "script.saveFailed" => "script.saveFailed",
+        "script.saveFirst" => "script.saveFirst",
+        "script.stopBeforeReload" => "script.stopBeforeReload",
+        "script.versionMissing" => "script.versionMissing",
+        "agent.errorRecoveryStorage" => "agent.errorRecoveryStorage",
+        "agent.recoveryNoInterruptedTask" => "agent.recoveryNoInterruptedTask",
+        "agent.errorRecoveryBinding" => "agent.errorRecoveryBinding",
+        "agent.errorRecoveryPending" => "agent.errorRecoveryPending",
+        "agent.errorRecoverySnapshotMissing" => "agent.errorRecoverySnapshotMissing",
+        "agent.errorRecoverySnapshotInvalid" => "agent.errorRecoverySnapshotInvalid",
+        "agent.errorRecoverySnapshotRead" => "agent.errorRecoverySnapshotRead",
+        "agent.errorRecoverySnapshotWrite" => "agent.errorRecoverySnapshotWrite",
+        "agent.errorRecoverySnapshotConflict" => "agent.errorRecoverySnapshotConflict",
+        "agent.errorRecoveryScope" => "agent.errorRecoveryScope",
+        "agent.errorRecoveryConnectionChanged" => "agent.errorRecoveryConnectionChanged",
+        "agent.errorRecoveryChanged" => "agent.errorRecoveryChanged",
+        "agent.errorRecoveryOtherProject" => "agent.errorRecoveryOtherProject",
+        "runtime.loadTimeout" => "runtime.loadTimeout",
+        "runtime.waitTimeout" => "runtime.waitTimeout",
+        "runtime.webCapability" => "runtime.webCapability",
+        "runtime.scriptResource" => "runtime.scriptResource",
+        "runtime.scriptExecution" => "runtime.scriptExecution",
+        "runtime.protocolViolation" => "runtime.protocolViolation",
+        "runtime.startupFailed" => "runtime.startupFailed",
+        "runtime.modelSettingsBusy" => "runtime.modelSettingsBusy",
+        "runtime.taskBusy" => "runtime.taskBusy",
+        "runtime.queueFull" => "runtime.queueFull",
+        "runtime.stateChanged" => "runtime.stateChanged",
+        "runtime.editUnverified" => "runtime.editUnverified",
+        "runtime.taskIncomplete" => "runtime.taskIncomplete",
+        "agent.openProject" => "agent.openProject",
+        "agent.sessionUnavailable" => "agent.sessionUnavailable",
+        "agent.connectAndReview" => "agent.connectAndReview",
+        "agent.alreadyWaiting" => "agent.alreadyWaiting",
+        "agent.errorAuthentication" => "agent.errorAuthentication",
+        "agent.errorBilling" => "agent.errorBilling",
+        "agent.errorAccess" => "agent.errorAccess",
+        "agent.errorProjectIdentity" => "agent.errorProjectIdentity",
+        "agent.errorModelRequired" => "agent.errorModelRequired",
+        "agent.errorModelUnavailable" => "agent.errorModelUnavailable",
+        "lifecycle.activityPaused" => "lifecycle.activityPaused",
+        "lifecycle.activityStopped" => "lifecycle.activityStopped",
+        "lifecycle.activitySaved" => "lifecycle.activitySaved",
+        "lifecycle.windowsStopping" => "lifecycle.windowsStopping",
+        "lifecycle.windowsClosed" => "lifecycle.windowsClosed",
+        _ => "agent.errorUnexpected",
+    };
+    if candidate == code && is_product_error_wrapper(code) {
+        return (
+            code.to_owned(),
+            localize_product_message(raw),
+            String::new(),
+        );
+    }
+    (
+        code.to_owned(),
+        t(code),
+        if candidate == code {
+            diagnostic.to_owned()
+        } else {
+            raw.to_owned()
+        },
+    )
+}
+
+fn is_product_error_wrapper(code: &str) -> bool {
+    matches!(
+        code,
+        "script.openStorageFailed"
+            | "script.candidateSaveFailed"
+            | "script.identitySaveFailed"
+            | "script.saveFailed"
+            | "script.legacyCopyFailed"
+    )
+}
+
+/// Translate a recognized native product code only at the display boundary.
+/// Literal user content, already-localized messages and external diagnostics
+/// remain untouched. This projection never changes an execution decision.
+pub(crate) fn localize_product_message(raw: &str) -> String {
+    // Peel the native, single-argument error wrappers iteratively. Nested
+    // storage failures cannot grow the call stack or reinterpret user braces.
+    let mut rest = raw;
+    let mut wrappers = Vec::new();
+    loop {
+        let (candidate, detail) = rest.split_once('\n').unwrap_or((rest, ""));
+        if !is_product_error_wrapper(candidate) {
+            break;
+        }
+        wrappers.push(candidate);
+        rest = detail;
+    }
+    let candidate = rest.split_once('\n').map_or(rest, |(code, _)| code);
+    let (code, summary, details) = error_presentation(rest);
+    let mut rendered = if candidate != code {
+        rest.to_owned()
+    } else if details.is_empty() {
+        summary
+    } else {
+        format!("{summary}\n{details}")
+    };
+    for key in wrappers.into_iter().rev() {
+        rendered = tf(key, &[&rendered]);
+    }
+    rendered
+}
+
+/// Display only the native journal's explicit states. Missing/zero counts do
+/// not imply success, and a captured save never substitutes for an edit receipt.
+fn recovery_fact_summary(facts: &serde_json::Value) -> String {
+    let states = &facts["currentProjectStates"];
+    let labels = [
+        ("outcome-unknown", "recovery.outcomeUnknown"),
+        ("applied-not-saved", "recovery.appliedNotSaved"),
+        ("saved-not-notified", "recovery.savedNotNotified"),
+        ("notified", "recovery.notified"),
+        ("not-applied", "recovery.notApplied"),
+        ("unchanged", "recovery.unchanged"),
+    ];
+    let mut lines = Vec::new();
+    let mut captured = 0_u64;
+    for (state, label) in labels {
+        if let Some(count) = states[state]["total"].as_u64().filter(|count| *count > 0) {
+            lines.push(tf(label, &[&count]));
+        }
+        captured = captured.saturating_add(
+            states[state]["capturedSaveWithoutReceipt"]["total"]
+                .as_u64()
+                .unwrap_or(0),
+        );
+    }
+    if captured > 0 {
+        lines.push(tf("recovery.capturedWithoutReceipt", &[&captured]));
+    }
+    if let Some(count) = facts["pendingOtherProjects"]
+        .as_u64()
+        .filter(|count| *count > 0)
+    {
+        lines.push(tf("recovery.otherPending", &[&count]));
+    }
+    lines.join("\n")
+}
+
 impl AgentPane {
+    pub(crate) fn task_connection_id(&self) -> Option<&str> {
+        self.task_connection.as_deref()
+    }
+    /// Only user content or actual work keeps an automatically-created draft.
+    pub(crate) fn has_user_work(&self) -> bool {
+        self.task.running
+            || self.waiting_for_ready
+            || !self.messages.is_empty()
+            || !self.references.is_empty()
+            || !self.pending_attachments.is_empty()
+    }
     pub(crate) fn apply_runtime(&mut self, runtime: &crate::embedded::RuntimeView) {
         self.runtime_seen = true;
         self.runtime_may_wait = runtime.may_wait_for_readiness();
@@ -164,9 +429,19 @@ impl AgentPane {
             self.readiness.calls_authorized = false;
         }
         self.task.running = runtime.task_running;
+        self.task_connection = runtime
+            .task_running
+            .then(|| {
+                runtime
+                    .configuration
+                    .as_ref()
+                    .and_then(|configuration| configuration["id"].as_str())
+                    .map(str::to_owned)
+            })
+            .flatten();
         self.task.title = runtime.task_title.clone();
         self.task.detail = if runtime.task_running {
-            "正在接收真实模型与原生工具执行结果。".into()
+            "agent.receiving".into()
         } else {
             String::new()
         };
@@ -174,16 +449,18 @@ impl AgentPane {
         if let Some(presentation) = &runtime.presentation {
             if let Some(messages) = presentation["messages"].as_array() {
                 self.messages.extend(messages.iter().filter_map(|message| {
-                    let author = match message["role"].as_str()? {
-                        "user" => "我",
-                        "assistant" => "助手",
-                        "tool" => "执行结果",
+                    let role = match message["role"].as_str()? {
+                        "user" => AgentMessageRole::User,
+                        "assistant" => AgentMessageRole::Assistant,
+                        "tool" => AgentMessageRole::Tool,
+                        "compaction" => AgentMessageRole::Compaction,
                         _ => return None,
                     };
                     let body = message["text"].as_str()?;
-                    let (preview, collapsible) = message_preview(author, body);
+                    let (preview, collapsible) = message_preview(role, body);
                     Some(AgentMessageData {
-                        author: author.into(),
+                        role,
+                        author: role_label(role).into(),
                         body: body.into(),
                         preview: preview.into(),
                         collapsible,
@@ -195,9 +472,10 @@ impl AgentPane {
                 .as_str()
                 .filter(|text| !text.is_empty())
             {
-                let (preview, collapsible) = message_preview("助手", partial);
+                let (preview, collapsible) = message_preview(AgentMessageRole::Assistant, partial);
                 self.messages.push(AgentMessageData {
-                    author: "助手".into(),
+                    role: AgentMessageRole::Assistant,
+                    author: role_label(AgentMessageRole::Assistant).into(),
                     body: partial.into(),
                     preview: preview.into(),
                     collapsible,
@@ -212,29 +490,52 @@ impl AgentPane {
         self.runtime_loaded = runtime.loaded && !runtime.closed;
         self.can_review = runtime.phase == "recovery";
         self.can_recover = false;
+        self.resume_interrupted = false;
+        self.can_review_current = false;
+        self.operation_facts = None;
         self.can_discard = false;
         self.error = runtime.error.clone();
-        self.recovery_summary.clear();
+        self.recovery_summary = if runtime.task_title == "agent.recoveryReviewedNotice" {
+            "agent.recoveryReviewedNotice".into()
+        } else {
+            String::new()
+        };
         // The snapshot remains bound to the project after activation; its old
         // blocking reason describes recovery, not the current ready session.
         if self.can_review
             && let Some(snapshot) = &runtime.snapshot
         {
+            self.operation_facts = snapshot
+                .get("operationFacts")
+                .filter(|facts| facts["schema"] == 1)
+                .cloned();
+            self.can_review_current = snapshot["canReviewCurrentProject"] == true
+                && snapshot["snapshotId"].is_string()
+                && snapshot["projectPath"].is_string();
             self.can_discard = self.can_review
                 && snapshot["snapshotId"].is_string()
                 && snapshot["projectPath"].is_string()
                 && snapshot["hasInterruptedWork"] == true
                 && snapshot["canDiscardInterrupted"] == true;
-            if let Some(reason) = snapshot["blockedReason"].as_str() {
+            if let Some(reason) = snapshot["blockedReason"]
+                .as_str()
+                .filter(|reason| !reason.is_empty())
+            {
                 self.recovery_summary = reason.to_owned();
             } else if self.can_review {
                 self.can_recover = snapshot["snapshotId"].is_string()
                     && snapshot["projectPath"].is_string()
-                    && snapshot["hasInterruptedWork"] == false;
-                self.recovery_summary = if snapshot["schemaVersion"] == "empty" {
-                    "当前工程已核对。确认后初始化空会话；不会调用模型或自动编辑。"
+                    && (snapshot["hasInterruptedWork"] == false
+                        || (snapshot["hasInterruptedWork"] == true
+                            && snapshot["canContinueInterrupted"] == true));
+                self.resume_interrupted =
+                    self.can_recover && snapshot["hasInterruptedWork"] == true;
+                self.recovery_summary = if self.resume_interrupted {
+                    "agent.recoveryResumeNotice"
+                } else if snapshot["schemaVersion"] == "empty" {
+                    "agent.recoveryNew"
                 } else {
-                    "当前工程与已存会话已核对。确认后打开会话；不会自动继续旧任务。"
+                    "agent.recoveryExisting"
                 }
                 .to_owned();
             }
@@ -263,10 +564,10 @@ impl AgentPane {
     ) -> Result<String, String> {
         let text = draft.trim();
         if text.is_empty() {
-            return Err("请输入剪辑要求。".into());
+            return Err(t("agent.enterRequest"));
         }
         if self.waiting_for_ready {
-            return Err("已有消息正在等待连接，请等待完成或停止；草稿已保留。".into());
+            return Err(t("agent.alreadyWaiting"));
         }
         let owner = owner?;
         if !self.can_wait_for_startup(&owner) {
@@ -274,7 +575,7 @@ impl AgentPane {
             return Err(if !data.error.is_empty() {
                 data.error.to_string()
             } else {
-                "当前会话或模型配置未就绪，请完成核对后发送。".into()
+                t("agent.notReady")
             });
         }
         Ok(text.to_owned())
@@ -283,21 +584,21 @@ impl AgentPane {
     fn missing(&self) -> String {
         let mut missing = Vec::new();
         if self.readiness.provider.trim().is_empty() {
-            missing.push("模型渠道");
+            missing.push(t("agent.missingProvider"));
         }
         if self.readiness.model.trim().is_empty() {
-            missing.push("模型名称");
+            missing.push(t("agent.missingModel"));
         }
         if !self.readiness.credentials_ready {
-            missing.push("调用凭据");
+            missing.push(t("agent.missingCredential"));
         }
         if !self.readiness.runtime_ready {
-            missing.push("聊天功能就绪");
+            missing.push(t("agent.missingRuntime"));
         }
         if missing.is_empty() {
             String::new()
         } else {
-            format!("待完成：{}。", missing.join("、"))
+            tf("agent.missingItems", &[&missing.join(", ")])
         }
     }
 
@@ -305,11 +606,19 @@ impl AgentPane {
     /// This never confirms recovery, acquires an execution permit or resumes
     /// interrupted work. UI enablement is not an execution credential.
     pub fn data(&self, owner: Result<OwnerStatus, String>) -> AgentStatusData {
+        let task_title = localize_product_message(&crate::i18n::task_status(&self.task.title));
+        let task_detail = crate::i18n::task_status(&self.task.detail);
         let missing = self.missing();
+        let raw_error = if self.error.is_empty() {
+            &self.configuration_error
+        } else {
+            &self.error
+        };
+        let (error_code, error, error_details) = error_presentation(raw_error);
         let model = if self.readiness.provider.trim().is_empty()
             || self.readiness.model.trim().is_empty()
         {
-            "未配置模型".to_owned()
+            t("agent.noModel").to_owned()
         } else {
             format!("{} / {}", self.readiness.provider, self.readiness.model)
         };
@@ -318,27 +627,38 @@ impl AgentPane {
                 || self.readiness.model.trim().is_empty()
                 || !self.readiness.credentials_ready,
             missing: missing.clone().into(),
-            error: if self.error.is_empty() {
-                self.configuration_error.as_str()
-            } else {
-                self.error.as_str()
-            }
-            .into(),
+            error_code: error_code.into(),
+            error: error.into(),
+            error_details: error_details.into(),
             model: model.into(),
             can_review: self.can_review,
             can_continue: self.can_recover,
+            can_review_current: self.can_review_current,
+            recovery_facts: self
+                .operation_facts
+                .as_ref()
+                .map(recovery_fact_summary)
+                .unwrap_or_default()
+                .into(),
+            resume_interrupted: self.resume_interrupted,
             can_discard: self.can_discard,
             ..AgentStatusData::default()
         };
         let owner = match owner {
             Ok(owner) => owner,
             Err(error) => {
-                data.title = "会话暂不可用".into();
-                data.detail = "智能任务没有启动，仍可使用手动编辑。".into();
-                data.error = error.into();
+                data.title = t("agent.sessionUnavailable").into();
+                data.detail = t("agent.manualAvailable").into();
+                let (code, summary, details) = error_presentation(&error);
+                data.error_code = code.into();
+                data.error = summary.into();
+                data.error_details = details.into();
                 data.can_connect = true;
                 data.can_review = false;
                 data.can_continue = false;
+                data.resume_interrupted = false;
+                data.can_review_current = false;
+                data.recovery_facts = "".into();
                 data.can_discard = false;
                 return data;
             }
@@ -357,12 +677,29 @@ impl AgentPane {
         if owner.phase != Phase::RecoveryRequired {
             data.can_review = false;
             data.can_continue = false;
+            data.resume_interrupted = false;
+            data.can_review_current = false;
+            data.recovery_facts = "".into();
             data.can_discard = false;
         }
         // Native ownership can advance before the runtime presentation does.
         // Only a live recovery view may present the snapshot's blocking reason.
-        if data.can_review {
-            data.recovery_summary = self.recovery_summary.as_str().into();
+        if data.can_review || self.recovery_summary == "agent.recoveryReviewedNotice" {
+            data.recovery_summary = match self.recovery_summary.as_str() {
+                "agent.recoveryResumeNotice" => t("agent.recoveryResumeNotice"),
+                "agent.recoveryReviewedNotice" => t("agent.recoveryReviewedNotice"),
+                "agent.recoveryNew" => t("agent.recoveryNew"),
+                "agent.recoveryExisting" => t("agent.recoveryExisting"),
+                reason => {
+                    let (code, summary, _) = error_presentation(reason);
+                    if code == "agent.errorUnexpected" {
+                        reason.to_owned()
+                    } else {
+                        summary
+                    }
+                }
+            }
+            .into();
         }
         if self.waiting_for_ready && matches!(owner.phase, Phase::RecoveryRequired | Phase::Ready) {
             data.busy = true;
@@ -370,11 +707,14 @@ impl AgentPane {
             data.can_send = false;
             data.can_review = false;
             data.can_continue = false;
+            data.resume_interrupted = false;
+            data.can_review_current = false;
+            data.recovery_facts = "".into();
             data.can_discard = false;
             data.missing = "".into();
             data.recovery_summary = "".into();
-            data.title = "正在连接当前工程".into();
-            data.detail = "本次发送已暂存；连接核对完成后发送，草稿仍保留在输入框中。".into();
+            data.title = t("agent.connecting").into();
+            data.detail = t("agent.waitingDetail").into();
             return data;
         }
         if self.can_wait_for_startup(&owner) {
@@ -382,53 +722,56 @@ impl AgentPane {
             data.missing = "".into();
             data.can_review = false;
             data.can_continue = false;
+            data.resume_interrupted = false;
+            data.can_review_current = false;
+            data.recovery_facts = "".into();
             data.can_discard = false;
             data.title = if self.runtime_loading {
-                "正在连接当前工程"
+                t("agent.connecting")
             } else {
-                "等待输入"
+                t("agent.idle")
             }
             .into();
-            data.detail = "发送会等待当前工程和会话核对完成；不会自动继续旧任务。".into();
+            data.detail = t("agent.connectBeforeSend").into();
             return data;
         }
         match owner.phase {
             Phase::RecoveryRequired => {
-                data.title = "等待恢复核对".into();
+                data.title = t("agent.recoveryWaiting").into();
                 data.detail = if self.task.title.is_empty() {
-                    "核对当前工程和会话后，由你决定是否继续。".into()
+                    t("agent.reviewBeforeContinue").into()
                 } else {
-                    self.task.title.as_str().into()
+                    task_title.as_str().into()
                 };
             }
             Phase::Draining => {
                 data.busy = self.task.running || owner.active_operations > 0;
                 data.title = if data.busy {
-                    "正在停止"
+                    t("agent.stopping")
                 } else {
-                    "已停止"
+                    t("agent.stopped")
                 }
                 .into();
-                data.detail = "已阻止新的智能操作。再次使用前需要重新核对。".into();
+                data.detail = t("agent.stopDetail").into();
             }
             Phase::Released => {
-                data.title = "会话已关闭".into();
-                data.detail = "再次使用前需要重新核对当前工程和会话。".into();
+                data.title = t("agent.closed").into();
+                data.detail = t("agent.closedDetail").into();
             }
             Phase::Ready if !self.error.is_empty() || !self.configuration_error.is_empty() => {
-                data.title = "任务失败".into();
-                data.detail = "处理错误后再提交，草稿保留在输入框中。".into();
+                data.title = t("agent.failed").into();
+                data.detail = t("agent.failedDetail").into();
             }
             // A database connection holds an operation permit for its entire
             // lifetime. That permit blocks handoff, not new conversation input.
             Phase::Ready if self.task.running => {
                 data.busy = true;
                 data.title = if self.task.title.is_empty() {
-                    "正在处理".into()
+                    t("agent.processing").into()
                 } else {
-                    self.task.title.as_str().into()
+                    task_title.as_str().into()
                 };
-                data.detail = self.task.detail.as_str().into();
+                data.detail = task_detail.as_str().into();
                 if self.task.running
                     && let Some(progress) = self.task.progress
                     && progress.is_finite()
@@ -439,19 +782,20 @@ impl AgentPane {
                 }
             }
             Phase::Ready if !missing.is_empty() => {
-                data.title = "聊天未就绪".into();
-                data.detail = "完成下列条件后才能发送。".into();
+                data.title = t("agent.chatNotReady").into();
+                data.detail = t("agent.requirements").into();
             }
             Phase::Ready => {
                 if self.task.title.is_empty() {
-                    data.title = "等待输入".into();
-                    data.detail = "描述需要修改的内容，所有编辑使用当前工程。".into();
+                    data.title = t("agent.idle").into();
+                    data.detail = t("agent.describeEdit").into();
                 } else {
                     // The native completion path retains only a refusal or
                     // expiry reason here; ordinary success clears its title.
                     // A human decision is an outcome, not a broken session.
-                    data.title = "操作未执行".into();
-                    data.detail = self.task.title.as_str().into();
+                    data.action_refused = true;
+                    data.title = t("agent.actionRefused").into();
+                    data.detail = task_title.as_str().into();
                 }
                 data.can_send = true;
             }
@@ -470,11 +814,11 @@ impl AgentPane {
     ) -> Result<String, String> {
         let text = draft.trim();
         if text.is_empty() {
-            return Err("请输入剪辑要求。".to_owned());
+            return Err(t("agent.enterRequest").to_owned());
         }
         let owner = owner?;
         if owner.phase != Phase::Ready || !self.readiness.runtime_ready || self.waiting_for_ready {
-            return Err("请先连接会话并完成原生恢复核对。".into());
+            return Err(t("agent.connectAndReview"));
         }
         let data = self.data(Ok(owner));
         if !data.can_send {
@@ -506,10 +850,28 @@ impl AgentPane {
             }
         }
         ui.set_status(self.data(owner));
-        if !ui.get_messages().iter().eq(self.messages.iter().cloned()) {
-            ui.set_messages(ModelRc::from(Rc::new(VecModel::from(
-                self.messages.clone(),
-            ))));
+        let languages = crate::i18n::language_choice_labels();
+        if !ui
+            .get_reply_languages()
+            .iter()
+            .eq(languages.iter().cloned())
+        {
+            ui.set_reply_languages(ModelRc::new(VecModel::from(languages)));
+        }
+        let messages: Vec<_> = self
+            .messages
+            .iter()
+            .cloned()
+            .map(|mut message| {
+                message.author = role_label(message.role).into();
+                let (preview, collapsible) = message_preview(message.role, message.body.as_str());
+                message.preview = preview.into();
+                message.collapsible = collapsible;
+                message
+            })
+            .collect();
+        if !ui.get_messages().iter().eq(messages.iter().cloned()) {
+            ui.set_messages(ModelRc::from(Rc::new(VecModel::from(messages))));
         }
     }
 }
@@ -576,7 +938,7 @@ fn refresh_suggestions(text: &str, cursor: usize) {
                     rows.push(AgentSuggestion {
                         identity: format!("media:{}:{}", session.session_id(), item.id).into(),
                         label: item.name.as_str().into(),
-                        detail: "工程素材".into(),
+                        detail: t("agent.projectMedia").into(),
                         thumbnail: studio
                             .media
                             .thumbs
@@ -584,61 +946,62 @@ fn refresh_suggestions(text: &str, cursor: usize) {
                             .cloned()
                             .unwrap_or_default(),
                         kind: match item.kind {
-                            concat_project::model::MediaKind::Video => "视频",
-                            concat_project::model::MediaKind::Audio => "音频",
-                            _ => "图片",
+                            concat_project::model::MediaKind::Video => "video",
+                            concat_project::model::MediaKind::Audio => "audio",
+                            _ => "image",
                         }
                         .into(),
                     });
                 }
                 status = if rows.is_empty() {
-                    "没有匹配的工程素材；可用 + 导入。"
+                    t("agent.noMediaMatch")
                 } else {
-                    "工程素材 · 选择要引用的素材"
+                    t("agent.chooseReference")
                 };
                 // This is a connection-status row, not a fabricated result.
                 rows.push(AgentSuggestion {
                     identity: "server:unavailable".into(),
-                    label: "素材服务".into(),
-                    detail: "未连接".into(),
+                    label: t("agent.mediaService").into(),
+                    detail: t("agent.disconnected").into(),
                     thumbnail: slint::Image::default(),
-                    kind: "服务".into(),
+                    kind: "service".into(),
                 });
             } else {
-                status = "请先打开工程。";
+                status = t("agent.openProject");
             }
         } else {
-            if "文案".contains(&query) || "script".contains(&query) {
+            if t("agent.commandScript").to_lowercase().contains(&query) || "script".contains(&query)
+            {
                 rows.push(AgentSuggestion {
                     identity: "command:script".into(),
-                    label: "/文案".into(),
-                    detail: "打开文案并选择版本".into(),
+                    label: t("agent.commandScript").into(),
+                    detail: t("agent.commandScriptHelp").into(),
                     thumbnail: slint::Image::default(),
-                    kind: "命令".into(),
+                    kind: "command".into(),
                 });
             }
-            if "素材".contains(&query) || "media".contains(&query) {
+            if t("agent.commandMedia").to_lowercase().contains(&query) || "media".contains(&query) {
                 rows.push(AgentSuggestion {
                     identity: "command:media".into(),
-                    label: "/素材".into(),
-                    detail: "搜索工程素材".into(),
+                    label: t("agent.commandMedia").into(),
+                    detail: t("agent.commandMediaHelp").into(),
                     thumbnail: slint::Image::default(),
-                    kind: "命令".into(),
+                    kind: "command".into(),
                 });
             }
-            if "模型".contains(&query) || "model".contains(&query) {
+            if t("agent.commandModel").to_lowercase().contains(&query) || "model".contains(&query) {
                 rows.push(AgentSuggestion {
                     identity: "command:model".into(),
-                    label: "/模型".into(),
-                    detail: "打开模型设置".into(),
+                    label: t("agent.commandModel").into(),
+                    detail: t("agent.commandModelHelp").into(),
                     thumbnail: slint::Image::default(),
-                    kind: "命令".into(),
+                    kind: "command".into(),
                 });
             }
             status = if rows.is_empty() {
-                "没有匹配的命令。"
+                t("agent.noCommand")
             } else {
-                "命令"
+                t("agent.commands")
             };
         }
         ui.set_suggestion_index(0);
@@ -663,7 +1026,7 @@ impl AgentPane {
             }));
         app.global::<AgentUi>().set_attachment_pending(true);
         app.global::<AgentUi>()
-            .set_attachment_status("正在导入并引用素材…".into());
+            .set_attachment_status(t("agent.importingReference").into());
         crate::agent::window::schedule_attachment_watch();
     }
 
@@ -698,11 +1061,11 @@ impl AgentPane {
             .set_attachment_pending(!self.pending_attachments.is_empty());
         self.publish_references(app);
         app.global::<AgentUi>().set_attachment_status(if failed {
-            "部分素材未能引用或工程已切换，请检查素材库。".into()
+            t("agent.referencePartial").into()
         } else if self.pending_attachments.is_empty() {
             "".into()
         } else {
-            "正在导入并引用素材…".into()
+            t("agent.importingReference").into()
         });
     }
 
@@ -713,9 +1076,9 @@ impl AgentPane {
             .map(|reference| AgentSuggestion {
                 identity: format!("{}:{}", reference.session, reference.id).into(),
                 label: reference.name.chars().take(14).collect::<String>().into(),
-                detail: "工程素材".into(),
+                detail: t("agent.projectMedia").into(),
                 thumbnail: slint::Image::default(),
-                kind: "素材".into(),
+                kind: "media".into(),
             })
             .collect::<Vec<_>>();
         app.global::<AgentUi>()
@@ -727,12 +1090,12 @@ impl AgentPane {
         studio: &crate::studio::Studio,
     ) -> Result<(Vec<String>, String), String> {
         if !self.pending_attachments.is_empty() {
-            return Err("素材仍在导入，请等待完成后发送。".into());
+            return Err(t("agent.waitImport"));
         }
         if self.references.is_empty() {
             return Ok((Vec::new(), String::new()));
         }
-        let current = studio.session.as_ref().ok_or("请先打开工程。")?;
+        let current = studio.session.as_ref().ok_or(t("agent.openProject"))?;
         let mut keys = Vec::new();
         let mut values = Vec::new();
         for reference in &self.references {
@@ -743,7 +1106,7 @@ impl AgentPane {
                         && item.name.replace(['\r', '\n'], " ") == reference.name
                 })
             {
-                return Err("素材引用属于旧工程或已失效，请移除后重新选择。".into());
+                return Err(t("agent.referenceStale"));
             }
             keys.push(format!("{}:{}", reference.session, reference.id));
             values.push(serde_json::json!({"mediaId": reference.id, "name": reference.name}));
@@ -788,6 +1151,66 @@ impl AgentPane {
 
 pub(crate) fn install_composer(app: &App) {
     let ui = app.global::<AgentUi>();
+    ui.on_model_chosen(|index| {
+        Shell::with(|shell, app| {
+            let selected = usize::try_from(index)
+                .ok()
+                .and_then(|index| shell.agent_pane.borrow().model_choices.get(index).cloned());
+            let Some(selected) = selected else {
+                return;
+            };
+            let mut studio = shell.studio.borrow_mut();
+            let Some(project) = studio
+                .session
+                .as_ref()
+                .map(|session| session.project_identity().to_owned())
+            else {
+                return;
+            };
+            // This preference affects the next explicit submission only. It
+            // does not mutate the application default or a live task permit.
+            let value = serde_json::to_string(&(selected.connection.as_str(), &selected.model))
+                .expect("string tuple");
+            studio.prefs.agent_session_models.insert(project, value);
+            studio.prefs.save(&studio.host.dirs);
+            app.global::<AgentUi>().set_model_index(index);
+        });
+        refresh_model_choices();
+    });
+    ui.on_model_picker_opened(|| {
+        let mut connection = None;
+        Shell::with(|shell, app| {
+            let index = app.global::<AgentUi>().get_model_index();
+            connection = usize::try_from(index).ok().and_then(|index| {
+                shell
+                    .agent_pane
+                    .borrow()
+                    .model_choices
+                    .get(index)
+                    .map(|choice| choice.connection.as_str().to_owned())
+            });
+        });
+        if let Some(connection) = connection {
+            crate::panes::agent_settings::refresh_directory_for_picker(&connection);
+        }
+    });
+    ui.on_reply_language_chosen(|index| {
+        Shell::with(|shell, app| {
+            let ui = app.global::<AgentUi>();
+            let code = crate::i18n::language_choice_code(index).unwrap_or_default();
+            ui.set_reply_language_index(crate::i18n::language_choice_index(&code));
+            ui.set_reply_language(code.clone().into());
+            let mut studio = shell.studio.borrow_mut();
+            if let Some(project) = studio
+                .session
+                .as_ref()
+                .map(|session| session.project_identity().to_owned())
+            {
+                studio.prefs.agent_reply_languages.insert(project, code);
+                studio.prefs.save(&studio.host.dirs);
+            }
+        });
+    });
     ui.on_cursor_moved(|cursor| {
         Shell::with(|_, app| {
             let ui = app.global::<AgentUi>();
@@ -843,7 +1266,7 @@ pub(crate) fn install_composer(app: &App) {
             shell.agent_pane.borrow_mut().pending_attachments.clear();
             let ui = app.global::<AgentUi>();
             ui.set_attachment_pending(false);
-            ui.set_attachment_status("已取消引用；素材导入可能仍在继续。".into());
+            ui.set_attachment_status(t("agent.referenceCancelled").into());
         });
     });
     ui.on_attach_requested(|| {
@@ -860,9 +1283,9 @@ pub(crate) fn install_composer(app: &App) {
             return;
         };
         crate::host::pick_files_then(
-            "添加素材".into(),
+            t("agent.addMedia"),
             Some((
-                "视频、音频和图片".into(),
+                t("agent.mediaTypes"),
                 &[
                     "mp4", "mov", "mkv", "webm", "avi", "m4v", "mp3", "wav", "aac", "m4a", "flac",
                     "ogg", "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "svg",
@@ -875,7 +1298,7 @@ pub(crate) fn install_composer(app: &App) {
                     .is_none_or(|session| session.session_id() != selected_session)
                 {
                     app.global::<AgentUi>()
-                        .set_attachment_status("工程已切换，请重新选择素材。".into());
+                        .set_attachment_status(t("agent.projectChanged").into());
                     return;
                 }
                 Shell::with(|shell, _| {
@@ -903,7 +1326,7 @@ pub(crate) fn install_composer(app: &App) {
         Shell::with(|shell, app| {
             let ui = app.global::<AgentUi>();
             if identity == "server:unavailable" {
-                ui.set_suggestion_status("素材服务尚未接通，暂时不能搜索。".into());
+                ui.set_suggestion_status(t("agent.mediaServiceUnavailable").into());
                 return;
             }
             let draft = ui.get_draft().to_string();
@@ -956,9 +1379,193 @@ pub(crate) fn install_composer(app: &App) {
                     ui.set_draft_cursor(start as i32);
                     ui.set_suggestions_open(false);
                 } else {
-                    ui.set_suggestion_status("素材已不存在，请重新选择。".into());
+                    ui.set_suggestion_status(t("agent.mediaMissing").into());
                 }
             }
+        });
+    });
+}
+
+/// Capture the inherited default once, at the first explicit task. Later
+/// application-default changes cannot replace an existing conversation choice.
+pub(crate) fn capture_session_model(
+    studio: &mut crate::studio::Studio,
+    snapshot: &ConfigurationSnapshot,
+) -> Result<ModelChannel, String> {
+    let identity = studio
+        .session
+        .as_ref()
+        .ok_or("agent.openProject")?
+        .project_identity()
+        .to_owned();
+    let mut saved = studio.prefs.agent_session_models.get(&identity).cloned();
+    let previously_saved = saved.is_some();
+    let model = capture_model_choice(&mut saved, snapshot)?;
+    if !previously_saved {
+        studio
+            .prefs
+            .agent_session_models
+            .insert(identity, saved.expect("captured selection"));
+        studio.prefs.save(&studio.host.dirs);
+    }
+    Ok(model)
+}
+
+fn capture_model_choice(
+    saved: &mut Option<String>,
+    snapshot: &ConfigurationSnapshot,
+) -> Result<ModelChannel, String> {
+    let selected = resolve_session_model(saved.as_deref(), snapshot)?;
+    if saved.is_none() {
+        *saved = Some(
+            serde_json::to_string(&(selected.id.as_str(), &selected.model)).expect("string tuple"),
+        );
+    }
+    Ok(selected)
+}
+
+fn resolve_session_model(
+    saved: Option<&str>,
+    snapshot: &ConfigurationSnapshot,
+) -> Result<ModelChannel, String> {
+    if let Some(saved) = saved {
+        let (id, model): (String, String) =
+            serde_json::from_str(saved).map_err(|_| "agent.errorModelUnavailable")?;
+        let id = ChannelId::parse(&id).map_err(|_| "agent.errorModelUnavailable")?;
+        return snapshot
+            .selected_model(&id, &model)
+            .map_err(|_| "agent.errorModelUnavailable".into());
+    }
+    snapshot
+        .active()
+        .cloned()
+        .ok_or_else(|| "agent.errorModelRequired".into())
+}
+
+/// Explicit configuration/project events refresh a small native projection.
+/// This never contacts a provider, opens conversation storage or polls.
+pub(crate) fn refresh_model_choices() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static REQUEST: AtomicU64 = AtomicU64::new(0);
+    let request = REQUEST.fetch_add(1, Ordering::SeqCst) + 1;
+    Shell::with(|shell, app| {
+        let studio = shell.studio.borrow();
+        let project = studio
+            .session
+            .as_ref()
+            .map(|session| session.project_identity().to_owned());
+        let reply = project
+            .as_ref()
+            .and_then(|id| studio.prefs.agent_reply_languages.get(id))
+            .cloned()
+            .unwrap_or_default();
+        let ui = app.global::<AgentUi>();
+        ui.set_reply_language_index(crate::i18n::language_choice_index(&reply));
+        ui.set_reply_language(reply.into());
+        let saved = project
+            .as_ref()
+            .and_then(|id| studio.prefs.agent_session_models.get(id))
+            .cloned();
+        let store = crate::panes::agent_settings::configuration_store(&studio.host.dirs);
+        #[cfg(test)]
+        let credential_store_fixture = shell.agent_pane.borrow().credential_store_fixture.clone();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<_, String> {
+                let snapshot = store.load().map_err(|error| error.to_string())?;
+                let choices = store
+                    .flattened_models(&snapshot)
+                    .map_err(|error| error.to_string())?;
+                let selected = resolve_session_model(saved.as_deref(), &snapshot);
+                let credential = selected.as_ref().ok().map(|channel| {
+                    #[cfg(test)]
+                    let credentials = match &credential_store_fixture {
+                        Some(store) => std::sync::Arc::clone(store),
+                        None => platform_store().map_err(|error| error.to_string())?,
+                    };
+                    #[cfg(not(test))]
+                    let credentials = platform_store().map_err(|error| error.to_string())?;
+                    let origin = channel
+                        .service_origin()
+                        .map_err(|error| error.to_string())?;
+                    let scope = CredentialScope::new(channel.id.as_str(), &origin)
+                        .map_err(|error| error.to_string())?;
+                    credentials
+                        .status(&scope)
+                        .map_err(|error| error.to_string())
+                });
+                Ok((choices, selected, credential))
+            })();
+            let _ = slint::invoke_from_event_loop(move || {
+                if REQUEST.load(Ordering::SeqCst) != request {
+                    return;
+                }
+                Shell::with(|shell, app| {
+                    let current = shell
+                        .studio
+                        .borrow()
+                        .session
+                        .as_ref()
+                        .map(|session| session.project_identity().to_owned());
+                    if current != project {
+                        return;
+                    }
+                    let mut pane = shell.agent_pane.borrow_mut();
+                    match result {
+                        Ok((choices, selected, credential)) => {
+                            let ui = app.global::<AgentUi>();
+                            let index = selected
+                                .as_ref()
+                                .ok()
+                                .and_then(|selected| {
+                                    choices.iter().position(|choice| {
+                                        choice.connection == selected.id
+                                            && choice.model == selected.model
+                                    })
+                                })
+                                .map_or(-1, |index| index as i32);
+                            ui.set_models(ModelRc::new(VecModel::from(
+                                choices
+                                    .iter()
+                                    .map(|choice| slint::SharedString::from(choice.label.as_str()))
+                                    .collect::<Vec<_>>(),
+                            )));
+                            ui.set_model_index(index);
+                            pane.model_choices = choices;
+                            if !pane.task.running && !pane.waiting_for_ready {
+                                pane.readiness.calls_authorized = false;
+                                pane.configuration_error.clear();
+                                pane.readiness.credentials_ready =
+                                    matches!(credential, Some(Ok(CredentialStatus::Present)));
+                                if let Some(Err(error)) = credential {
+                                    pane.configuration_error = error;
+                                }
+                                match selected {
+                                    Ok(selected) => {
+                                        pane.readiness.provider = selected.label;
+                                        pane.readiness.model = selected.model;
+                                    }
+                                    Err(error) => {
+                                        pane.readiness.provider.clear();
+                                        pane.readiness.model.clear();
+                                        if !pane.model_choices.is_empty() {
+                                            pane.configuration_error = error;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(error) if !pane.task.running => {
+                            pane.configuration_error = error;
+                        }
+                        Err(_) => {}
+                    }
+                    let owner = shell.agent.borrow().as_ref().map_or_else(
+                        || Err(crate::i18n::t("agent.sessionUnavailable")),
+                        |bridge| bridge.status(),
+                    );
+                    pane.publish(&app, owner);
+                });
+            });
         });
     });
 }
@@ -968,18 +1575,204 @@ mod tests {
     use super::*;
 
     #[test]
+    fn recovery_facts_do_not_turn_capture_or_review_into_success() {
+        let _language = crate::i18n::language_lock();
+        let facts = serde_json::json!({"currentProjectStates": {
+            "outcome-unknown":{"total":2,"reviewed":1,"capturedSaveWithoutReceipt":{"total":1}},
+            "applied-not-saved":{"total":1}, "saved-not-notified":{"total":1},
+            "notified":{"total":0}, "not-applied":{"total":1}, "unchanged":{"total":0}
+        }, "pendingOtherProjects":3});
+        let summary = recovery_fact_summary(&facts);
+        assert!(summary.contains(&tf("recovery.outcomeUnknown", &[&2])));
+        assert!(summary.contains(&tf("recovery.capturedWithoutReceipt", &[&1])));
+        assert!(summary.contains(&tf("recovery.appliedNotSaved", &[&1])));
+        assert!(summary.contains(&tf("recovery.otherPending", &[&3])));
+        assert!(!summary.contains(&tf("recovery.notified", &[&0])));
+    }
+
+    #[test]
+    fn interrupted_recovery_requires_native_resume_evidence_and_keeps_calls_ungranted() {
+        let mut pane = AgentPane::default();
+        let mut runtime = crate::embedded::RuntimeView {
+            phase: "recovery".into(),
+            loaded: true,
+            snapshot: Some(
+                serde_json::json!({"snapshotId":"review", "projectPath":"original",
+                "hasInterruptedWork":true, "canContinueInterrupted":false,
+                "canDiscardInterrupted":true, "blockedReason":"agent.errorRecoverySnapshotMissing"}),
+            ),
+            ..Default::default()
+        };
+        pane.apply_runtime(&runtime);
+        assert!(!pane.can_recover);
+        assert!(!pane.resume_interrupted);
+        assert!(pane.can_discard);
+        let snapshot = runtime.snapshot.as_mut().unwrap();
+        snapshot["blockedReason"] = serde_json::Value::Null;
+        snapshot["canContinueInterrupted"] = serde_json::json!(true);
+        pane.apply_runtime(&runtime);
+        assert!(pane.can_recover && pane.resume_interrupted);
+        assert_eq!(pane.recovery_summary, "agent.recoveryResumeNotice");
+        assert!(
+            !pane.readiness.calls_authorized,
+            "displaying the reviewed task cannot grant a call"
+        );
+    }
+
+    #[test]
+    fn native_control_errors_keep_codes_and_localize_recovery_actions() {
+        let _language = crate::i18n::language_lock();
+        let dirs = concat_host::AppDirs::under(&std::env::temp_dir().join("bkcut-error-language"));
+        for code in [
+            "runtime.loadTimeout",
+            "runtime.waitTimeout",
+            "runtime.webCapability",
+            "runtime.modelSettingsBusy",
+            "agent.errorRecoveryStorage",
+            "agent.recoveryNoInterruptedTask",
+            "agent.errorRecoveryBinding",
+            "agent.errorRecoveryPending",
+            "runtime.inputTooLarge",
+            "runtime.unsupportedPlatform",
+            "runtime.saveNotificationUnconfirmed",
+            "runtime.submissionUnconfirmed",
+            "runtime.approvalDeliveryFailed",
+            "runtime.platformFailed",
+            "script.generationFailed",
+            "script.stopped",
+            "permission.alreadyPending",
+            "permission.stateUnavailable",
+            "agent.notReady",
+            "agent.configureBeforeSend",
+            "agent.chatNotReady",
+            "agent.reviewBeforeContinue",
+            "runtime.invalidRequest",
+            "permission.taskScope",
+            "permission.readOnlyTask",
+            "permission.editContextChanged",
+            "runtime.editReceiptUnconfirmed",
+            "modelSettings.configurationUnavailable",
+        ] {
+            crate::i18n::select("en", &dirs);
+            let english = error_presentation(code);
+            assert_eq!(english.0, code);
+            assert_eq!(english.1, crate::i18n::t(code));
+            assert_ne!(
+                english.1, code,
+                "a stable code must render its translation, not the protocol key"
+            );
+            assert!(english.2.is_empty());
+            crate::i18n::select("zh-Hans", &dirs);
+            let chinese = error_presentation(code);
+            assert_eq!(chinese.0, english.0);
+            assert_ne!(chinese.1, english.1);
+            assert!(chinese.2.is_empty());
+        }
+        let report = error_presentation("runtime.startupFailed\nexternal diagnostic");
+        assert_eq!(report.0, "runtime.startupFailed");
+        assert_eq!(report.2, "external diagnostic");
+        crate::i18n::select("en", &dirs);
+    }
+
+    #[test]
+    fn known_product_errors_translate_without_reinterpreting_external_diagnostics() {
+        let _language = crate::i18n::language_lock();
+        let dirs = concat_host::AppDirs::under(
+            &std::env::temp_dir().join("bkcut-product-error-projection"),
+        );
+        for language in ["en", "zh-Hans"] {
+            crate::i18n::select(language, &dirs);
+            let raw = "runtime.platformFailed\nexternal {0} / /untouched/path";
+            assert_eq!(
+                localize_product_message(raw),
+                format!(
+                    "{}\nexternal {{0}} / /untouched/path",
+                    t("runtime.platformFailed")
+                )
+            );
+            assert_eq!(
+                localize_product_message("external literal {1}"),
+                "external literal {1}"
+            );
+            assert_eq!(
+                localize_product_message("runtime.submissionUnconfirmed"),
+                t("runtime.submissionUnconfirmed")
+            );
+            assert_ne!(
+                localize_product_message("runtime.submissionUnconfirmed"),
+                t("runtime.stateChanged")
+            );
+        }
+        crate::i18n::select("en", &dirs);
+    }
+
+    #[test]
+    fn first_inherited_model_is_retained_after_application_default_changes() {
+        use concat_agent::configuration::{ChannelDraft, ConfigurationStore, ModelProtocol};
+        let root = std::env::temp_dir().join(format!(
+            "bkcut-session-model-{}",
+            crate::embedded::random_capability().unwrap()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = ConfigurationStore::new(root.clone());
+        let draft = |model: &str| ChannelDraft {
+            label: model.into(),
+            protocol: ModelProtocol::OpenAiCompletions,
+            endpoint: "https://session-model-fixture.invalid/v1".into(),
+            model: model.into(),
+            request_timeout_ms: 1000,
+            max_output_tokens: 128,
+        };
+        let snapshot = store
+            .save_channel(&store.load().unwrap(), None, draft("model-a"))
+            .unwrap();
+        let a = snapshot.channels()[0].id.clone();
+        let snapshot = store
+            .save_channel(&snapshot, None, draft("model-b"))
+            .unwrap();
+        let b = snapshot.channels()[1].id.clone();
+        let snapshot = store.select(&snapshot, Some(&a)).unwrap();
+        let mut conversation = None;
+        assert_eq!(
+            capture_model_choice(&mut conversation, &snapshot)
+                .unwrap()
+                .model,
+            "model-a"
+        );
+        let snapshot = store.select(&snapshot, Some(&b)).unwrap();
+        assert_eq!(
+            capture_model_choice(&mut conversation, &snapshot)
+                .unwrap()
+                .model,
+            "model-a"
+        );
+        let mut new_conversation = None;
+        assert_eq!(
+            capture_model_choice(&mut new_conversation, &snapshot)
+                .unwrap()
+                .model,
+            "model-b"
+        );
+        let removed = store.delete(&snapshot, &a).unwrap();
+        assert!(
+            capture_model_choice(&mut conversation, &removed).is_err(),
+            "never silently substitute another account"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
     fn compact_transcript_keeps_exact_text_and_exposes_full_details() {
-        let (short, folded) = message_preview("助手", "字幕已经添加。");
+        let (short, folded) = message_preview(AgentMessageRole::Assistant, "字幕已经添加。");
         assert!(!folded);
         assert!(short.is_empty());
 
         let tool_text = "{\n  \"error\": \"render failed\",\n  \"step\": 4\n}";
-        let (tool_preview, tool_folded) = message_preview("执行结果", tool_text);
+        let (tool_preview, tool_folded) = message_preview(AgentMessageRole::Tool, tool_text);
         assert!(tool_folded);
         assert!(tool_preview.contains("render failed"));
 
         let long_text = format!("已经添加标题。\n{}", "详细检查记录。".repeat(55));
-        let (preview, folded) = message_preview("助手", &long_text);
+        let (preview, folded) = message_preview(AgentMessageRole::Assistant, &long_text);
         assert!(folded);
         assert!(preview.starts_with("已经添加标题。"));
         assert!(preview.ends_with('…'));
@@ -997,6 +1790,52 @@ mod tests {
         assert!(pane.messages[0].collapsible);
         assert_eq!(pane.messages[1].body.as_str(), tool_text);
         assert!(pane.messages[1].collapsible);
+    }
+
+    #[test]
+    fn compaction_display_uses_localized_system_preview_without_changing_history() {
+        let _language = crate::i18n::language_lock();
+        let previous = crate::i18n::current();
+        let dirs = concat_host::AppDirs::under(
+            &std::env::temp_dir().join("bkcut-compaction-display-language"),
+        );
+        let original = "The conversation history before this point was compacted into the following summary:\n\n<summary>\nHistorical body 中文 {1}\n</summary>";
+        let runtime = crate::embedded::RuntimeView {
+            presentation: Some(serde_json::json!({"messages": [
+                {"role":"compaction", "text":original},
+                {"role":"user", "text":original},
+                {"role":"compaction", "text":"Short original summary"}
+            ]})),
+            ..Default::default()
+        };
+        let persisted_projection = runtime.presentation.clone();
+        let mut labels = Vec::new();
+        for language in ["en", "zh-Hans"] {
+            crate::i18n::select(language, &dirs);
+            let mut pane = AgentPane::default();
+            pane.apply_runtime(&runtime);
+            assert_eq!(pane.messages.len(), 3);
+            let summary = &pane.messages[0];
+            assert_eq!(summary.role, AgentMessageRole::Compaction);
+            assert_eq!(summary.author.as_str(), t("agent.roleCompaction"));
+            assert_eq!(summary.preview.as_str(), t("agent.compactionPreview"));
+            assert_eq!(summary.body.as_str(), original);
+            assert!(summary.collapsible && !summary.pending);
+            assert_eq!(pane.messages[1].role, AgentMessageRole::User);
+            assert_eq!(pane.messages[1].author.as_str(), t("agent.roleUser"));
+            assert_eq!(pane.messages[1].body.as_str(), original);
+            assert!(!pane.messages[1].collapsible);
+            assert!(pane.messages[2].collapsible);
+            assert_eq!(
+                pane.messages[2].preview.as_str(),
+                t("agent.compactionPreview")
+            );
+            assert_eq!(pane.messages[2].body.as_str(), "Short original summary");
+            assert_eq!(runtime.presentation, persisted_projection);
+            labels.push((summary.author.to_string(), summary.preview.to_string()));
+        }
+        assert_ne!(labels[0], labels[1]);
+        crate::i18n::select(&previous, &dirs);
     }
 
     #[test]
@@ -1407,7 +2246,8 @@ mod tests {
         }
         let unavailable = pane.data(Err("会话所有权已失效。".into()));
         assert!(unavailable.recovery_summary.is_empty());
-        assert_eq!(unavailable.error, "会话所有权已失效。");
+        assert_eq!(unavailable.error_code, "agent.errorUnexpected");
+        assert_eq!(unavailable.error_details, "会话所有权已失效。");
 
         // Reproduce discard -> activation -> a new task, retaining the exact
         // old snapshot used by native project binding throughout the sequence.
@@ -1442,8 +2282,8 @@ mod tests {
         runtime.error = "原生工程状态核对失败。".into();
         pane.apply_runtime(&runtime);
         let failed = pane.data(owner(Phase::Ready));
-        assert_eq!(failed.error, runtime.error.as_str());
-        assert_eq!(failed.title, "任务失败");
+        assert_eq!(failed.error_details, runtime.error.as_str());
+        assert_eq!(failed.title, t("agent.failed"));
         assert!(failed.recovery_summary.is_empty());
         assert!(!failed.can_send);
 
@@ -1457,7 +2297,7 @@ mod tests {
             recovery.recovery_summary,
             "当前工程版本已变化，请重新核对。"
         );
-        assert_eq!(recovery.error, runtime.error.as_str());
+        assert_eq!(recovery.error_details, runtime.error.as_str());
         assert!(recovery.can_review);
         assert!(!recovery.can_send);
     }
@@ -1517,7 +2357,7 @@ mod tests {
                 ..crate::embedded::RuntimeView::default()
             });
             let data = pane.data(owner(Phase::Ready));
-            assert_eq!(data.title, "操作未执行");
+            assert_eq!(data.title, t("agent.actionRefused"));
             assert_eq!(data.detail, reason);
             assert!(data.error.is_empty());
             assert!(!data.busy);
@@ -1531,7 +2371,7 @@ mod tests {
             assert!(!pane.data(owner(Phase::RecoveryRequired)).can_send);
             pane.error = "原生工程状态核对失败。".into();
             let failed = pane.data(owner(Phase::Ready));
-            assert_eq!(failed.title, "任务失败");
+            assert_eq!(failed.title, t("agent.failed"));
             assert!(!failed.can_send);
         }
     }
@@ -1556,7 +2396,7 @@ mod tests {
         runtime.task_title.clear();
         pane.apply_runtime(&runtime);
         let finished = pane.data(owner(Phase::Ready));
-        assert_eq!(finished.title, "等待输入");
+        assert_eq!(finished.title, t("agent.idle"));
         assert!(finished.can_send);
         assert!(!finished.busy);
         assert!(finished.error.is_empty());

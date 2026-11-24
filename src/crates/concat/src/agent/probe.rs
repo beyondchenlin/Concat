@@ -28,6 +28,7 @@ use super::native::{NativeSession, STORAGE_ID};
 use crate::host::Shell;
 use crate::ui::App;
 
+pub(crate) mod crash;
 mod settings;
 
 #[derive(Clone)]
@@ -45,6 +46,11 @@ static CONFIGURATION: OnceLock<Configuration> = OnceLock::new();
 /// portable directory, so a verification run cannot adopt user configuration.
 pub fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.get(0).map(String::as_str) == Some("--mode")
+        && args.get(1).map(String::as_str) == Some("crash")
+    {
+        return crash::run(&args);
+    }
     if args.len() != 2
         || args[0] != "--mode"
         || !matches!(
@@ -119,6 +125,9 @@ pub fn run() -> Result<(), String> {
 /// platform startup. An ordinary feature-enabled application is unchanged
 /// unless the isolated example configured this process explicitly.
 pub(crate) fn start_if_requested() -> bool {
+    if crash::start_if_requested() {
+        return true;
+    }
     let Some(configuration) = CONFIGURATION.get().cloned() else {
         return false;
     };
@@ -1000,6 +1009,8 @@ fn prepare_probe_task(
     })?;
     let id = crate::embedded::random_capability()?;
     let intent = super::tasks::SubmissionIntent {
+        languages: super::tasks::TaskLanguages::default(),
+        model: None,
         id: id.clone(),
         project,
         mode: super::tasks::TaskMode::Edit,

@@ -34,6 +34,10 @@ pub enum ExportMsg {
     Close,
     NameEdited(String),
     RateChanged(i32),
+    ResolutionChanged(i32),
+    CustomLongEdge(f32),
+    /// Explicitly abandon a failed export's version and capture the live edit.
+    UseCurrent,
     CodecChanged(i32),
     TenBitChanged(bool),
     /// For an HDR timeline: written HDR (true), or tone-mapped to SDR.
@@ -66,12 +70,24 @@ pub enum ExportMsg {
     Published(Result<String, String>),
 }
 
+/// A read-only native document capture. Rendering never merges it back.
+#[derive(Clone)]
+struct CapturedExport {
+    project: concat_project::model::Project,
+    project_dir: std::path::PathBuf,
+    session_id: u64,
+    revision: u64,
+}
+
 /// The export sheet's state.
 pub struct ExportPane {
     pub open: bool,
     pub name: String,
     pub folder: String,
     pub resolution: usize,
+    pub long_edge: u32,
+    snapshot: Option<CapturedExport>,
+    generation: u64,
     pub rate: usize,
     /// The bitrate is the typed one, not the recommended one for the
     /// frame and the rate.
@@ -107,6 +123,9 @@ impl Default for ExportPane {
                 "Movies"
             }),
             resolution: 2,
+            long_edge: 1920,
+            snapshot: None,
+            generation: 0,
             rate: 0,
             custom: false,
             codec: 0,
@@ -124,6 +143,21 @@ impl Default for ExportPane {
 }
 
 impl ExportPane {
+    /// The host cancels its exporter before releasing a project. Retire this
+    /// pane too, so callbacks for the old immutable capture cannot leave the
+    /// next project stuck in a running/failed export or publish its file there.
+    pub(crate) fn retire_project(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.snapshot = None;
+        self.open = false;
+        self.phase = ExportPhase::Idle;
+        self.progress = 0.0;
+        self.stage.clear();
+        self.message.clear();
+        self.written.clear();
+        self.started_at = None;
+    }
+
     /// Applies one message. The studio is the rest of the window, for
     /// what the sheet needs to know and to start; the pane's own state is
     /// `self`, and while this runs the studio's copy of it is a blank the
@@ -132,18 +166,54 @@ impl ExportPane {
         match msg {
             ExportMsg::Open => {
                 self.open = true;
+                if self.phase == ExportPhase::Running {
+                    return;
+                }
+                let same_session = self.snapshot.as_ref().is_some_and(|snapshot| {
+                    studio
+                        .session
+                        .as_ref()
+                        .is_some_and(|session| session.session_id() == snapshot.session_id)
+                });
+                if self.phase == ExportPhase::Failed && same_session {
+                    return;
+                }
+                self.snapshot = None;
                 self.phase = ExportPhase::Idle;
                 self.message.clear();
                 // The timeline's own size: the one rung that can be picked;
                 // and its own rate, first on the rate list.
-                self.resolution = Self::own_rung(studio);
+                self.resolution = self.own_rung(studio);
                 self.rate = 0;
                 self.follow_canvas(studio);
             }
             ExportMsg::Close => self.open = false,
+            ExportMsg::ResolutionChanged(index) => {
+                self.resolution = (index.max(0) as usize).min(self.ladder(studio).len());
+            }
+            ExportMsg::CustomLongEdge(edge) => {
+                if edge.is_finite() {
+                    self.long_edge =
+                        ((edge.clamp(2.0, 8192.0) / 2.0).round() as u32 * 2).clamp(2, 8192);
+                    self.resolution = self.ladder(studio).len();
+                }
+            }
+            ExportMsg::UseCurrent => {
+                if self.phase == ExportPhase::Running {
+                    return;
+                }
+                self.snapshot = None;
+                self.generation = self.generation.wrapping_add(1);
+                self.phase = ExportPhase::Idle;
+                self.progress = 0.0;
+                self.message.clear();
+                self.resolution = self.own_rung(studio);
+                self.rate = 0;
+                self.follow_canvas(studio);
+            }
             ExportMsg::NameEdited(name) => self.name = name,
             ExportMsg::RateChanged(index) => {
-                self.rate = (index.max(0) as usize).min(Self::rates(studio).len() - 1);
+                self.rate = (index.max(0) as usize).min(self.rates(studio).len() - 1);
             }
             // A codec this device cannot encode is not taken: the picker
             // says so under it, and the choice before stands.
@@ -162,6 +232,9 @@ impl ExportPane {
                 }
             }
             ExportMsg::Again => {
+                if self.phase == ExportPhase::Done {
+                    self.snapshot = None;
+                }
                 self.phase = ExportPhase::Idle;
                 self.progress = 0.0;
             }
@@ -191,6 +264,7 @@ impl ExportPane {
             ExportMsg::Overwrite => self.begin(studio, true),
             ExportMsg::Cancel => {
                 studio.host.exporter.cancel();
+                self.generation = self.generation.wrapping_add(1);
                 self.phase = ExportPhase::Idle;
                 self.progress = 0.0;
             }
@@ -212,9 +286,15 @@ impl ExportPane {
                 self.written = written.clone();
                 // A phone moves the file to where its gallery shows it, and
                 // the sheet says "finished" once it is there.
-                let handed = platform::publish_export(written.into(), |result| {
+                let generation = self.generation;
+                let epoch = crate::host::project_epoch();
+                let handed = platform::publish_export(written.into(), move |result| {
                     on_ui(move |studio, _, _| {
-                        studio.handle(Msg::Export(ExportMsg::Published(result)));
+                        if studio.export.generation == generation
+                            && crate::host::project_epoch() == epoch
+                        {
+                            studio.handle(Msg::Export(ExportMsg::Published(result)));
+                        }
                     });
                 });
                 if !handed {
@@ -241,12 +321,24 @@ impl ExportPane {
         }
     }
 
+    fn timeline<'a>(&'a self, studio: &'a Studio) -> &'a concat_project::model::Timeline {
+        self.snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.project.active())
+            .unwrap_or_else(|| studio.timeline())
+    }
+
+    fn source_size(&self, studio: &Studio) -> (u32, u32) {
+        let video = self.timeline(studio).video;
+        (video.width, video.height)
+    }
+
     /// The resolution ladder for this project: the standard short sides,
     /// with the project's own among them where it is not already - a
     /// custom frame has its own rung - from largest to smallest.
-    fn ladder(studio: &Studio) -> Vec<u32> {
+    fn ladder(&self, studio: &Studio) -> Vec<u32> {
         let mut rungs: Vec<u32> = EXPORT_SHORT_SIDES.to_vec();
-        let own = Self::own_short(studio);
+        let own = self.own_short(studio);
         if !rungs.contains(&own) {
             rungs.push(own);
         }
@@ -258,14 +350,16 @@ impl ExportPane {
     /// exported at unless the person picks another - then every other
     /// rate a project can be made at. A 25 fps cut used to export at 30
     /// unless someone noticed (audit 2026-10-04, #8).
-    fn rates(studio: &Studio) -> Vec<(i64, i64)> {
-        let video = studio.project().active().video;
+    fn rates(&self, studio: &Studio) -> Vec<(i64, i64)> {
+        let video = self.timeline(studio).video;
         Self::rates_around((video.rate_num, video.rate_den.max(1)))
     }
 
     /// [`ExportPane::rates`] for a timeline at `own`.
     fn rates_around(own: (i64, i64)) -> Vec<(i64, i64)> {
-        let same = |(num, den): (i64, i64)| num * own.1 == own.0 * den;
+        let same = |(num, den): (i64, i64)| {
+            i128::from(num) * i128::from(own.1) == i128::from(own.0) * i128::from(den)
+        };
         std::iter::once(own)
             .chain(
                 RATES
@@ -278,13 +372,16 @@ impl ExportPane {
 
     /// The rate the export renders at.
     fn rate(&self, studio: &Studio) -> (i64, i64) {
-        let rates = Self::rates(studio);
+        let rates = self.rates(studio);
         rates[self.rate.min(rates.len() - 1)]
     }
 
     /// A rate as the sheet names it: "23.976 fps", "25 fps".
     fn rate_name((num, den): (i64, i64)) -> String {
-        let name = match RATES.iter().find(|&&(_, n, d)| n * den == num * d) {
+        let name = match RATES
+            .iter()
+            .find(|&&(_, n, d)| i128::from(n) * i128::from(den) == i128::from(num) * i128::from(d))
+        {
             Some((name, _, _)) => (*name).to_owned(),
             None => {
                 let fps = format!("{:.3}", crate::studio::fps_of(num, den));
@@ -295,17 +392,17 @@ impl ExportPane {
     }
 
     /// The project's short side, in pixels.
-    fn own_short(studio: &Studio) -> u32 {
-        let (width, height) = studio.output_size();
+    fn own_short(&self, studio: &Studio) -> u32 {
+        let (width, height) = self.source_size(studio);
         width.min(height).max(2)
     }
 
     /// The rung of the ladder that is the project's own size: the one
     /// the sheet lets be picked, since an edit exports at the size it was
     /// cut at. https://github.com/jub0t/Concat/issues/109
-    fn own_rung(studio: &Studio) -> usize {
-        let own = Self::own_short(studio);
-        Self::ladder(studio)
+    fn own_rung(&self, studio: &Studio) -> usize {
+        let own = self.own_short(studio);
+        self.ladder(studio)
             .iter()
             .position(|rung| *rung == own)
             .unwrap_or(0)
@@ -313,23 +410,24 @@ impl ExportPane {
 
     /// `short` scaled along the project's aspect and rounded to even
     /// dimensions, which is what the encoder's chroma subsampling needs.
-    fn frame_for(studio: &Studio, short: u32) -> (u32, u32) {
-        let (project_w, project_h) = studio.output_size();
-        let (project_w, project_h) = (project_w.max(1) as f64, project_h.max(1) as f64);
-        let even = |side: f64| ((side / 2.0).round() as u32 * 2).max(2);
-        if project_w >= project_h {
-            (even(short as f64 * project_w / project_h), short)
-        } else {
-            (short, even(short as f64 * project_h / project_w))
-        }
+    fn frame_for(&self, studio: &Studio, short: u32) -> (u32, u32) {
+        let source = self.source_size(studio);
+        let short = (short / 2 * 2).max(2);
+        let long = (f64::from(short) * f64::from(source.0.max(source.1).max(1))
+            / f64::from(source.0.min(source.1).max(1)))
+        .round()
+        .clamp(2.0, 8192.0) as u32;
+        frame_for_long_edge(source, long)
     }
 
     /// The frame the export renders at: the sheet's rung of the ladder,
     /// along the project's aspect.
     pub fn size(&self, studio: &Studio) -> (u32, u32) {
-        let ladder = Self::ladder(studio);
-        let short = ladder[self.resolution.min(ladder.len() - 1)];
-        Self::frame_for(studio, short)
+        let ladder = self.ladder(studio);
+        if self.resolution >= ladder.len() {
+            return frame_for_long_edge(self.source_size(studio), self.long_edge);
+        }
+        self.frame_for(studio, ladder[self.resolution])
     }
 
     /// The bitrate the file is written at, in kbps: the typed one, or the
@@ -364,7 +462,7 @@ impl ExportPane {
     /// keeps to, so this is what is written, give or take.
     pub fn size_bytes(&self, studio: &Studio) -> f32 {
         let video = self.target_kbps(studio) as f32 * 1000.0;
-        (video + AUDIO_BPS) * studio.duration().max(1.0) / 8.0
+        (video + AUDIO_BPS) * (self.timeline(studio).duration() as f32).max(1.0) / 8.0
     }
 
     /// The codec a sheet opens on follows the canvas (#456): a timeline
@@ -376,7 +474,7 @@ impl ExportPane {
     fn follow_canvas(&mut self, studio: &Studio) {
         use concat_media::VideoCodec;
         let chosen = VideoCodec::ALL[self.codec.min(VideoCodec::ALL.len() - 1)];
-        let see_through = studio.timeline().video.canvas[3] < 255;
+        let see_through = self.timeline(studio).video.canvas[3] < 255;
         let wanted = if see_through && !chosen.keeps_alpha() {
             [VideoCodec::ProRes4444, VideoCodec::Vp9Alpha]
                 .into_iter()
@@ -419,7 +517,7 @@ impl ExportPane {
         // An overlay that keeps its alpha is written SDR: the export
         // tone-maps an HDR timeline for it.
         !chosen.keeps_alpha()
-            && studio.timeline().video.color_space.is_hdr()
+            && self.timeline(studio).video.color_space.is_hdr()
             && !self.sdr
             && deep.ten_bit_available()
             && writable(deep)
@@ -443,7 +541,7 @@ impl ExportPane {
         if studio.session.is_none() {
             return;
         }
-        if studio.timeline().clips.is_empty() {
+        if self.timeline(studio).clips.is_empty() {
             self.phase = ExportPhase::Failed;
             self.message = t("export.nothingTimelineExport");
             return;
@@ -480,6 +578,14 @@ impl ExportPane {
         let Some(session) = studio.session.as_ref() else {
             return;
         };
+        if self.snapshot.is_none() {
+            self.snapshot = Some(CapturedExport {
+                project: session.project().clone(),
+                project_dir: std::path::PathBuf::from(session.path()),
+                session_id: session.session_id(),
+                revision: session.revision(),
+            });
+        }
         let spec = ExportSpec {
             output: output.clone(),
             // Unused at an average bitrate; the quality the encoder falls
@@ -503,8 +609,9 @@ impl ExportPane {
         // chosen - and the window goes on answering: hundreds of captions
         // are seconds of painting on a phone, and Android closes an app
         // whose window does not answer a touch for five.
-        let project = session.project().clone();
-        let project_dir = std::path::PathBuf::from(session.path());
+        let snapshot = self.snapshot.as_ref().expect("captured before rendering");
+        let project = snapshot.project.clone();
+        let project_dir = snapshot.project_dir.clone();
         let (width, height) = self.size(studio);
         let (num, den) = self.rate(studio);
         let titles = std::sync::Arc::clone(&studio.host.titles);
@@ -517,6 +624,9 @@ impl ExportPane {
         self.message.clear();
         self.written.clear();
         self.started_at = Some(std::time::Instant::now());
+        self.generation = self.generation.wrapping_add(1);
+        let generation = self.generation;
+        let epoch = crate::host::project_epoch();
 
         spawn_long(
             move || {
@@ -573,11 +683,19 @@ impl ExportPane {
                         other => other.to_owned(),
                     };
                     on_ui(move |studio, _, _| {
-                        studio.handle(Msg::Export(ExportMsg::Progress { fraction, stage }));
+                        if studio.export.generation == generation
+                            && crate::host::project_epoch() == epoch
+                        {
+                            studio.handle(Msg::Export(ExportMsg::Progress { fraction, stage }));
+                        }
                     });
                 })
             },
-            |studio, _, _, result| studio.handle(Msg::Export(ExportMsg::Finished(result))),
+            move |studio, _, _, result| {
+                if studio.export.generation == generation && crate::host::project_epoch() == epoch {
+                    studio.handle(Msg::Export(ExportMsg::Finished(result)));
+                }
+            },
         );
     }
 
@@ -586,9 +704,9 @@ impl ExportPane {
         let (width, height) = self.size(studio);
         let (num, den) = self.rate(studio);
         let rate = num as f32 / den as f32;
-        let clips = studio.timeline().clips.len();
-        let titles = studio
-            .timeline()
+        let clips = self.timeline(studio).clips.len();
+        let titles = self
+            .timeline(studio)
             .clips
             .iter()
             .filter(|clip| clip.kind == concat_project::model::ClipKind::Text)
@@ -611,7 +729,7 @@ impl ExportPane {
             .into(),
             format: format!("{width} × {height} · {rate:.2} fps").into(),
             duration: {
-                let whole = studio.duration().max(0.0) as i32;
+                let whole = (self.timeline(studio).duration() as f32).max(0.0) as i32;
                 format!("{}:{:02}", whole / 60, whole % 60).into()
             },
             contents: if titles > 0 {
@@ -621,19 +739,71 @@ impl ExportPane {
             }
             .into(),
             resolution: self.resolution as i32,
+            custom_resolution: self.resolution >= self.ladder(studio).len(),
+            size_notice: {
+                let source = self.source_size(studio);
+                let output = self.size(studio);
+                let mut notices = Vec::new();
+                if output.0 > source.0 || output.1 > source.1 {
+                    notices.push(t("export.upscaleNotice"));
+                }
+                if self.resolution == self.own_rung(studio) && output != source {
+                    notices.push(tf(
+                        "export.evenSizeNotice",
+                        &[&source.0, &source.1, &output.0, &output.1],
+                    ));
+                }
+                notices.push(t("export.encoderSizeCheck"));
+                notices.join("\n").into()
+            },
+            suggested_long_edge: self
+                .source_size(studio)
+                .0
+                .max(self.source_size(studio).1)
+                .clamp(2, 1920) as f32,
+            size_suggestion: {
+                let source = self.source_size(studio);
+                let suggested = frame_for_long_edge(source, source.0.max(source.1).clamp(2, 1920));
+                if self.size(studio) != suggested {
+                    tf("export.useSuggestedSize", &[&suggested.0, &suggested.1]).into()
+                } else {
+                    "".into()
+                }
+            },
+            long_edge: self.long_edge as f32,
+            snapshot_version: self
+                .snapshot
+                .as_ref()
+                .map(|snapshot| tf("export.snapshotVersion", &[&snapshot.revision]))
+                .unwrap_or_default()
+                .into(),
+            snapshot_older: self.snapshot.as_ref().is_some_and(|snapshot| {
+                studio.session.as_ref().is_none_or(|session| {
+                    session.session_id() != snapshot.session_id
+                        || session.revision() != snapshot.revision
+                })
+            }),
             resolutions: {
-                let sizes: Vec<SharedString> = Self::ladder(studio)
+                let mut sizes: Vec<SharedString> = self
+                    .ladder(studio)
                     .iter()
                     .map(|rung| {
-                        let (width, height) = Self::frame_for(studio, *rung);
-                        format!("{width} × {height}").into()
+                        let (width, height) = self.frame_for(studio, *rung);
+                        let source = self.source_size(studio);
+                        if width > source.0 || height > source.1 {
+                            tf("export.enlargedSize", &[&width, &height]).into()
+                        } else {
+                            format!("{width} × {height}").into()
+                        }
                     })
                     .collect();
+                sizes.push(t("export.customResolution").into());
                 ModelRc::new(VecModel::from(sizes))
             },
             rate: self.rate as i32,
             rates: {
-                let names: Vec<SharedString> = Self::rates(studio)
+                let names: Vec<SharedString> = self
+                    .rates(studio)
                     .into_iter()
                     .map(|rate| Self::rate_name(rate).into())
                     .collect();
@@ -641,7 +811,7 @@ impl ExportPane {
             },
             rate_details: {
                 let mut details: Vec<SharedString> =
-                    vec![SharedString::new(); Self::rates(studio).len()];
+                    vec![SharedString::new(); self.rates(studio).len()];
                 details[0] = t("export.timelineSize").into();
                 ModelRc::new(VecModel::from(details))
             },
@@ -654,16 +824,16 @@ impl ExportPane {
             av1_encodable: writable(concat_media::VideoCodec::Av1),
             prores_encodable: writable(concat_media::VideoCodec::ProRes4444),
             vp9_alpha_encodable: writable(concat_media::VideoCodec::Vp9Alpha),
-            see_through: studio.timeline().video.canvas[3] < 255,
+            see_through: self.timeline(studio).video.canvas[3] < 255,
             keeps_alpha: self.codec(studio).keeps_alpha(),
             rate_controlled: self.codec(studio).rate_controlled(),
             ten_bit: self.ten_bit,
-            hdr_timeline: studio.timeline().video.color_space.is_hdr(),
+            hdr_timeline: self.timeline(studio).video.color_space.is_hdr(),
             hdr: self.hdr(studio),
             deep_available: concat_media::VideoCodec::ALL
                 .iter()
                 .any(|codec| codec.ten_bit_available()),
-            hdr_label: match studio.timeline().video.color_space {
+            hdr_label: match self.timeline(studio).video.color_space {
                 concat_project::model::ColorSpace::Pq => "HDR (PQ)",
                 _ => "HDR (HLG)",
             }
@@ -680,7 +850,7 @@ impl ExportPane {
                 }
                 if self.hdr(studio) {
                     words.push(
-                        match studio.timeline().video.color_space {
+                        match self.timeline(studio).video.color_space {
                             concat_project::model::ColorSpace::Pq => "PQ",
                             _ => "HLG",
                         }
@@ -717,6 +887,15 @@ impl ExportPane {
     }
 }
 
+/// Output-only scaling: no timeline rate, duration or caption coordinate is
+/// rewritten. The renderer paints at these dimensions from its captured edit.
+fn frame_for_long_edge((width, height): (u32, u32), edge: u32) -> (u32, u32) {
+    let edge = (edge / 2 * 2).clamp(2, 8192);
+    let scale = f64::from(edge) / f64::from(width.max(height).max(1));
+    let even = |side: u32| ((f64::from(side) * scale / 2.0).round() as u32 * 2).max(2);
+    (even(width), even(height))
+}
+
 /// Whether `codec` can be written here, as far as is known without
 /// opening an encoder on the window's thread, which on a phone is seconds
 /// of a window that does not answer. Until the start-up probe has found
@@ -748,6 +927,48 @@ fn file_name(typed: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leaving_a_project_retires_its_running_export_and_capture() {
+        let defaults = ExportPane::default();
+        let mut pane = ExportPane {
+            snapshot: Some(CapturedExport {
+                project: concat_project::Project::new(),
+                project_dir: std::path::PathBuf::from("old-project"),
+                session_id: 7,
+                revision: 11,
+            }),
+            generation: 41,
+            phase: ExportPhase::Running,
+            open: true,
+            progress: 0.7,
+            stage: "rendering".into(),
+            written: "old-project/output.mp4".into(),
+            started_at: Some(std::time::Instant::now()),
+            ..defaults
+        };
+        let retired_generation = pane.generation;
+        pane.retire_project();
+        assert_eq!(pane.phase, ExportPhase::Idle);
+        assert!(!pane.open);
+        assert!(pane.snapshot.is_none());
+        assert_eq!(pane.progress, 0.0);
+        assert!(pane.stage.is_empty() && pane.message.is_empty() && pane.written.is_empty());
+        assert!(pane.started_at.is_none());
+        assert_ne!(pane.generation, retired_generation);
+    }
+
+    #[test]
+    fn output_size_changes_only_a_legal_even_frame() {
+        for (source, edge, expected) in [
+            ((1920, 1080), 1280, (1280, 720)),
+            ((1080, 1920), 1280, (720, 1280)),
+            ((301, 201), 1920, (1920, 1282)),
+            ((8192, 2), 16384, (8192, 2)),
+        ] {
+            assert_eq!(frame_for_long_edge(source, edge), expected);
+        }
+    }
 
     /// A name is a file's or the export does not start: trimmed, never
     /// empty, never a path, and none of the characters Windows refuses.

@@ -13,12 +13,12 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::embedded::random_capability;
+use crate::i18n::{t, tf};
 
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(180);
 // Once a human has decided, the approved operation must be dispatched promptly.
 // This does not extend either the human deadline or the MCP execution timeout.
 const TICKET_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_APPROVAL_IDENTITIES: usize = 65_536;
 
 // A tool worker pushes changes to the native editor instead of waking an
 // unconditional 250ms status timer during manual editing or playback.
@@ -48,7 +48,7 @@ impl Mode {
             0 => Ok(Self::Ask),
             1 => Ok(Self::Assist),
             2 => Ok(Self::Full),
-            _ => Err("未知的智能体操作权限设置。".into()),
+            _ => Err(t("permission.unknownMode")),
         }
     }
 }
@@ -68,7 +68,7 @@ struct Pending {
     request_id: String,
     fingerprint: String,
     invocation: Invocation,
-    summary: String,
+    message: Value,
     affected_clip_ids: Vec<String>,
     deadline: Instant,
     decided: Option<bool>,
@@ -89,7 +89,7 @@ struct State {
     pending: Option<Pending>,
     grant: Option<Grant>,
     // Never evict and re-admit an old Pi invocation in this component. The
-    // bounded set fails closed once full; a fresh native generation starts anew.
+    // set retains replay identities without a product request-count limit.
     seen: BTreeSet<(u64, u64, String)>,
     // Diagnostic only, cleared after native admission of each new user task.
     // It cannot grant permission or cause an edit to be reported as completed.
@@ -112,13 +112,16 @@ impl NativeToolPermissions {
     /// Clear task-scoped diagnostics only once the native submission owner has
     /// verified that no earlier user task is still active.
     pub(crate) fn begin_task(&self) -> Result<(), String> {
-        let mut state = self.state.lock().map_err(|_| "工具授权状态不可用。")?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| t("permission.stateUnavailable"))?;
         if state.stopped {
-            return Err("当前会话已停止，不能开始新的剪辑审批。".into());
+            return Err(t("permission.stoppedApproval"));
         }
         expire_grant(&mut state);
         if state.pending.is_some() || state.grant.is_some() {
-            return Err("请先完成当前剪辑审批及执行，再开始新任务。".into());
+            return Err(t("permission.finishBeforeTask"));
         }
         state.last_refusal = None;
         state.execution_permit_consumed = false;
@@ -128,9 +131,12 @@ impl NativeToolPermissions {
     /// A later write attempt has its own outcome, including failures before
     /// authorization. Do not explain those failures using an older refusal.
     pub(crate) fn begin_approval_attempt(&self) -> Result<(), String> {
-        let mut state = self.state.lock().map_err(|_| "工具授权状态不可用。")?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| t("permission.stateUnavailable"))?;
         if state.stopped {
-            return Err("当前会话已停止，不能开始新的剪辑审批。".into());
+            return Err(t("permission.stoppedApproval"));
         }
         state.last_refusal = None;
         Ok(())
@@ -154,17 +160,26 @@ impl NativeToolPermissions {
     }
 
     pub(crate) fn view(&self) -> Result<PermissionView, String> {
-        let state = self.state.lock().map_err(|_| "工具授权状态不可用。")?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| t("permission.stateUnavailable"))?;
         Ok(PermissionView {
             mode: state.mode.index(),
             pending_id: state
                 .pending
                 .as_ref()
                 .map(|request| request.request_id.clone()),
-            pending_summary: state
-                .pending
-                .as_ref()
-                .map(|request| request.summary.clone()),
+            pending_summary: state.pending.as_ref().map(|request| {
+                describe_edit(&request.message)
+                    .map(|(_, description)| {
+                        tf(
+                            "permission.currentProject",
+                            &[&description, &&request.request_id[..12]],
+                        )
+                    })
+                    .unwrap_or_else(|_| t("agent.errorUnexpected"))
+            }),
             pending_clip_ids: state
                 .pending
                 .as_ref()
@@ -177,13 +192,16 @@ impl NativeToolPermissions {
     /// wire method or MCP argument can reach this setter.
     pub(crate) fn set_mode_from_ui(&self, index: i32) -> Result<(), String> {
         let new_mode = Mode::from_index(index)?;
-        let mut state = self.state.lock().map_err(|_| "工具授权状态不可用。")?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| t("permission.stateUnavailable"))?;
         if state.stopped {
-            return Err("当前会话已停止，不能修改权限。".into());
+            return Err(t("permission.stoppedMode"));
         }
         expire_grant(&mut state);
         if state.pending.is_some() || state.grant.is_some() {
-            return Err("请先完成当前剪辑审批及执行，再切换权限。".into());
+            return Err(t("permission.finishBeforeMode"));
         }
         let previous = state.mode;
         state.mode = new_mode;
@@ -199,20 +217,23 @@ impl NativeToolPermissions {
     /// The ID comes from the rendered native prompt, never from model JSON.
     /// A queued click for a previous prompt cannot decide a subsequent request.
     pub(crate) fn decide_from_ui(&self, request_id: &str, approve: bool) -> Result<(), String> {
-        let mut state = self.state.lock().map_err(|_| "工具授权状态不可用。")?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| t("permission.stateUnavailable"))?;
         if state.stopped {
-            return Err("当前会话已停止。".into());
+            return Err(t("permission.stopped"));
         }
-        let pending = state.pending.as_mut().ok_or("没有待批准的剪辑操作。")?;
+        let pending = state.pending.as_mut().ok_or(t("permission.noPending"))?;
         if pending.request_id != request_id {
-            return Err("该审批已失效，当前剪辑操作未获批准。".into());
+            return Err(t("permission.staleDecision"));
         }
         if pending.deadline <= Instant::now() {
             self.wake.notify_all();
-            return Err("本次剪辑审批已过期，工程未修改。".into());
+            return Err(t("permission.expiredDecision"));
         }
         if pending.decided.is_some() {
-            return Err("本次剪辑操作已经作出决定。".into());
+            return Err(t("permission.alreadyDecided"));
         }
         pending.decided = Some(approve);
         notify_native_ui();
@@ -280,28 +301,31 @@ impl NativeToolPermissions {
         let invocation = validated_invocation(invocation)?;
         let fingerprint = operation_fingerprint(message, invocation)?;
         let request_id = random_capability()?;
-        let mut state = self.state.lock().map_err(|_| "工具授权状态不可用。")?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| t("permission.stateUnavailable"))?;
         if state.stopped {
-            return Err("剪辑任务已停止。".into());
+            return Err(t("permission.taskStopped"));
         }
         expire_grant(&mut state);
         if state.pending.is_some() || state.grant.is_some() {
-            return Err("已有剪辑操作等待批准或执行。".into());
+            return Err(t("permission.alreadyPending"));
         }
         let key = (
             invocation.conversation_id,
             invocation.task_id,
             invocation.call_id.clone(),
         );
-        if state.seen.len() >= MAX_APPROVAL_IDENTITIES || !state.seen.insert(key) {
-            return Err("该工具调用已申请过审批或达到本会话审批上限，拒绝重复执行。".into());
+        if !state.seen.insert(key) {
+            return Err(t("permission.replayed"));
         }
         // Identity, ownership and project checks precede this preview. A
         // preview rejection has issued no ticket and cannot reach the editor;
         // retain that native fact across subsequent read-only model calls.
         // Do not classify admission, replay, revocation or execution failures
         // as a known no-write result.
-        let (safe_append_only, description) = match describe_edit(message) {
+        let (safe_append_only, _) = match describe_edit(message) {
             Ok(preview) => preview,
             Err(reason) => {
                 log::info!(
@@ -334,12 +358,11 @@ impl NativeToolPermissions {
             return mint_grant(&mut state, request_id, fingerprint, invocation);
         }
         let deadline = Instant::now() + timeout;
-        let summary = format!("当前工程：{}（编号 {}）", description, &request_id[..12]);
         state.pending = Some(Pending {
             request_id: request_id.clone(),
             fingerprint: fingerprint.clone(),
             invocation: invocation.clone(),
-            summary,
+            message: message.clone(),
             affected_clip_ids: affected_existing_clip_ids(message),
             deadline,
             decided: None,
@@ -357,7 +380,7 @@ impl NativeToolPermissions {
             if state.stopped {
                 state.pending = None;
                 notify_native_ui();
-                return Err("用户已停止剪辑工具操作。".into());
+                return Err(t("permission.userStopped"));
             }
             if let Some(granted) = state.pending.as_ref().and_then(|pending| pending.decided) {
                 state.pending = None;
@@ -365,7 +388,7 @@ impl NativeToolPermissions {
                 return if granted {
                     mint_grant(&mut state, request_id, fingerprint, invocation)
                 } else {
-                    let reason = "用户拒绝了本次剪辑操作，工程未修改。".to_owned();
+                    let reason = t("permission.userDenied").to_owned();
                     state.last_refusal = Some((invocation.clone(), reason.clone()));
                     Err(reason)
                 };
@@ -373,7 +396,7 @@ impl NativeToolPermissions {
             let remaining = state
                 .pending
                 .as_ref()
-                .ok_or("剪辑审批记录已失效。")?
+                .ok_or(t("permission.invalidRecord"))?
                 .deadline
                 .saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -386,14 +409,14 @@ impl NativeToolPermissions {
                     invocation.task_id,
                     invocation.call_id
                 );
-                let reason = "等待剪辑批准超时，工程未修改。".to_owned();
+                let reason = t("permission.timeout").to_owned();
                 state.last_refusal = Some((invocation.clone(), reason.clone()));
                 return Err(reason);
             }
             let (next, _) = self
                 .wake
                 .wait_timeout(state, remaining)
-                .map_err(|_| "等待剪辑批准时状态不可用。")?;
+                .map_err(|_| t("permission.waitUnavailable"))?;
             state = next;
         }
     }
@@ -407,17 +430,20 @@ impl NativeToolPermissions {
         ticket: &str,
     ) -> Result<(), String> {
         if !is_guarded_edit(message) {
-            return Err("审批凭证只能用于受保护剪辑工具。".into());
+            return Err(t("permission.onlyGuarded"));
         }
         let invocation = validated_invocation(invocation)?;
         let fingerprint = operation_fingerprint(message, invocation)?;
-        let mut state = self.state.lock().map_err(|_| "工具授权状态不可用。")?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| t("permission.stateUnavailable"))?;
         if state.stopped {
-            return Err("剪辑任务已停止。".into());
+            return Err(t("permission.taskStopped"));
         }
         // Burn a presented grant even on a mismatch. Changing parameters and
         // trying again must require a fresh user task, never reuse old consent.
-        let grant = state.grant.take().ok_or("剪辑审批凭证不存在或已使用。")?;
+        let grant = state.grant.take().ok_or(t("permission.missingTicket"))?;
         let valid = grant.ticket == ticket
             && grant.fingerprint == fingerprint
             && grant.invocation == *invocation
@@ -432,7 +458,7 @@ impl NativeToolPermissions {
             valid
         );
         if !valid {
-            return Err("剪辑审批已失效或与当前任务、工程、命令不符，工程未修改。".into());
+            return Err(t("permission.staleTicket"));
         }
         state.execution_permit_consumed = true;
         state.last_refusal = None;
@@ -471,14 +497,14 @@ fn is_guarded_edit(message: &Value) -> bool {
 }
 
 fn validated_invocation(invocation: Option<&Invocation>) -> Result<&Invocation, String> {
-    let invocation = invocation.ok_or("剪辑工具缺少原版智能体调用身份。")?;
+    let invocation = invocation.ok_or(t("permission.missingInvocation"))?;
     if invocation.conversation_id > 9_007_199_254_740_991
         || invocation.task_id > 9_007_199_254_740_991
         || invocation.call_id.is_empty()
         || invocation.call_id.len() > 512
         || invocation.call_id.chars().any(char::is_control)
     {
-        return Err("剪辑工具原版调用身份无效。".into());
+        return Err(t("permission.invalidInvocation"));
     }
     Ok(invocation)
 }
@@ -503,14 +529,14 @@ fn operation_fingerprint(message: &Value, invocation: &Invocation) -> Result<Str
     let arguments = message
         .pointer("/params/arguments")
         .filter(|value| value.is_object())
-        .ok_or("剪辑工具参数无法核对。")?;
+        .ok_or(t("permission.invalidArguments"))?;
     // JSON-RPC request IDs are allocated only after approval. The exact native
     // path/session/revision and command arguments remain part of this digest.
     let bound = json!({"name":"edit_apply_guarded", "arguments":canonical_json(arguments),
         "conversationId":invocation.conversation_id,"taskId":invocation.task_id,"callId":invocation.call_id});
     Ok(format!(
         "{:x}",
-        Sha256::digest(serde_json::to_vec(&bound).map_err(|_| "剪辑工具参数无法核对。")?)
+        Sha256::digest(serde_json::to_vec(&bound).map_err(|_| t("permission.invalidArguments"))?)
     ))
 }
 
@@ -562,9 +588,9 @@ fn approval_id(value: &Value, field: &str) -> Result<String, String> {
     let id = value
         .get(field)
         .and_then(Value::as_str)
-        .ok_or_else(|| format!("剪辑审批缺少 {field}，拒绝执行。"))?;
+        .ok_or_else(|| tf("permission.missingId", &[&field]))?;
     if id.is_empty() || id.chars().count() > 96 || id.chars().any(char::is_control) {
-        return Err(format!("剪辑审批的 {field} 无法安全显示，拒绝执行。"));
+        return Err(tf("permission.unsafeId", &[&field]));
     }
     Ok(id.to_owned())
 }
@@ -573,38 +599,38 @@ fn approval_time(value: &Value, field: &str) -> Result<f64, String> {
     let seconds = value
         .get(field)
         .and_then(Value::as_f64)
-        .ok_or_else(|| format!("剪辑审批缺少 {field} 时间，拒绝执行。"))?;
+        .ok_or_else(|| tf("permission.missingTime", &[&field]))?;
     if !seconds.is_finite() || seconds < 0.0 {
-        return Err(format!("剪辑审批的 {field} 时间无效，拒绝执行。"));
+        return Err(tf("permission.invalidTime", &[&field]));
     }
     Ok(seconds)
 }
 
 fn approval_text(value: &Value) -> Result<String, String> {
     let Some(body) = value.pointer("/style/content").and_then(Value::as_str) else {
-        return Ok("使用默认文字".to_owned());
+        return Ok(t("permission.defaultText").to_owned());
     };
     if body.chars().count() > 512 {
-        return Err("待添加的文字超过512字，无法在批准前完整预览；请拆分片段。".into());
+        return Err(t("permission.textTooLong"));
     }
     if body
         .chars()
         .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\r' | '\t'))
     {
-        return Err("待添加的文字包含不能安全显示的控制字符，拒绝执行。".into());
+        return Err(t("permission.unsafeText"));
     }
     let displayed = body
         .replace("\r\n", "↵")
         .replace(['\n', '\r'], "↵")
         .replace('\t', " ");
-    Ok(format!("文字「{displayed}」"))
+    Ok(tf("permission.text", &[&displayed]))
 }
 
 fn describe_one_edit(item: &Value) -> Result<Vec<String>, String> {
     let op = item
         .get("op")
         .and_then(Value::as_str)
-        .ok_or("剪辑命令没有有效操作类型。")?;
+        .ok_or(t("permission.invalidOperation"))?;
     match op {
         "addMediaClipExact" => {
             let media = approval_id(item, "mediaId")?;
@@ -613,11 +639,18 @@ fn describe_one_edit(item: &Value) -> Result<Vec<String>, String> {
             let source_start = approval_time(item, "sourceStart")?;
             let source_end = approval_time(item, "sourceEnd")?;
             if source_end <= source_start {
-                return Err("素材来源时间范围无效，拒绝执行。".into());
+                return Err(t("permission.invalidSourceTime"));
             }
-            Ok(vec![format!(
-                "添加素材 {media} → 轨道 {track}，时间 {start:.3}～{end:.3} 秒；素材取 {source_start:.3}～{source_end:.3} 秒",
-                end = start + source_end - source_start
+            Ok(vec![tf(
+                "permission.addMedia",
+                &[
+                    &media,
+                    &track,
+                    &format!("{start:.3}"),
+                    &format!("{:.3}", start + source_end - source_start),
+                    &format!("{source_start:.3}"),
+                    &format!("{source_end:.3}"),
+                ],
             )])
         }
         "addTextClip" => {
@@ -625,21 +658,25 @@ fn describe_one_edit(item: &Value) -> Result<Vec<String>, String> {
             let start = approval_time(item, "start")?;
             let duration = approval_time(item, "duration")?;
             if duration <= 0.0 {
-                return Err("文字片段时长无效，拒绝执行。".into());
+                return Err(t("permission.invalidTextTime"));
             }
-            Ok(vec![format!(
-                "添加文字 → 轨道 {track}，时间 {start:.3}～{end:.3} 秒；{}",
-                approval_text(item)?,
-                end = start + duration
+            Ok(vec![tf(
+                "permission.addText",
+                &[
+                    &track,
+                    &format!("{start:.3}"),
+                    &format!("{:.3}", start + duration),
+                    &approval_text(item)?,
+                ],
             )])
         }
         "moveClips" => {
             let moves = item
                 .get("moves")
                 .and_then(Value::as_array)
-                .ok_or("缺少片段移动列表。")?;
+                .ok_or(t("permission.missingMoves"))?;
             if moves.is_empty() {
-                return Err("片段移动列表为空，拒绝执行。".into());
+                return Err(t("permission.emptyMoves"));
             }
             moves
                 .iter()
@@ -647,34 +684,33 @@ fn describe_one_edit(item: &Value) -> Result<Vec<String>, String> {
                     let clip = approval_id(wanted, "clipId")?;
                     let track = approval_id(wanted, "trackId")?;
                     let start = approval_time(wanted, "start")?;
-                    Ok(format!(
-                        "移动片段 {clip} → 轨道 {track}，新起点 {start:.3} 秒"
+                    Ok(tf(
+                        "permission.move",
+                        &[&clip, &track, &format!("{start:.3}")],
                     ))
                 })
                 .collect()
         }
         "removeClips" => {
             if item.get("ripple").and_then(Value::as_bool).unwrap_or(false) {
-                return Err("自动剪辑不允许波纹删除，拒绝执行。".into());
+                return Err(t("permission.noRipple"));
             }
             let clips = item
                 .get("clipIds")
                 .and_then(Value::as_array)
-                .ok_or("缺少删除片段列表。")?;
+                .ok_or(t("permission.missingRemovals"))?;
             if clips.is_empty() {
-                return Err("删除片段列表为空，拒绝执行。".into());
+                return Err(t("permission.emptyRemovals"));
             }
             clips
                 .iter()
                 .map(|clip| {
-                    let id = clip.as_str().ok_or("删除片段编号无效。")?;
+                    let id = clip.as_str().ok_or(t("permission.invalidClipId"))?;
                     if id.is_empty() || id.chars().count() > 96 || id.chars().any(char::is_control)
                     {
-                        return Err("删除片段编号无法安全显示，拒绝执行。".into());
+                        return Err(t("permission.unsafeClipId"));
                     }
-                    Ok(format!(
-                        "删除片段 {id}（位置按当前工程核验；不移动其他片段）"
-                    ))
+                    Ok(tf("permission.remove", &[&id]))
                 })
                 .collect()
         }
@@ -683,65 +719,71 @@ fn describe_one_edit(item: &Value) -> Result<Vec<String>, String> {
             let patch = item
                 .get("patch")
                 .and_then(Value::as_object)
-                .ok_or("缺少片段属性修改内容。")?;
+                .ok_or(t("permission.missingPatch"))?;
             if patch.is_empty() {
-                return Err("片段属性修改为空，拒绝执行。".into());
+                return Err(t("permission.emptyPatch"));
             }
-            let details =
-                serde_json::to_string(patch).map_err(|_| "片段属性无法显示，拒绝执行。")?;
+            let details = serde_json::to_string(patch).map_err(|_| t("permission.invalidPatch"))?;
             if details.chars().count() > 2048 {
-                return Err("片段属性变更过长，无法在批准前完整预览；请拆分操作。".into());
+                return Err(t("permission.patchTooLong"));
             }
-            Ok(vec![format!(
-                "修改片段 {clip}（轨道与起点不变），具体属性：{details}"
-            )])
+            Ok(vec![tf("permission.patch", &[&clip, &details])])
         }
         "applySingleMainTemplate" => {
-            let plan = item.get("plan").ok_or("缺少主轨模板计划。")?;
+            let plan = item.get("plan").ok_or(t("permission.missingTemplate"))?;
             let base = approval_time(plan, "start")?;
-            let mut rows = vec![format!(
-                "在空时间线应用主轨模板，起点 {base:.3} 秒；按非空角色新建主视频、字幕、贴片、音乐、配音轨道"
-            )];
+            let mut rows = vec![tf("permission.template", &[&format!("{base:.3}")])];
             for (field, role, is_text) in [
-                ("videos", "主视频", false),
-                ("subtitles", "字幕", true),
-                ("overlays", "贴片文字", true),
-                ("music", "背景音乐", false),
-                ("voice", "配音", false),
+                ("videos", t("permission.roleVideo"), false),
+                ("subtitles", t("permission.roleSubtitles"), true),
+                ("overlays", t("permission.roleOverlay"), true),
+                ("music", t("permission.roleMusic"), false),
+                ("voice", t("permission.roleVoice"), false),
             ] {
                 let entries = plan
                     .get(field)
                     .and_then(Value::as_array)
-                    .ok_or_else(|| format!("模板缺少 {field} 列表。"))?;
+                    .ok_or_else(|| tf("permission.missingTemplateList", &[&field]))?;
                 for entry in entries {
                     let start = base + approval_time(entry, "start")?;
                     if is_text {
                         let duration = approval_time(entry, "duration")?;
                         if duration <= 0.0 || !(start + duration).is_finite() {
-                            return Err("模板文字片段时间范围无效，拒绝执行。".into());
+                            return Err(t("permission.invalidTemplateTextTime"));
                         }
-                        rows.push(format!(
-                            "{role} → 新轨道，时间 {start:.3}～{end:.3} 秒；{}",
-                            approval_text(entry)?,
-                            end = start + duration
+                        rows.push(tf(
+                            "permission.templateText",
+                            &[
+                                &role,
+                                &format!("{start:.3}"),
+                                &format!("{:.3}", start + duration),
+                                &approval_text(entry)?,
+                            ],
                         ));
                     } else {
                         let media = approval_id(entry, "mediaId")?;
                         let from = approval_time(entry, "sourceStart")?;
                         let to = approval_time(entry, "sourceEnd")?;
                         if to <= from || !(start + to - from).is_finite() {
-                            return Err("模板素材时间范围无效，拒绝执行。".into());
+                            return Err(t("permission.invalidTemplateMediaTime"));
                         }
-                        rows.push(format!(
-                            "{role}素材 {media} → 新轨道，时间 {start:.3}～{end:.3} 秒；取素材 {from:.3}～{to:.3} 秒",
-                            end = start + to - from
+                        rows.push(tf(
+                            "permission.templateMedia",
+                            &[
+                                &role,
+                                &media,
+                                &format!("{start:.3}"),
+                                &format!("{:.3}", start + to - from),
+                                &format!("{from:.3}"),
+                                &format!("{to:.3}"),
+                            ],
                         ));
                     }
                 }
             }
             Ok(rows)
         }
-        _ => Err("操作不在可安全预览的原生剪辑范围内，已拒绝授权。".into()),
+        _ => Err(t("permission.unsupportedOperation")),
     }
 }
 
@@ -752,18 +794,18 @@ fn describe_edit(message: &Value) -> Result<(bool, String), String> {
     let command = message
         .pointer("/params/arguments/command")
         .and_then(Value::as_object)
-        .ok_or("缺少结构化剪辑命令，未申请执行权限。")?;
+        .ok_or(t("permission.missingCommand"))?;
     let op = command
         .get("op")
         .and_then(Value::as_str)
-        .ok_or("剪辑命令没有有效操作类型。")?;
+        .ok_or(t("permission.invalidOperation"))?;
     let commands: Vec<&Value> = if op == "batch" {
         let items = command
             .get("commands")
             .and_then(Value::as_array)
-            .ok_or("批量剪辑命令无效。")?;
+            .ok_or(t("permission.invalidBatch"))?;
         if items.is_empty() || items.len() > 64 {
-            return Err("批量剪辑命令数量必须在1到64项之间。".into());
+            return Err(t("permission.batchSize"));
         }
         items.iter().collect()
     } else {
@@ -775,9 +817,9 @@ fn describe_edit(message: &Value) -> Result<(bool, String), String> {
         let kind = item
             .get("op")
             .and_then(Value::as_str)
-            .ok_or("剪辑批次中有缺少操作类型的命令。")?;
+            .ok_or(t("permission.missingBatchType"))?;
         if kind == "batch" {
-            return Err("不允许嵌套批量剪辑命令。".into());
+            return Err(t("permission.nestedBatch"));
         }
         if !matches!(kind, "addMediaClipExact" | "addTextClip") {
             safe = false;
@@ -786,20 +828,22 @@ fn describe_edit(message: &Value) -> Result<(bool, String), String> {
         // An approval is meaningful only when the whole intended edit can be
         // inspected. Never silently omit operations from a destructive plan.
         if preview.len() > 128 {
-            return Err("待批准的片段太多，无法完整预览；请拆分剪辑批次。".into());
+            return Err(t("permission.previewTooLong"));
         }
     }
     Ok((
         safe,
-        format!(
-            "本次共 {} 项原生剪辑操作，完整目标如下：\n{}\n执行前仍将核对当前工程、版本和轨道锁。",
-            commands.len(),
-            preview
-                .iter()
-                .enumerate()
-                .map(|(n, line)| format!("{}. {line}", n + 1))
-                .collect::<Vec<_>>()
-                .join("\n")
+        tf(
+            "permission.batch",
+            &[
+                &commands.len(),
+                &preview
+                    .iter()
+                    .enumerate()
+                    .map(|(n, line)| format!("{}. {line}", n + 1))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ],
         ),
     ))
 }
@@ -908,7 +952,63 @@ mod tests {
     }
 
     #[test]
+    fn complete_approval_preview_preserves_literal_placeholder_text() {
+        let _language = crate::i18n::language_lock();
+        let dirs =
+            concat_host::AppDirs::under(&std::env::temp_dir().join("bkcut-approval-interpolation"));
+        for language in ["en", "zh-Hans"] {
+            crate::i18n::select(language, &dirs);
+            let gate = Arc::new(NativeToolPermissions::default());
+            let mut request = frame("addTextClip");
+            let original_text = "Keep {1} and {0} exactly";
+            request["params"]["arguments"]["command"]["style"] = json!({"content":original_text});
+            let retained = request.clone();
+            let worker = Arc::clone(&gate);
+            let handle = thread::spawn(move || worker.authorize(&request, Some(&original())));
+            let id = wait_pending(&gate);
+            let view = gate.view().unwrap();
+            let preview = view.pending_summary.unwrap();
+            assert!(
+                preview.contains(original_text),
+                "the actual approval preview must preserve text exactly: {preview}"
+            );
+            assert!(
+                preview.contains(&id[..12]),
+                "the separate native request identifier must still render"
+            );
+            assert_eq!(
+                gate.state.lock().unwrap().pending.as_ref().unwrap().message,
+                retained
+            );
+            gate.decide_from_ui(&id, false).unwrap();
+            assert!(handle.join().unwrap().is_err());
+        }
+        crate::i18n::select("en", &dirs);
+    }
+
+    #[test]
+    fn unique_tool_call_is_not_blocked_by_historical_identity_count() {
+        let _language = crate::i18n::language_lock();
+        let gate = NativeToolPermissions::default();
+        gate.set_mode_from_ui(2).unwrap();
+        gate.state
+            .lock()
+            .unwrap()
+            .seen
+            .extend((0..70_000).map(|i| (9, 3, format!("prior-{i}"))));
+        let request = frame("addTextClip");
+        let current = invocation("beyond-old-count-limit");
+        let ticket = gate.authorize(&request, Some(&current)).unwrap().unwrap();
+        gate.consume(&request, Some(&current), &ticket).unwrap();
+        assert!(
+            gate.authorize(&request, Some(&current)).is_err(),
+            "an actual replay must still be rejected"
+        );
+    }
+
+    #[test]
     fn default_asks_per_operation_and_denial_blocks_execution() {
+        let _language = crate::i18n::language_lock();
         let gate = Arc::new(NativeToolPermissions::default());
         let worker = Arc::clone(&gate);
         let handle =
@@ -921,7 +1021,13 @@ mod tests {
                 .is_err()
         );
         gate.decide_from_ui(&approval, false).unwrap();
-        assert!(handle.join().unwrap().unwrap_err().contains("拒绝"));
+        assert!(
+            handle
+                .join()
+                .unwrap()
+                .unwrap_err()
+                .contains(&t("permission.userDenied"))
+        );
         assert!(gate.view().unwrap().pending_summary.is_none());
         assert!(
             gate.consume(&frame("addTextClip"), Some(&original()), "forged")
@@ -935,6 +1041,7 @@ mod tests {
 
     #[test]
     fn approval_grants_exactly_one_dispatch_without_rpc_id_binding() {
+        let _language = crate::i18n::language_lock();
         let gate = Arc::new(NativeToolPermissions::default());
         let worker = Arc::clone(&gate);
         let handle =
@@ -969,6 +1076,7 @@ mod tests {
 
     #[test]
     fn assisted_only_auto_grants_known_append_only_edits() {
+        let _language = crate::i18n::language_lock();
         let gate = Arc::new(NativeToolPermissions::default());
         gate.set_mode_from_ui(1).unwrap();
         let ticket = gate
@@ -992,6 +1100,7 @@ mod tests {
 
     #[test]
     fn full_access_requires_native_setting_and_cancel_revokes_pending() {
+        let _language = crate::i18n::language_lock();
         let gate = Arc::new(NativeToolPermissions::default());
         assert!(gate.set_mode_from_ui(42).is_err());
         gate.set_mode_from_ui(2).unwrap();
@@ -1008,7 +1117,13 @@ mod tests {
         });
         let approval = wait_pending(&gate);
         gate.cancel();
-        assert!(handle.join().unwrap().unwrap_err().contains("停止"));
+        assert!(
+            handle
+                .join()
+                .unwrap()
+                .unwrap_err()
+                .contains(&t("permission.userStopped"))
+        );
         assert!(gate.decide_from_ui(&approval, true).is_err());
         assert!(gate.set_mode_from_ui(2).is_err());
         assert!(gate.view().unwrap().pending_id.is_none());
@@ -1016,13 +1131,20 @@ mod tests {
 
     #[test]
     fn timeout_refuses_operation_and_late_ui_decision_cannot_approve_next_call() {
+        let _language = crate::i18n::language_lock();
         let gate = Arc::new(NativeToolPermissions::default());
         let worker = Arc::clone(&gate);
         let handle =
             thread::spawn(move || worker.authorize(&frame("addTextClip"), Some(&original())));
         let expired = wait_pending(&gate);
         expire_pending(&gate);
-        assert!(handle.join().unwrap().unwrap_err().contains("超时"));
+        assert!(
+            handle
+                .join()
+                .unwrap()
+                .unwrap_err()
+                .contains(&t("permission.timeout"))
+        );
         assert!(gate.view().unwrap().pending_id.is_none());
         let worker = Arc::clone(&gate);
         let handle = thread::spawn(move || {
@@ -1045,6 +1167,7 @@ mod tests {
 
     #[test]
     fn elapsed_approval_is_not_accepted_even_before_worker_processes_timeout() {
+        let _language = crate::i18n::language_lock();
         let gate = Arc::new(NativeToolPermissions::default());
         let worker = Arc::clone(&gate);
         let handle =
@@ -1060,7 +1183,13 @@ mod tests {
             .unwrap()
             .deadline = Instant::now();
         assert!(gate.decide_from_ui(&approval, true).is_err());
-        assert!(handle.join().unwrap().unwrap_err().contains("超时"));
+        assert!(
+            handle
+                .join()
+                .unwrap()
+                .unwrap_err()
+                .contains(&t("permission.timeout"))
+        );
         assert!(gate.view().unwrap().pending_id.is_none());
         assert!(
             gate.consume(&frame("addTextClip"), Some(&original()), "forged")
@@ -1070,6 +1199,7 @@ mod tests {
 
     #[test]
     fn ticket_is_bound_to_command_project_revision_and_complete_invocation() {
+        let _language = crate::i18n::language_lock();
         for changed in 0..7 {
             let gate = NativeToolPermissions::default();
             gate.set_mode_from_ui(1).unwrap();
@@ -1103,6 +1233,7 @@ mod tests {
 
     #[test]
     fn cancelled_or_expired_ticket_cannot_be_consumed_or_reauthorized() {
+        let _language = crate::i18n::language_lock();
         for cancel in [false, true] {
             let gate = NativeToolPermissions::default();
             gate.set_mode_from_ui(1).unwrap();
@@ -1128,6 +1259,7 @@ mod tests {
 
     #[test]
     fn same_command_in_new_call_requires_new_approval_and_read_tools_mint_no_ticket() {
+        let _language = crate::i18n::language_lock();
         let gate = Arc::new(NativeToolPermissions::default());
         let read = json!({"method":"tools/call","params":{"name":"timeline_read","arguments":{}}});
         assert_eq!(gate.authorize(&read, None).unwrap(), None);
@@ -1147,11 +1279,18 @@ mod tests {
         let approval = wait_pending(&gate);
         assert!(!handle.is_finished());
         gate.decide_from_ui(&approval, false).unwrap();
-        assert!(handle.join().unwrap().unwrap_err().contains("拒绝"));
+        assert!(
+            handle
+                .join()
+                .unwrap()
+                .unwrap_err()
+                .contains(&t("permission.userDenied"))
+        );
     }
 
     #[test]
     fn native_refusal_diagnostics_are_scoped_and_reset_between_tasks() {
+        let _language = crate::i18n::language_lock();
         let gate = Arc::new(NativeToolPermissions::default());
         gate.begin_task().unwrap();
         assert!(gate.last_refusal(original().conversation_id).is_none());
@@ -1196,6 +1335,7 @@ mod tests {
 
     #[test]
     fn a_later_failed_write_attempt_cannot_reuse_an_earlier_user_refusal() {
+        let _language = crate::i18n::language_lock();
         let gate = Arc::new(NativeToolPermissions::default());
         let worker = Arc::clone(&gate);
         let handle =
@@ -1243,6 +1383,7 @@ mod tests {
 
     #[test]
     fn preflight_rejections_are_zero_write_results_and_new_calls_still_require_approval() {
+        let _language = crate::i18n::language_lock();
         for invalid in [frame("unsupported-style-operation"), {
             let mut invalid = frame("addTextClip");
             invalid["params"]["arguments"]["command"]["duration"] = json!(0);
@@ -1271,7 +1412,7 @@ mod tests {
             assert!(
                 gate.authorize(&invalid, Some(&original()))
                     .unwrap_err()
-                    .contains("重复")
+                    .contains(&t("permission.replayed"))
             );
             assert!(gate.last_refusal(9).is_none());
             gate.begin_task().unwrap();
@@ -1295,6 +1436,7 @@ mod tests {
 
     #[test]
     fn a_consumed_execution_permit_blocks_later_zero_write_claims_until_a_new_task() {
+        let _language = crate::i18n::language_lock();
         let gate = Arc::new(NativeToolPermissions::default());
         gate.begin_task().unwrap();
         gate.set_mode_from_ui(1).unwrap();
@@ -1336,6 +1478,7 @@ mod tests {
 
     #[test]
     fn a_preflight_rejection_never_overrides_identity_failure_or_cancellation() {
+        let _language = crate::i18n::language_lock();
         let gate = NativeToolPermissions::default();
         assert!(
             gate.authorize(&frame("unsupported"), Some(&original()))
@@ -1360,6 +1503,7 @@ mod tests {
 
     #[test]
     fn approval_preview_shows_exact_targets_and_time_ranges() {
+        let _language = crate::i18n::language_lock();
         let mut request = frame("addMediaClipExact");
         request["params"]["arguments"]["command"] = serde_json::json!({
             "op":"batch","commands":[
@@ -1376,7 +1520,8 @@ mod tests {
         for target in [
             "m7",
             "video-1",
-            "2.250～5.750",
+            "2.250",
+            "5.750",
             "text-1",
             "重要字幕",
             "c9",
@@ -1394,6 +1539,7 @@ mod tests {
 
     #[test]
     fn approval_refuses_undisplayable_targets_and_unknown_operations() {
+        let _language = crate::i18n::language_lock();
         let mut request = frame("addMediaClipExact");
         request["params"]["arguments"]["command"]["trackId"] =
             Value::String("t1\n悄悄追加删除".into());
@@ -1408,6 +1554,7 @@ mod tests {
 
     #[test]
     fn malformed_batch_and_missing_identity_fail_closed() {
+        let _language = crate::i18n::language_lock();
         let gate = NativeToolPermissions::default();
         let malformed = serde_json::json!({"method":"tools/call","params":{
             "name":"edit_apply_guarded","arguments":{"command":{"op":"batch","commands":[]}}

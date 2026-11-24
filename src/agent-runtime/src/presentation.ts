@@ -2,13 +2,15 @@
 
 /** A bounded display projection of original Pi records. It never fabricates
  * assistant text, success, prices, task state, or a second durable transcript. */
+import { taskLanguages } from "./languages.ts";
+
 export function conversationPresentation(value: unknown): {
-  messages: { role: "user" | "assistant" | "tool"; text: string }[];
+  messages: { role: "user" | "assistant" | "tool" | "compaction"; text: string }[];
   partialText: string;
   busy: boolean;
 } {
   const view = object(value);
-  const messages: { role: "user" | "assistant" | "tool"; text: string }[] = [];
+  const messages: { role: "user" | "assistant" | "tool" | "compaction"; text: string }[] = [];
   let remaining = 128 * 1024;
   const entries = Array.isArray(view.entries) ? view.entries : [];
   // Keep the newest messages in a bounded native bridge frame. Full entries
@@ -20,8 +22,12 @@ export function conversationPresentation(value: unknown): {
     const displayText = nativeUserDisplayText(record, models);
     for (const message of models.slice().reverse()) {
       const item = object(message);
-      const role = item.role === "toolResult" ? "tool" : item.role;
-      if (role !== "user" && role !== "assistant" && role !== "tool") continue;
+      const modelRole = item.role === "toolResult" ? "tool" : item.role;
+      if (modelRole !== "user" && modelRole !== "assistant" && modelRole !== "tool") continue;
+      // Original Pi encodes its compaction summary as a user model message.
+      // The stable entry kind identifies the system display; neither its
+      // wrapper text nor the model payload is rewritten or reinterpreted.
+      const role = record.kind === "pi.compaction" ? "compaction" : modelRole;
       const text = (role === "user" && displayText !== undefined ? displayText : textContent(item.content))
         .slice(0, Math.min(32768, remaining));
       if (text) { messages.unshift({ role, text }); remaining -= text.length; }
@@ -44,10 +50,15 @@ function nativeUserDisplayText(entry: Record<string, unknown>, models: unknown[]
   if (entry.kind !== "bk-cat.user" || models.length !== 1 || object(models[0]).role !== "user") return undefined;
   const data = object(entry.data);
   const keys = Object.keys(data);
-  if (keys.length !== 2 || !keys.includes("schemaVersion") || !keys.includes("text")
-    || data.schemaVersion !== 1 || typeof data.text !== "string"
+  const legacy = data.schemaVersion === 1 && keys.length === 2;
+  const current = data.schemaVersion === 2 && keys.length === 3 && keys.includes("languages");
+  if ((!legacy && !current) || !keys.includes("schemaVersion") || !keys.includes("text")
+    || typeof data.text !== "string"
     || !data.text.trim() || data.text.length > 256 * 1024
     || new TextEncoder().encode(data.text).byteLength > 256 * 1024) return undefined;
+  if (current) {
+    try { taskLanguages(data.languages); } catch { return undefined; }
+  }
   return data.text;
 }
 

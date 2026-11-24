@@ -65,6 +65,8 @@ export component Select inherits Rectangle {
     accessible-action-default => { root.reveal(); }
 
     callback changed(index: int);
+    /// User intent only; no callbacks from layout, polling, or selection refresh.
+    callback opened();
 
     property <bool> ring;
     property <length> row-h: root.stacked-details ? 48px : 26px;
@@ -164,6 +166,7 @@ export component Select inherits Rectangle {
         root.content-y = 0px;
         root.reveal-row(root.active);
         list.show();
+        root.opened();
     }
 
     fs := FocusScope {

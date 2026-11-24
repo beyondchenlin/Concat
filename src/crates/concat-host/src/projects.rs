@@ -19,6 +19,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+pub mod drafts;
+pub use drafts::create_draft;
 mod save_identity;
 pub use save_identity::SaveAuthority;
 pub(crate) use save_identity::read_for_session;
@@ -598,6 +600,7 @@ pub struct Recent {
 pub fn recents(config: &Path) -> Vec<Recent> {
     read_recents(config)
         .into_iter()
+        .filter(|info| !drafts::hidden_from_recents(&info.path))
         .map(|info| {
             let manifest = manifest_path(Path::new(&info.path));
             let meta = std::fs::metadata(&manifest)

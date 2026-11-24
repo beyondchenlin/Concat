@@ -16,13 +16,15 @@ export interface ModelConfiguration {
   readonly credentials: CredentialStore;
   readonly native?: NativeModelConfiguration;
   readonly pricingKnown?: false;
+  readonly contextKnown?: boolean;
+  readonly contextSource?: string;
 }
 
 /**
  * Keep Pi's original model resolution/streaming. Only admission, transport
  * injection and credential scope are host policy. No model loop is added.
  */
-export function nativeModels(
+function snapshotModels(
   configuration: ModelConfiguration, ports: NativePorts, gate: ExecutionGate, lease: OwnerLease,
 ): Models {
   const providerIds = new Set(configuration.providers.map((provider) => provider.id));
@@ -117,6 +119,40 @@ export function nativeModels(
         return Reflect.apply(value, target, args);
       };
       return () => { throw new RuntimeRefused("model configuration or refresh belongs to native settings"); };
+    },
+  });
+}
+
+/** Keep the public Models object stable while native submission swaps a task
+ * configuration. Each original registry and each async request retains the
+ * immutable configuration that created it; it never reads the next task's key
+ * scope or limits after an await. No provider discovery or scheduler is added.
+ */
+export function nativeModels(
+  configuration: ModelConfiguration | (() => ModelConfiguration),
+  ports: NativePorts, gate: ExecutionGate, lease: OwnerLease,
+): Models {
+  if (typeof configuration !== "function") return snapshotModels(configuration, ports, gate, lease);
+  let current: ModelConfiguration | undefined;
+  let registry: Models | undefined;
+  const resolve = (): Models => {
+    const selected = configuration();
+    if (!registry || selected !== current) {
+      const replacement = snapshotModels(selected, ports, gate, lease);
+      current = selected;
+      registry = replacement;
+    }
+    return registry;
+  };
+  return new Proxy({} as Models, {
+    get(_target, property) {
+      const selected = resolve();
+      const value = Reflect.get(selected, property);
+      if (typeof value !== "function") return value;
+      return (...args: unknown[]) => {
+        const captured = resolve();
+        return Reflect.apply(Reflect.get(captured, property), captured, args);
+      };
     },
   });
 }

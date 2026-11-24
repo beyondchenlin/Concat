@@ -3094,7 +3094,7 @@ impl Studio {
         }
         // The words first, so everything published from here on is in
         // the remembered language.
-        i18n::select(prefs.locale.as_deref().unwrap_or(i18n::ENGLISH), &host.dirs);
+        i18n::select(i18n::startup_locale(prefs.locale.as_deref()), &host.dirs);
         let languages = i18n::languages(&host.dirs);
         let recents = projects::recents(&host.dirs.config);
         let text_presets = presets::all(&host.dirs);

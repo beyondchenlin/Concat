@@ -10,7 +10,46 @@ package app.concat.editor;
 public final class BKCatRuntimePolicy {
     public static final String ORIGIN = "https://bk-cat.invalid";
     public static final String DOCUMENT = ORIGIN + "/index.html";
-    public static final int MAX_MESSAGE_CHARS = 4 * 1024 * 1024;
+    // Keep in sync with concat-agent::transport. These are UTF-8 byte bounds,
+    // with the existing character precheck retained before encoding.
+    public static final int MAX_MESSAGE_CHARS = 2 * (16 * 1024 * 1024) + 64 * 1024;
+    public static final int MAX_QUEUED_MESSAGE_BYTES = 128 * 1024 * 1024;
+
+    public static int messageBytes(String message) {
+        if (message == null || message.length() > MAX_MESSAGE_CHARS) return -1;
+        int bytes = message.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        return bytes <= MAX_MESSAGE_CHARS ? bytes : -1;
+    }
+
+    /** Bounded queued data, not a lifetime message count or model allowance. */
+    public static final class MessageBudget {
+        private final int limit;
+        private int used;
+        public MessageBudget(int limit) {
+            if (limit < 0) throw new IllegalArgumentException("Negative queue capacity");
+            this.limit = limit;
+        }
+        public synchronized Reservation reserve(int bytes) {
+            if (bytes < 0 || bytes > limit - used) return null;
+            used += bytes;
+            return new Reservation(this, bytes);
+        }
+        private synchronized void release(int bytes) { used -= bytes; }
+    }
+
+    /** Release on actual delivery, stale-host rejection or UI-post failure. */
+    public static final class Reservation implements AutoCloseable {
+        private final MessageBudget budget;
+        private final int bytes;
+        private boolean closed;
+        private Reservation(MessageBudget budget, int bytes) {
+            this.budget = budget;
+            this.bytes = bytes;
+        }
+        @Override public synchronized void close() {
+            if (!closed) { closed = true; budget.release(bytes); }
+        }
+    }
 
     private boolean active = true;
     private boolean documentStarted = false;
@@ -38,9 +77,7 @@ public final class BKCatRuntimePolicy {
     /** Rechecked on the Android UI thread just before entering native code. */
     public synchronized boolean canMessage(String url, String message) {
         return active && documentStarted && DOCUMENT.equals(url)
-                && message != null && message.length() <= MAX_MESSAGE_CHARS
-                && message.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
-                        <= MAX_MESSAGE_CHARS;
+                && messageBytes(message) >= 0;
     }
 
     public synchronized boolean active() {

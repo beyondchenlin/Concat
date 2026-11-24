@@ -632,13 +632,13 @@ pub fn select_backend(
 pub fn report_startup_failure(error: &str) {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        let mut description = format!("Concat could not start.\n\n{error}");
+        let mut description = format!("{}\n\n{error}", crate::i18n::t("app.startupFailed"));
         if let Some(path) = concat_host::logs::current() {
-            description.push_str(&format!("\n\nLog: {}", path.display()));
+            description.push_str(&format!("\n\n{}", path.display()));
         }
         rfd::MessageDialog::new()
             .set_level(rfd::MessageLevel::Error)
-            .set_title("Concat")
+            .set_title("BK CUT")
             .set_description(description)
             .set_buttons(rfd::MessageButtons::Ok)
             .show();
@@ -816,12 +816,35 @@ fn existing_folder(start: &str) -> Option<&std::path::Path> {
         .find(|folder| folder.is_dir())
 }
 
+mod file_pick;
+pub use file_pick::PickedFiles;
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub use file_pick::{PickProgress, PickTransfer};
+
+/// Cancel a selection or its not-yet-accepted persistent copies. Parsing has
+/// its own ImportJob and is retired by the same visible cancellation action.
+pub(crate) fn cancel_file_pick() -> bool {
+    file_pick::cancel_active()
+}
+
+pub(crate) fn pick_error_message(error: &str) -> String {
+    if error == "import.cancelled" {
+        crate::i18n::t(error)
+    } else {
+        crate::i18n::tf(
+            "mediaBin.copyFailed",
+            &[&crate::i18n::t("lib.importMedia"), &error],
+        )
+    }
+}
+
 /// What a phone does when asked for files: shows the system's picker for
 /// the kinds asked for (see [`PickKinds`]) and calls back, later, with what
 /// was chosen - an empty list for nothing. Installed by the phone's own
 /// crate before the window runs; see [`install_file_picker`].
 #[cfg(any(target_os = "android", target_os = "ios"))]
-pub type FilePicker = Box<dyn Fn(PickKinds, Box<dyn FnOnce(Vec<PathBuf>) + Send>) + Send + Sync>;
+pub type FilePicker =
+    Box<dyn Fn(PickKinds, PickTransfer, Box<dyn FnOnce(Vec<PathBuf>) + Send>) + Send + Sync>;
 
 /// What a phone's picker is asked to offer, from the desktop dialog's
 /// list of extensions: media - some of video, sound and pictures - which
@@ -1165,23 +1188,42 @@ pub fn publish_document(
 pub fn pick_files_async(
     title: &str,
     filter: Option<(&str, &[&str])>,
-    on_picked: impl FnOnce(Vec<PathBuf>) + Send + 'static,
+    on_picked: impl FnOnce(PickedFiles) + Send + 'static,
 ) {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         if let Some(paths) = pick_files(title, filter) {
-            on_picked(paths);
+            on_picked(PickedFiles::new(paths, None));
         }
     }
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {
         let _ = title;
         let kinds = PickKinds::of(filter.map(|(_, extensions)| extensions));
+        let job = crate::panes::import_progress::ImportJob::reserved();
+        let report = job.clone();
+        let transfer = PickTransfer::new(
+            move |progress| report.copying(progress),
+            move |_| {
+                // The copy progress ends for both terminal outcomes. Marking
+                // this display job cancelled also fences queued late updates.
+                job.cancel();
+            },
+        );
+        file_pick::activate(&transfer);
         match FILE_PICKER.get() {
-            Some(picker) => picker(kinds, Box::new(on_picked)),
-            None => log::warn!(
-                "import: wanted the system's file picker and this platform has none yet; nothing was picked"
-            ),
+            Some(picker) => {
+                let result = transfer.clone();
+                picker(
+                    kinds,
+                    transfer,
+                    Box::new(move |paths| on_picked(PickedFiles::new(paths, Some(result)))),
+                );
+            }
+            None => {
+                log::warn!("import: the platform has no file picker; nothing was picked");
+                on_picked(PickedFiles::new(Vec::new(), Some(transfer)));
+            }
         }
     }
 }

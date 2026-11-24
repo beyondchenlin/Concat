@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { I18n } from "../i18n.slint";
 import { Theme } from "../theme/theme.slint";
 import { Glyph } from "../icons.slint";
 import { IconButton } from "../primitives/panel.slint";
@@ -42,8 +43,8 @@ export component PhoneAgentLauncher inherits Rectangle {
     border-color: root.ring ? Theme.accent : Theme.line-strong;
 
     accessible-role: button;
-    accessible-label: "打开智能助手";
-    accessible-description: "点按打开，拖动可调整位置";
+    accessible-label: I18n.t("agent.phoneOpen");
+    accessible-description: I18n.t("agent.phoneMove");
     accessible-action-default => { root.clicked(); }
 
     function finish-drag(cancelled: bool) {
@@ -254,7 +255,7 @@ export component PhoneAgentSheet inherits Rectangle {
             width: parent.width;
             height: 64px;
             accessible-role: button;
-            accessible-label: root.level == 2 ? "缩回半屏智能助手" : "展开全屏智能助手";
+            accessible-label: root.level == 2 ? I18n.t("agent.phoneHalf") : I18n.t("agent.phoneFull");
             accessible-action-default => { root.toggle-height(); }
 
             handle-focus := FocusScope {
@@ -306,7 +307,7 @@ export component PhoneAgentSheet inherits Rectangle {
                 height: 44px;
                 spacing: 2px;
                 Text {
-                    text: AgentUi.phone-script ? "文案" : "智能助手";
+                    text: AgentUi.phone-script ? I18n.t("script.title") : I18n.t("agent.assistant");
                     color: Theme.fg;
                     font-size: Theme.fs-lg;
                     font-weight: Theme.weight-title;
@@ -319,8 +320,8 @@ export component PhoneAgentSheet inherits Rectangle {
                     width: 44px;
                     min-height: 44px;
                     max-height: 44px;
-                    text: AgentUi.phone-script ? "对话" : "文案";
-                    label: AgentUi.phone-script ? "返回智能对话" : "打开文案工作区";
+                    text: AgentUi.phone-script ? I18n.t("agent.chat") : I18n.t("script.title");
+                    label: AgentUi.phone-script ? I18n.t("agent.phoneChat") : I18n.t("script.openWorkspace");
                     clicked => {
                         AgentUi.phone-script = !AgentUi.phone-script;
                         if AgentUi.phone-script { ScriptUi.open-requested(); }
@@ -332,7 +333,7 @@ export component PhoneAgentSheet inherits Rectangle {
                     min-height: 44px;
                     max-height: 44px;
                     glyph: Glyph.settings;
-                    label: "模型设置";
+                    label: I18n.t("agent.modelSettings");
                     enabled: !AgentSettingsUi.busy;
                     clicked => { AgentSettingsUi.open-requested(); }
                 }
@@ -342,7 +343,7 @@ export component PhoneAgentSheet inherits Rectangle {
                     min-height: 44px;
                     max-height: 44px;
                     glyph: Glyph.chevron-down;
-                    label: "收起智能助手";
+                    label: I18n.t("agent.collapseAssistant");
                     clicked => { root.collapse(); }
                 }
             }

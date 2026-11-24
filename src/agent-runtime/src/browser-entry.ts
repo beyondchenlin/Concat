@@ -106,9 +106,13 @@ export function attachNativeController(library: RuntimeLibrary, bridge: NativeMe
         return runtime.start();
       }
       case "runtime.inspect": return requireRuntime().inspect();
-      case "runtime.confirmRecovery": return requireRuntime().confirmRecovery(payload.approval as RecoveryApproval);
+      case "runtime.confirmRecovery": {
+        const result = await requireRuntime().confirmRecovery(payload.approval as RecoveryApproval);
+        if (result !== undefined && "resumed" in result && result.resumed === true) activeTask = result.taskId;
+        return result;
+      }
       case "runtime.dispatch": {
-        if (activeTask || payload.action === "nativeSubmit" || payload.action === "nativeWait") {
+        if (activeTask || payload.action === "nativeSubmit" || payload.action === "nativeResume" || payload.action === "nativeWait") {
           throw new library.RuntimeRefused("native task commands cannot bypass explicit submission");
         }
         return requireRuntime().dispatch(payload.action as SchedulingAction, payload.arguments);
@@ -138,18 +142,32 @@ export function attachNativeController(library: RuntimeLibrary, bridge: NativeMe
       || typeof envelope.payload !== "object" || Array.isArray(envelope.payload)) return;
     const payload = envelope.payload as Record<string, unknown>;
     if (typeof payload.method !== "string" || !payload.method.startsWith("runtime.")) return;
-    // Replayed commands can never start a second submission or repeat a
-    // confirmation. On exhaustion retain all tombstones and fail closed.
-    if (accepted.has(envelope.id) || (accepted.size >= 4096 && payload.method !== "runtime.stop")) {
-      reply(envelope.id, null, new library.RuntimeRefused("runtime command was repeated or its admission limit was reached"));
-      if (accepted.size >= 4096) void runtime?.stop().catch(() => {});
+    // Retain every tombstone; the lifetime request count is not a product
+    // execution limit. Native frame/concurrency bounds remain independent.
+    if (accepted.has(envelope.id)) {
+      reply(envelope.id, null, new library.RuntimeRefused("runtime command was repeated"));
       return;
     }
-    if (accepted.size < 4096) accepted.add(envelope.id);
+    accepted.add(envelope.id);
     const id = envelope.id;
     void command(payload).then((result) => {
       reply(id, result); phase();
       if (payload.method === "runtime.submit") void complete(result);
+      else if (payload.method === "runtime.confirmRecovery" && result && typeof result === "object") {
+        if ("resumed" in result && result.resumed === true) {
+          const resumed = result as { resumed:true; taskId:string; conversationId:number; submissionId:number };
+          if (!disposed) bridge.postMessage(JSON.stringify({channel:library.NATIVE_CHANNEL, event:"runtime.resumed",
+            taskId:resumed.taskId, conversationId:resumed.conversationId, submissionId:resumed.submissionId}));
+          void complete(result);
+        } else if ("reviewed" in result && result.reviewed === true) {
+          const reviewed = result as {reviewed:true;remainingOtherOperations:number};
+          if (!disposed) bridge.postMessage(JSON.stringify({channel:library.NATIVE_CHANNEL,event:"runtime.reviewed",
+            remainingOtherOperations:reviewed.remainingOtherOperations}));
+          // This owner has written only the acknowledgement. It must retire
+          // before another project's immutable facts can be independently read.
+          void runtime?.stop().catch(()=>{}).finally(phase);
+        }
+      }
     }, (error: unknown) => { reply(id, null, error); phase(); });
     phase();
   };

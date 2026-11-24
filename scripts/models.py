@@ -29,6 +29,7 @@ except ModuleNotFoundError:
     except ModuleNotFoundError:
         tomllib = None
 import urllib.request
+import urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "models" / "manifest.toml"
@@ -37,6 +38,7 @@ CRATES = ROOT / "src" / "crates"
 # The repository the mirror lives on, and the engine constant that must
 # agree with this file about which release holds it.
 REPO = "jub0t/Concat"
+PRODUCT_REPO = "beyondchenlin/Concat"
 HOST_MODELS = CRATES / "concat-host" / "src" / "models.rs"
 
 # Where each family's table lives in the engine, for --check.
@@ -51,22 +53,22 @@ TABLES = {
 # version to fill in. Installers and binaries, never an archive of a
 # folder - a person downloads the thing they run.
 BUNDLES = [
-    ("macos", "arm64", "dmg", "Concat-{v}-macos-arm64.dmg"),
-    ("macos", "x86_64", "dmg", "Concat-{v}-macos-x86_64.dmg"),
-    ("linux", "x86_64", "deb", "Concat-{v}-linux-x86_64.deb"),
-    ("linux", "x86_64", "rpm", "Concat-{v}-linux-x86_64.rpm"),
-    ("linux", "x86_64", "appimage", "Concat-{v}-x86_64.AppImage"),
-    ("linux", "x86_64", "pacman", "Concat-{v}-linux-x86_64.pkg.tar.zst"),
-    ("linux", "aarch64", "deb", "Concat-{v}-linux-aarch64.deb"),
-    ("linux", "aarch64", "rpm", "Concat-{v}-linux-aarch64.rpm"),
-    ("linux", "aarch64", "appimage", "Concat-{v}-aarch64.AppImage"),
-    ("linux", "aarch64", "pacman", "Concat-{v}-linux-aarch64.pkg.tar.zst"),
-    ("windows", "x86_64", "setup", "Concat-{v}-windows-x86_64-setup.exe"),
-    ("windows", "x86_64", "msi", "Concat-{v}-windows-x86_64.msi"),
-    ("windows", "aarch64", "setup", "Concat-{v}-windows-aarch64-setup.exe"),
-    ("windows", "aarch64", "msi", "Concat-{v}-windows-aarch64.msi"),
-    ("android", "arm64", "apk", "Concat-{v}-android-arm64.apk"),
-    ("ios", "arm64", "ipa", "Concat-{v}-ios-arm64.ipa"),
+    ("macos", "arm64", "dmg", "BK CUT-{v}-macos-arm64.dmg"),
+    ("macos", "x86_64", "dmg", "BK CUT-{v}-macos-x86_64.dmg"),
+    ("linux", "x86_64", "deb", "BK CUT-{v}-linux-x86_64.deb"),
+    ("linux", "x86_64", "rpm", "BK CUT-{v}-linux-x86_64.rpm"),
+    ("linux", "x86_64", "appimage", "BK CUT-{v}-x86_64.AppImage"),
+    ("linux", "x86_64", "pacman", "BK CUT-{v}-linux-x86_64.pkg.tar.zst"),
+    ("linux", "aarch64", "deb", "BK CUT-{v}-linux-aarch64.deb"),
+    ("linux", "aarch64", "rpm", "BK CUT-{v}-linux-aarch64.rpm"),
+    ("linux", "aarch64", "appimage", "BK CUT-{v}-aarch64.AppImage"),
+    ("linux", "aarch64", "pacman", "BK CUT-{v}-linux-aarch64.pkg.tar.zst"),
+    ("windows", "x86_64", "setup", "BK CUT-{v}-windows-x86_64-setup.exe"),
+    ("windows", "x86_64", "msi", "BK CUT-{v}-windows-x86_64.msi"),
+    ("windows", "aarch64", "setup", "BK CUT-{v}-windows-aarch64-setup.exe"),
+    ("windows", "aarch64", "msi", "BK CUT-{v}-windows-aarch64.msi"),
+    ("android", "arm64", "apk", "BK CUT-{v}-android-arm64.apk"),
+    ("ios", "arm64", "ipa", "BK CUT-{v}-ios-arm64.ipa"),
 ]
 
 
@@ -187,6 +189,21 @@ def check() -> int:
         bad(f"{HOST_MODELS.relative_to(ROOT)} does not name the release {release!r}")
     if f'"{REPO}"' not in source:
         bad(f"{HOST_MODELS.relative_to(ROOT)} does not name the repository {REPO!r}")
+
+    # Keep every explicit engine mapping identical to release metadata.
+    # A new mirror must pin an observed commit and preserve the model bytes.
+    ms_body = re.search(r"const MODELSCOPE_SOURCES.*?= &\[(.*?)\n\];", source, re.S)
+    ms_pairs = re.findall(r'\(\s*"([^"]+)",\s*"([^"]+)",?\s*\)', ms_body.group(1)) if ms_body else []
+    ms_rows = {m["file"]: m["modelscope"] for m in models if m.get("modelscope")}
+    if dict(ms_pairs) != ms_rows or len(dict(ms_pairs)) != len(ms_pairs):
+        bad("ModelScope manifest rows and the engine's verified sources differ")
+    for file, url in ms_rows.items():
+        if not re.fullmatch(
+            r"https://modelscope\.cn/api/v1/models/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/"
+            r"repo\?Revision=[0-9a-f]{40}&FilePath=[A-Za-z0-9._%/-]+", url
+        ):
+            bad(f"{file!r} has a ModelScope URL without a pinned repository commit")
+    print(f"{len(ms_rows)} of {len(models)} models have verified, pinned ModelScope sources")
 
     # Every model this table carries must be one the engine offers, with the
     # same digest: the table is what the mirror is filled from, the engine's
@@ -334,7 +351,7 @@ def release_manifest(version: str, tag: str, bundles: pathlib.Path | None) -> di
         file = stem.format(v=version)
         entry = {
             "file": file,
-            "url": asset_url(tag, file),
+            "url": f"https://github.com/{PRODUCT_REPO}/releases/download/{tag}/{urllib.parse.quote(file, safe='')}",
         }
         if bundles is not None:
             path = bundles / file
@@ -357,12 +374,14 @@ def release_manifest(version: str, tag: str, bundles: pathlib.Path | None) -> di
             "licence": model["licence"],
             "url": asset_url(release, model["file"]),
             "upstream": model["upstream"],
+            "modelscope": model.get("modelscope"),
             # Every place the file can be fetched from, best first: the
             # app's own order, for anything that reads this instead of the
             # app. hf-mirror.com carries whatever Hugging Face does.
             "sources": [
                 url
                 for url in [
+                    model.get("modelscope"),
                     asset_url(release, model["file"]),
                     model["upstream"],
                     hf_mirror(model["upstream"]),
@@ -374,13 +393,67 @@ def release_manifest(version: str, tag: str, bundles: pathlib.Path | None) -> di
     return {
         # 2: a target holds one row per kind of file, not one file.
         "schema": 2,
-        "product": "Concat",
+        "product": "BK CUT",
         "version": version,
         "tag": tag,
         "models_release": release,
         "binaries": binaries,
         "models": models,
     }
+
+
+def verify_release_assets(manifest: dict, release: dict, asset_pages: list) -> int:
+    """Refuse a draft whose uploaded asset names no longer match its manifest.
+
+    GitHub can normalize uploaded names. A successful upload alone does not
+    establish that the product's exact filename and encoded download URL exist.
+    This check reads every asset page and never publishes or rewrites a release.
+    """
+    if manifest.get("product") != "BK CUT" or release.get("draft") is not True:
+        raise ValueError("asset verification requires a BK CUT manifest and a draft release")
+    if release.get("tag_name") != manifest.get("tag"):
+        raise ValueError("the draft release tag does not match the manifest")
+    if not isinstance(asset_pages, list) or not asset_pages or any(
+        not isinstance(page, list) for page in asset_pages
+    ):
+        raise ValueError("expected all paginated release asset responses")
+    assets: dict[str, dict] = {}
+    for page in asset_pages:
+        for asset in page:
+            name = asset.get("name")
+            if not isinstance(name, str) or name in assets:
+                raise ValueError("the release has an invalid or duplicate asset name")
+            assets[name] = asset
+    checked = 0
+    for architectures in manifest["binaries"].values():
+        for kinds in architectures.values():
+            for entry in kinds.values():
+                name = entry["file"]
+                suffix = name.removeprefix("BK CUT-")
+                if suffix == name or not suffix or any(
+                    not (character.isascii() and (character.isalnum() or character in "._-"))
+                    for character in suffix
+                ):
+                    raise ValueError("the manifest has an invalid BK CUT product filename")
+                expected_url = (
+                    f"https://github.com/{PRODUCT_REPO}/releases/download/"
+                    f"{manifest['tag']}/{urllib.parse.quote(name, safe='')}"
+                )
+                asset = assets.get(name)
+                if asset is None:
+                    raise ValueError(f"the uploaded draft has no exact asset named {name!r}")
+                if entry["url"] != expected_url or asset.get("browser_download_url") != expected_url:
+                    raise ValueError(f"the uploaded asset URL differs from the manifest: {name!r}")
+                if asset.get("state") != "uploaded" or asset.get("size") != entry["bytes"]:
+                    raise ValueError(f"the uploaded asset is incomplete or has a different size: {name!r}")
+                # Older server responses can omit digest. When supplied, the
+                # server's digest must agree with the local bundle's digest.
+                if asset.get("digest") is not None and asset["digest"] != f"sha256:{entry['sha256']}":
+                    raise ValueError(f"the uploaded asset digest differs from the manifest: {name!r}")
+                checked += 1
+    if checked == 0:
+        raise ValueError("the manifest contains no product bundles")
+    return checked
 
 
 def main() -> int:
@@ -398,9 +471,26 @@ def main() -> int:
     emit.add_argument("--bundles", type=pathlib.Path)
     emit.add_argument("--out", type=pathlib.Path)
 
+    verify = sub.add_parser("verify-release-assets", help="check exact draft asset names and URLs")
+    verify.add_argument("--manifest", type=pathlib.Path, required=True)
+    verify.add_argument("--release", type=pathlib.Path, required=True)
+    verify.add_argument("--asset-pages", type=pathlib.Path, required=True)
+
     args = parser.parse_args()
     if args.command == "mirror":
         return mirror(args.out, args.only)
+    if args.command == "verify-release-assets":
+        try:
+            count = verify_release_assets(
+                json.loads(args.manifest.read_text(encoding="utf-8")),
+                json.loads(args.release.read_text(encoding="utf-8")),
+                json.loads(args.asset_pages.read_text(encoding="utf-8")),
+            )
+        except (ValueError, KeyError, TypeError) as error:
+            print(f"draft asset verification failed: {error}", file=sys.stderr)
+            return 1
+        print(f"verified {count} exact BK CUT draft assets; publication remains manual")
+        return 0
     if args.command == "release-manifest":
         manifest = release_manifest(args.version, args.tag, args.bundles)
         text = json.dumps(manifest, indent=2) + "\n"

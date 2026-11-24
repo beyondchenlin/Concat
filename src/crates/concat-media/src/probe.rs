@@ -26,8 +26,11 @@ pub struct VideoStream {
     pub width: u32,
     /// Displayed height in pixels; see [`VideoStream::width`].
     pub height: u32,
-    /// Average frame rate, exact.
+    /// Average frame rate, exact; a decoding-only default when not detected.
     pub frame_rate: FrameRate,
+    /// Whether a validated source rate was found. False must not be presented
+    /// as measured metadata or used to override a project's captured defaults.
+    pub frame_rate_known: bool,
     /// The rate one frame can follow another at: the frame rate for a
     /// constant-rate stream. A variable-rate one - a screen recording, a
     /// phone clip - runs at its capture rate while the picture moves and
@@ -202,11 +205,10 @@ fn video_stream(
         ffi::rotation(stream),
     );
 
-    let frame_rate = pick_rate(rational(stream.avg_frame_rate()), rational(stream.rate()))
-        .ok_or_else(|| Error::Probe {
-            path: path.to_path_buf(),
-            detail: "video stream has no usable frame rate".to_owned(),
-        })?;
+    let detected_rate = pick_rate(rational(stream.avg_frame_rate()), rational(stream.rate()));
+    // Keep readable visuals with usable dimensions/duration. Source timestamps
+    // remain the time authority; this grid is only for reader frame indexing.
+    let frame_rate = detected_rate.unwrap_or_else(|| FrameRate::THIRTY.fps());
     let cadence = pick_cadence(frame_rate, rational(stream.rate()));
 
     // SAFETY: the parameters are live for as long as `stream` is, and the
@@ -231,6 +233,7 @@ fn video_stream(
         width,
         height,
         frame_rate: FrameRate::new(frame_rate),
+        frame_rate_known: detected_rate.is_some(),
         cadence: FrameRate::new(cadence),
         color_range: ColorRange::from_ffmpeg(ffmpeg::color::Range::from(range)),
         signal,
@@ -385,6 +388,38 @@ mod tests {
             pick_rate(variable, Some(Rational::from_int(1000))),
             variable
         );
+    }
+
+    #[test]
+    fn a_readable_demuxed_visual_without_rate_keeps_geometry_and_timestamps() {
+        ffi::init();
+        let path = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/vfr-still-screen.mp4"
+        ));
+        let input = ffmpeg::format::input(path).unwrap();
+        let duration = input.duration();
+        let origin = ffi::origin(&input);
+        let stream = ffi::picture(&input).unwrap();
+        let original = video_stream(&stream, path, origin).unwrap();
+        // Inject missing container rate fields into an actual libavformat
+        // stream. No reader is running; all dimensions, PTS and keyframe
+        // metadata stay the real fixture's. This exercises the production
+        // projection, not a handcrafted NewMedia record.
+        unsafe {
+            let raw = stream.as_ptr().cast_mut();
+            (*raw).avg_frame_rate = ffmpeg::sys::AVRational { num: 0, den: 0 };
+            (*raw).r_frame_rate = ffmpeg::sys::AVRational { num: 0, den: 0 };
+        }
+        let video = video_stream(&stream, path, origin).unwrap();
+        assert!(!video.frame_rate_known);
+        assert_eq!(
+            (video.width, video.height),
+            (original.width, original.height)
+        );
+        assert_eq!(video.keyframes, original.keyframes);
+        assert_eq!(input.duration(), duration);
+        assert_eq!(video.frame_rate, FrameRate::THIRTY);
     }
 
     #[test]

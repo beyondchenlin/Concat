@@ -10,6 +10,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use concat_agent::configuration::ConfigurationSnapshot;
+use concat_agent::transport::{
+    ByteBudget, ByteReservation, MAX_BRIDGE_FRAME_BYTES, MAX_QUEUED_FRAME_BYTES,
+};
 use concat_api::AppDirs;
 use serde_json::{Value, json};
 use slint::ComponentHandle;
@@ -30,7 +33,10 @@ pub const RUNTIME_ORIGIN: &str = "https://bk-cat.invalid";
 /// Sole navigation permitted for a native runtime component.
 pub const RUNTIME_URL: &str = "https://bk-cat.invalid/index.html";
 const CHANNEL: &str = "bk-cat-runtime-v1";
-const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
+const MAX_FRAME_BYTES: usize = MAX_BRIDGE_FRAME_BYTES;
+// Human command admission keeps its existing smaller bound; only persisted
+// history/network/database frames need the larger transport envelope.
+const MAX_COMMAND_FRAME_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug)]
 pub(crate) enum FrameEncodingError {
@@ -50,9 +56,7 @@ impl std::fmt::Display for FrameEncodingError {
 impl From<FrameEncodingError> for SubmissionError {
     fn from(error: FrameEncodingError) -> Self {
         match error {
-            FrameEncodingError::TooLarge => Self::RejectedInput(
-                "请求及显示原文编码后超过聊天通道上限，请缩短输入或所选文案后重试。",
-            ),
+            FrameEncodingError::TooLarge => Self::RejectedInput("runtime.inputTooLarge"),
             FrameEncodingError::Serialization(error) => Self::Failed(error.to_string()),
         }
     }
@@ -81,39 +85,19 @@ struct EncodedCommand {
 // Covers queued platform creation/focus and loading the controlled scripts. This is
 // independent of the device smoke's unchanged 60-second production observation.
 const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
-const LOAD_TIMEOUT_MESSAGE: &str = "聊天运行组件未在限定时间内完成加载。请通过系统提供的更新渠道更新网页组件，重启应用后重试；手动剪辑仍可使用。";
-const SEND_WAIT_TIMEOUT_MESSAGE: &str =
-    "等待聊天会话就绪超时，本次消息未发送，草稿已保留；请重新打开助手并核对会话。";
+const LOAD_TIMEOUT_MESSAGE: &str = "runtime.loadTimeout";
+const SEND_WAIT_TIMEOUT_MESSAGE: &str = "runtime.waitTimeout";
 
 fn load_failure_message(code: &str) -> Option<&'static str> {
     match code {
-        "web-platform" => Some(
-            "系统网页组件缺少智能体所需的基础运行能力。请更新系统网页组件并重启应用；手动剪辑仍可使用。",
-        ),
-        "weak-references" => Some(
-            "系统网页组件缺少智能体所需的弱引用或内存回收通知能力。请更新系统网页组件并重启应用；手动剪辑仍可使用。",
-        ),
-        "secure-random" => Some(
-            "系统网页组件缺少安全随机标识能力。请更新系统网页组件并重启应用；手动剪辑仍可使用。",
-        ),
-        "cancellation" => Some(
-            "系统网页组件缺少可靠的任务取消能力。请更新系统网页组件并重启应用；手动剪辑仍可使用。",
-        ),
-        "collection-methods" => Some(
-            "系统网页组件缺少智能体所需的数据访问能力。请更新系统网页组件并重启应用；手动剪辑仍可使用。",
-        ),
-        "promise-resolvers" => Some(
-            "系统网页组件缺少智能体所需的异步任务能力。请更新系统网页组件并重启应用；手动剪辑仍可使用。",
-        ),
-        "structured-clone" => Some(
-            "系统网页组件缺少智能体所需的数据复制能力。请更新系统网页组件并重启应用；手动剪辑仍可使用。",
-        ),
-        "script-resource" => Some(
-            "聊天运行资源加载失败，智能体已停止。请重新启动应用；问题持续时请重新安装当前版本，手动剪辑仍可使用。",
-        ),
-        "script-execution" | "runtime-missing" | "bootstrap-missing" => Some(
-            "聊天运行脚本未能启动，智能体已停止。请更新系统网页组件并重启应用；手动剪辑仍可使用。",
-        ),
+        "web-platform" | "weak-references" | "secure-random" | "cancellation"
+        | "collection-methods" | "promise-resolvers" | "structured-clone" => {
+            Some("runtime.webCapability")
+        }
+        "script-resource" => Some("runtime.scriptResource"),
+        "script-execution" | "runtime-missing" | "bootstrap-missing" => {
+            Some("runtime.scriptExecution")
+        }
         _ => None,
     }
 }
@@ -201,7 +185,7 @@ fn spawn_platform(
     #[cfg(not(target_os = "windows"))]
     {
         let _ = (resources, callbacks);
-        Err("当前平台没有安装受控聊天运行组件。".into())
+        Err("runtime.unsupportedPlatform".into())
     }
 }
 
@@ -280,12 +264,10 @@ fn finish_task_view(
             // outcome. Keep its reason visible without blocking new input.
             view.task_title = reason;
         } else {
-            return Err(
-                "模型已经结束，但本次没有可核实的原生剪辑修改；不能把文字回复当作剪辑成功。".into(),
-            );
+            return Err("runtime.editUnverified".into());
         }
     } else if !successful {
-        return Err("模型任务未完成；请检查渠道、额度与当前工程后重新发送。".into());
+        return Err("runtime.taskIncomplete".into());
     }
     Ok(())
 }
@@ -299,7 +281,10 @@ enum CommandKind {
     Observe,
 }
 enum Work {
-    Frame(Value),
+    Frame {
+        envelope: Value,
+        bytes: ByteReservation,
+    },
     ApprovalFinished {
         id: String,
         result: Result<Value, String>,
@@ -330,13 +315,13 @@ impl AcceptedSubmission {
             value[field]
                 .as_u64()
                 .filter(|id| *id <= 9_007_199_254_740_991)
-                .ok_or("原版任务编号无效。".to_owned())
+                .ok_or("runtime.protocolViolation".to_owned())
         };
         Ok(Self {
             task: value["taskId"]
                 .as_str()
                 .filter(|id| !id.is_empty() && id.len() <= 256)
-                .ok_or("原生任务编号无效。")?
+                .ok_or("runtime.protocolViolation")?
                 .to_owned(),
             conversation: integer("conversationId")?,
             submission: integer("submissionId")?,
@@ -352,6 +337,7 @@ pub(crate) struct EmbeddedRuntime {
     native: NativeSession,
     platform: Mutex<Option<Box<dyn PlatformHost>>>,
     incoming: SyncSender<Work>,
+    incoming_bytes: ByteBudget,
     view: Mutex<RuntimeView>,
     pending: Mutex<BTreeMap<String, CommandKind>>,
     seen: Mutex<BTreeSet<String>>,
@@ -491,7 +477,10 @@ impl EmbeddedRuntime {
                     continue;
                 }
                 match work {
-                    Work::Frame(envelope) => runtime.handle(envelope),
+                    Work::Frame { envelope, bytes } => {
+                        runtime.handle(envelope);
+                        drop(bytes);
+                    }
                     Work::ApprovalFinished { id, result } => {
                         // Reap BEFORE publishing the result. A subsequent tool
                         // cannot race the previous thread's final instructions.
@@ -532,6 +521,7 @@ impl EmbeddedRuntime {
             native,
             platform: Mutex::new(None),
             incoming,
+            incoming_bytes: ByteBudget::new(MAX_QUEUED_FRAME_BYTES),
             view: Mutex::new(RuntimeView {
                 phase: "loading".into(),
                 ..RuntimeView::default()
@@ -600,7 +590,7 @@ impl EmbeddedRuntime {
             .lock()
             .map(|view| view.clone())
             .unwrap_or_else(|_| RuntimeView {
-                error: "聊天运行状态不可用。".into(),
+                error: "agent.sessionUnavailable".into(),
                 ..RuntimeView::default()
             })
     }
@@ -622,7 +612,7 @@ impl EmbeddedRuntime {
         let envelope = match authenticate(&raw, &self.component) {
             Ok(envelope) => envelope,
             Err(_) => {
-                self.fail_live_work("拒绝了来源或格式无效的运行组件消息。");
+                self.fail_live_work("runtime.protocolViolation");
                 return;
             }
         };
@@ -654,8 +644,16 @@ impl EmbeddedRuntime {
             }
             return;
         }
-        if self.incoming.try_send(Work::Frame(envelope)).is_err() {
-            self.fail_live_work("聊天消息队列超过上限，已停止执行。");
+        let Some(bytes) = self.incoming_bytes.reserve(raw.len()) else {
+            self.fail_live_work("runtime.queueFull");
+            return;
+        };
+        if self
+            .incoming
+            .try_send(Work::Frame { envelope, bytes })
+            .is_err()
+        {
+            self.fail_live_work("runtime.queueFull");
         }
     }
 
@@ -670,7 +668,7 @@ impl EmbeddedRuntime {
                     let message = envelope["code"]
                         .as_str()
                         .and_then(load_failure_message)
-                        .unwrap_or("运行组件报告了未审核的启动错误，智能体已停止。");
+                        .unwrap_or("runtime.protocolViolation");
                     self.fail_live_work(message);
                     return;
                 }
@@ -684,7 +682,7 @@ impl EmbeddedRuntime {
                         true
                     });
                     if !first {
-                        self.fail_live_work("运行组件重复启动。");
+                        self.fail_live_work("runtime.protocolViolation");
                         return;
                     }
                     let start = self.native.tasks.model_configuration().and_then(|configuration| {
@@ -725,17 +723,34 @@ impl EmbeddedRuntime {
                                 || message.chars().any(char::is_control)
                         })
                     {
-                        self.fail_live_work("运行组件报告了无效的启动诊断，会话已安全停止。");
+                        self.fail_live_work("runtime.protocolViolation");
                         return;
                     }
                     let stage = stage.expect("checked above");
                     let message = message.expect("checked above");
                     log::error!("bk-cat-agent: startup_failed stage={stage} reason={message}");
-                    self.fail_live_work(&format!("智能体启动失败：{message}"));
+                    self.fail_live_work(&format!("runtime.startupFailed\n{message}"));
                     return;
                 }
                 "conversation.presentation" => {
                     if let Err(error) = self.accept_presentation(&envelope) {
+                        self.fail_live_work(&error);
+                        return;
+                    }
+                }
+                "runtime.reviewed" => {
+                    if !self.native.reviewed_current_project() {
+                        self.fail_live_work("agent.errorRecoveryChanged");
+                        return;
+                    }
+                    if let Ok(mut view) = self.view.lock() {
+                        view.task_running = false;
+                        view.waiting_for_ready = false;
+                        view.task_title = "agent.recoveryReviewedNotice".into();
+                    }
+                }
+                "runtime.resumed" => {
+                    if let Err(error) = self.accept_recovered_submission(&envelope) {
                         self.fail_live_work(&error);
                         return;
                     }
@@ -748,12 +763,12 @@ impl EmbeddedRuntime {
                     self.fail_live_work(
                         envelope["message"]
                             .as_str()
-                            .unwrap_or("保存通知未得到确认，需要重新核对。"),
+                            .unwrap_or("runtime.saveNotificationUnconfirmed"),
                     );
                     return;
                 }
                 _ => {
-                    self.fail_live_work("运行组件发送了未审核的事件。");
+                    self.fail_live_work("runtime.protocolViolation");
                     return;
                 }
             }
@@ -790,14 +805,14 @@ impl EmbeddedRuntime {
             .as_str()
             .filter(|id| !id.is_empty() && id.len() <= 256)
         else {
-            self.fail_live_work("运行组件消息缺少有效编号。");
+            self.fail_live_work("runtime.protocolViolation");
             return;
         };
         if envelope.get("payload").is_some() {
             let fresh = self
                 .seen
                 .lock()
-                .is_ok_and(|mut seen| seen.len() < 65536 && seen.insert(id.to_owned()));
+                .is_ok_and(|mut seen| seen.insert(id.to_owned()));
             if fresh
                 && envelope.pointer("/payload/method").and_then(Value::as_str)
                     == Some("mcp.authorize")
@@ -808,7 +823,7 @@ impl EmbeddedRuntime {
             let result = if fresh {
                 self.native.handle(envelope["payload"].clone())
             } else {
-                Err("native request was replayed or exceeded its admission limit".into())
+                Err("native request was replayed".into())
             };
             if envelope
                 .pointer("/payload/method")
@@ -827,7 +842,7 @@ impl EmbeddedRuntime {
             .ok()
             .and_then(|mut pending| pending.remove(id));
         let Some(kind) = kind else {
-            self.fail_live_work("运行组件返回了未请求的结果。");
+            self.fail_live_work("runtime.protocolViolation");
             return;
         };
         before_command_result();
@@ -835,11 +850,9 @@ impl EmbeddedRuntime {
             let message = envelope
                 .pointer("/error/message")
                 .and_then(Value::as_str)
-                .unwrap_or("聊天运行组件拒绝了操作。");
+                .unwrap_or("agent.errorUnexpected");
             if matches!(kind, CommandKind::Submit) {
-                self.fail_live_work(
-                    "模型任务提交未得到明确确认，已停止调用；输入保留，请重新核对会话。",
-                );
+                self.fail_live_work("runtime.submissionUnconfirmed");
                 return;
             }
             if matches!(kind, CommandKind::Start | CommandKind::Observe) {
@@ -858,7 +871,7 @@ impl EmbeddedRuntime {
             return;
         }
         let Some(result) = envelope.get("result") else {
-            self.fail_live_work("运行组件未返回明确结果。");
+            self.fail_live_work("runtime.protocolViolation");
             return;
         };
         if matches!(kind, CommandKind::Start | CommandKind::Inspect)
@@ -902,6 +915,36 @@ impl EmbeddedRuntime {
             && !self.revoked.load(Ordering::Acquire)
         {
             view.error.clear();
+        }
+        if matches!(kind, CommandKind::Confirm) && result["reviewed"] == true {
+            if !self.native.reviewed_current_project() {
+                self.fail_live_work("agent.errorRecoveryChanged");
+                return;
+            }
+            self.publish();
+            return;
+        }
+        if matches!(kind, CommandKind::Confirm) && result["resumed"] == true {
+            let valid = AcceptedSubmission::parse(result)
+                .ok()
+                .is_some_and(|receipt| {
+                    self.native.tasks.recovered_task().is_some_and(|task| {
+                        receipt.task == task.id
+                            && receipt.conversation == task.conversation_id
+                            && receipt.submission == task.submission_id
+                            && !self.revoked.load(Ordering::Acquire)
+                            && self.native.tasks.may_present(receipt.conversation, None)
+                    })
+                });
+            if !valid {
+                self.fail_live_work("agent.errorRecoveryChanged");
+                return;
+            }
+            // The resumed original submission owns its observation and wait.
+            // Observing the latest chat here would supersede that wait, and
+            // could also select a different conversation from an edit/script.
+            self.publish();
+            return;
         }
         if matches!(kind, CommandKind::Confirm) {
             match self.native.tasks.latest() {
@@ -956,9 +999,9 @@ impl EmbeddedRuntime {
             let mut worker = self
                 .approval_worker
                 .lock()
-                .map_err(|_| "审批工作线程不可用。")?;
+                .map_err(|_| "permission.stateUnavailable")?;
             if worker.is_some() {
-                return Err("已有剪辑审批正在等待，拒绝并行申请。".into());
+                return Err("permission.alreadyPending".into());
             }
             // Native preflight may reject this attempt before authorize is
             // reached. Its result must not inherit a previous user refusal.
@@ -978,7 +1021,7 @@ impl EmbeddedRuntime {
                             |work| runtime.incoming.try_send(work),
                         );
                     })
-                    .map_err(|error| format!("无法启动剪辑审批工作线程：{error}"))?,
+                    .map_err(|error| format!("permission.stateUnavailable\n{error}"))?,
             );
             Ok(())
         })();
@@ -996,7 +1039,7 @@ impl EmbeddedRuntime {
             return;
         }
         if send(work).is_err() {
-            self.fail_live_work("审批结果无法送达运行组件，已停止执行。");
+            self.fail_live_work("runtime.approvalDeliveryFailed");
         }
     }
 
@@ -1004,12 +1047,10 @@ impl EmbeddedRuntime {
         let worker = self
             .approval_worker
             .lock()
-            .map_err(|_| "审批工作线程不可用。")?
+            .map_err(|_| "permission.stateUnavailable")?
             .take();
         if let Some(worker) = worker {
-            worker
-                .join()
-                .map_err(|_| "审批工作线程异常退出，已保留恢复记录。")?;
+            worker.join().map_err(|_| "permission.stateUnavailable")?;
         }
         Ok(())
     }
@@ -1042,7 +1083,7 @@ impl EmbeddedRuntime {
                     concat_agent::Phase::Draining | concat_agent::Phase::Released
                 ) =>
             {
-                self.fail_live_work("原生执行资格已撤销，请重新核对当前工程和会话。");
+                self.fail_live_work("agent.connectAndReview");
                 return;
             }
             Err(error) => {
@@ -1104,29 +1145,32 @@ impl EmbeddedRuntime {
         {
             // Match reject_submission's view-before-slot ordering. Waiting
             // never calls begin_task, installs a submission or grants a model.
-            let mut view = self.view.lock().map_err(|_| "聊天运行状态不可用。")?;
+            let mut view = self.view.lock().map_err(|_| "agent.sessionUnavailable")?;
             if self.revoked.load(Ordering::Acquire) || view.closed || !view.error.is_empty() {
-                return Err("当前会话已停止或发生错误，消息未发送，草稿已保留。".into());
+                return Err("agent.closedDetail".into());
             }
-            let mut waiting = self.waiting.lock().map_err(|_| "等待发送状态不可用。")?;
+            let mut waiting = self
+                .waiting
+                .lock()
+                .map_err(|_| "agent.sessionUnavailable")?;
             if waiting.is_some() || view.waiting_for_ready {
-                return Err("已有消息正在等待连接，请等待完成或停止；草稿已保留。".into());
+                return Err("agent.alreadyWaiting".into());
             }
             if view.task_running
                 || self
                     .submission
                     .lock()
-                    .map_err(|_| "本次任务状态不可用。")?
+                    .map_err(|_| "agent.sessionUnavailable")?
                     .is_some()
             {
-                return Err("已有任务正在执行，请完成或停止后再发送。".into());
+                return Err("runtime.taskBusy".into());
             }
             if intent.mode == TaskMode::Script
                 || !(view.may_wait_for_readiness()
                     || (view.phase == "ready"
                         && view.snapshot.as_ref().is_some_and(clean_startup_snapshot)))
             {
-                return Err("当前会话需要恢复核对，消息未发送，草稿已保留。".into());
+                return Err("agent.connectAndReview".into());
             }
             *waiting = Some(WaitingSubmission {
                 intent,
@@ -1139,7 +1183,7 @@ impl EmbeddedRuntime {
         // Wake the mailbox even if runtime.loaded already cancelled its load
         // deadline. Queue failure uses the same fail-closed cleanup as Submit.
         if send().is_err() {
-            let error = "聊天任务队列已满，本次未发送。";
+            let error = "runtime.queueFull";
             self.fail_live_work(error);
             return Err(error.into());
         }
@@ -1148,8 +1192,11 @@ impl EmbeddedRuntime {
     }
 
     fn take_ready_waiting(&self) -> Result<Option<WaitingSubmission>, String> {
-        let mut view = self.view.lock().map_err(|_| "聊天运行状态不可用。")?;
-        let mut waiting = self.waiting.lock().map_err(|_| "等待发送状态不可用。")?;
+        let mut view = self.view.lock().map_err(|_| "agent.sessionUnavailable")?;
+        let mut waiting = self
+            .waiting
+            .lock()
+            .map_err(|_| "agent.sessionUnavailable")?;
         let Some(pending) = waiting.as_ref() else {
             return Ok(None);
         };
@@ -1170,29 +1217,26 @@ impl EmbeddedRuntime {
             .is_some_and(|snapshot| !clean_startup_snapshot(snapshot))
         {
             if view.phase == "ready" {
-                return Err("会话就绪与原生恢复证据冲突，本次消息未发送。".into());
+                return Err("runtime.protocolViolation".into());
             }
             // A legitimate recovery block is not consent to resume old work.
             // Leave its recovery controls intact and discard only this send.
             waiting.take();
             view.waiting_for_ready = false;
-            view.task_title = "消息未发送：当前会话需要恢复核对，草稿已保留。".into();
+            view.task_title = "agent.sendNeedsRecovery".into();
             return Ok(None);
         }
         if view.phase != "ready" {
             return Ok(None);
         }
-        let snapshot = view
-            .snapshot
-            .as_ref()
-            .ok_or("会话就绪缺少原生恢复核对，本次消息未发送。")?;
+        let snapshot = view.snapshot.as_ref().ok_or("runtime.protocolViolation")?;
         let expected_session = pending.intent.project.session_id.to_string();
         let expected_revision = pending.intent.project.revision.to_string();
         if snapshot["projectPath"] != pending.intent.project.path
             || snapshot["projectSession"].as_str() != Some(expected_session.as_str())
             || snapshot["projectRevision"].as_str() != Some(expected_revision.as_str())
         {
-            return Err("等待期间工程或会话已变化，本次消息未发送，草稿已保留。".into());
+            return Err("runtime.stateChanged".into());
         }
         // The UI thread rechecks current project/configuration after this
         // single take. No waiting/view lock crosses the normal submit chain.
@@ -1211,38 +1255,48 @@ impl EmbeddedRuntime {
     ) -> Result<(), String> {
         let view = self.view();
         if self.revoked.load(Ordering::Acquire) || view.phase != "ready" || view.waiting_for_ready {
-            return Err("请先连接会话并完成原生恢复核对。".into());
+            return Err("agent.connectAndReview".into());
         }
         if let Some(generation) = &intent.generation {
             generation.bind_component_revocation(Arc::clone(&self.revoked))?;
         }
+        let task_configuration = intent
+            .model
+            .as_ref()
+            .map(|channel| serde_json::json!({"id": channel.id.as_str(), "model": channel.model}));
         let title = match intent.mode {
-            TaskMode::Chat => "正在对话",
-            TaskMode::Script => "正在生成文案候选",
-            TaskMode::Edit => "正在剪辑当前工程",
+            TaskMode::Chat => "agent.runningChat",
+            TaskMode::Script => "agent.runningWriting",
+            TaskMode::Edit => "agent.runningEdit",
         };
         {
-            let mut submission = self.submission.lock().map_err(|_| "本次任务状态不可用。")?;
+            let mut submission = self
+                .submission
+                .lock()
+                .map_err(|_| "agent.sessionUnavailable")?;
             if submission.is_some() {
-                return Err("已有任务正在执行，请完成或停止后再发送。".into());
+                return Err("runtime.taskBusy".into());
             }
             self.native.tool_approval.begin_task()?;
             *submission = Some(intent);
         }
         if let Ok(mut view) = self.view.lock() {
             if self.revoked.load(Ordering::Acquire) {
-                return Err("本次任务已停止，输入未发送。".into());
+                return Err("agent.stopDetail".into());
             }
             view.task_running = true;
+            if let Some(configuration) = task_configuration {
+                view.configuration = Some(configuration);
+            }
             view.task_title = title.into();
             view.error.clear();
         }
         if send().is_err() {
             self.submission
                 .lock()
-                .map_err(|_| "本次任务状态不可用。")?
+                .map_err(|_| "agent.sessionUnavailable")?
                 .take();
-            let error = "聊天任务队列已满，本次未发送。";
+            let error = "runtime.queueFull";
             self.fail_live_work(error);
             return Err(error.into());
         }
@@ -1298,18 +1352,21 @@ impl EmbeddedRuntime {
         let rejected = {
             // Stop marks revoked before taking this view lock. Never restore a
             // phase or permission, and never clear a different task's state.
-            let mut view = self.view.lock().map_err(|_| "本次任务状态不可用。")?;
+            let mut view = self.view.lock().map_err(|_| "agent.sessionUnavailable")?;
             if self.revoked.load(Ordering::Acquire) || view.closed {
                 return Ok(());
             }
             if view.phase != "ready" || !view.error.is_empty() {
-                return Err("输入拒绝时会话已不在有效就绪状态。".into());
+                return Err("runtime.stateChanged".into());
             }
-            let mut submission = self.submission.lock().map_err(|_| "本次任务状态不可用。")?;
+            let mut submission = self
+                .submission
+                .lock()
+                .map_err(|_| "agent.sessionUnavailable")?;
             if submission.as_ref().is_none_or(|intent| intent.id != task) {
-                return Err("输入拒绝与当前原生任务不匹配。".into());
+                return Err("runtime.protocolViolation".into());
             }
-            let rejected = submission.take().ok_or("本次输入拒绝缺少原生任务。")?;
+            let rejected = submission.take().ok_or("runtime.protocolViolation")?;
             view.task_running = false;
             view.task_title = message.to_owned();
             rejected
@@ -1328,35 +1385,35 @@ impl EmbeddedRuntime {
         let intent = self
             .submission
             .lock()
-            .map_err(|_| "本次任务状态不可用。")?
+            .map_err(|_| "agent.sessionUnavailable")?
             .clone()
-            .ok_or("原版运行组件返回了无对应任务的提交结果。")?;
+            .ok_or("runtime.protocolViolation")?;
         if result["taskId"] != intent.id
             || result["submissionId"]
                 .as_u64()
                 .is_none_or(|id| id > 9_007_199_254_740_991)
         {
-            return Err("原版任务提交编号无效。".into());
+            return Err("runtime.protocolViolation".into());
         }
         let conversation = result["conversationId"]
             .as_u64()
-            .ok_or("原版任务会话编号缺失。")?;
+            .ok_or("runtime.protocolViolation")?;
         if !self.native.tasks.may_present(conversation, None) {
-            return Err("原版任务会话未得到原生绑定。".into());
+            return Err("runtime.protocolViolation".into());
         }
         *self
             .observed_conversation
             .lock()
-            .map_err(|_| "当前会话状态不可用。")? = Some(conversation);
+            .map_err(|_| "agent.sessionUnavailable")? = Some(conversation);
         let mut receipt = self
             .accepted_submission
             .lock()
-            .map_err(|_| "任务接受回执不可用。")?;
+            .map_err(|_| "agent.sessionUnavailable")?;
         if self.revoked.load(Ordering::Acquire) {
-            return Err("本次任务已停止，迟到提交回执未接受。".into());
+            return Err("agent.stopDetail".into());
         }
         if receipt.is_some() {
-            return Err("任务重复返回接受回执。".into());
+            return Err("runtime.protocolViolation".into());
         }
         *receipt = Some(accepted);
         drop(receipt);
@@ -1385,11 +1442,11 @@ impl EmbeddedRuntime {
     fn accept_presentation(&self, value: &Value) -> Result<(), String> {
         let conversation = value["conversationId"]
             .as_u64()
-            .ok_or("会话显示缺少原版编号。")?;
+            .ok_or("runtime.protocolViolation")?;
         let observed = *self
             .observed_conversation
             .lock()
-            .map_err(|_| "当前会话状态不可用。")?;
+            .map_err(|_| "agent.sessionUnavailable")?;
         // A detached observation can have one already queued frame. It is
         // ignored instead of replacing another project's/task's presentation.
         if !self.native.tasks.may_present(conversation, observed) {
@@ -1397,12 +1454,12 @@ impl EmbeddedRuntime {
         }
         let messages = value["messages"]
             .as_array()
-            .ok_or("会话显示记录格式无效。")?;
+            .ok_or("runtime.protocolViolation")?;
         if messages.len() > 100
             || messages.iter().any(|message| {
                 !matches!(
                     message["role"].as_str(),
-                    Some("user" | "assistant" | "tool")
+                    Some("user" | "assistant" | "tool" | "compaction")
                 ) || message["text"]
                     .as_str()
                     .is_none_or(|text| text.len() > 128 * 1024)
@@ -1412,13 +1469,172 @@ impl EmbeddedRuntime {
                 .is_none_or(|text| text.len() > 256 * 1024)
             || !value["busy"].is_boolean()
         {
-            return Err("会话显示内容超过已审核的范围。".into());
+            return Err("runtime.protocolViolation".into());
         }
         self.view
             .lock()
-            .map_err(|_| "会话显示状态不可用。")?
+            .map_err(|_| "agent.sessionUnavailable")?
             .presentation = Some(value.clone());
         Ok(())
+    }
+
+    /// Only the native recovery protocol can produce the task behind this
+    /// event. Event-supplied model, language, path or writing data is ignored.
+    fn accept_recovered_submission(self: &Arc<Self>, event: &Value) -> Result<(), String> {
+        let receipt = AcceptedSubmission::parse(event)?;
+        let task = self
+            .native
+            .tasks
+            .recovered_task()
+            .ok_or("agent.errorRecoveryScope")?;
+        if receipt.task != task.id
+            || receipt.conversation != task.conversation_id
+            || receipt.submission != task.submission_id
+            || self.revoked.load(Ordering::Acquire)
+            || !self.native.tasks.may_present(receipt.conversation, None)
+            || self
+                .native
+                .current_project()?
+                .as_ref()
+                .is_none_or(|current| {
+                    current.path != task.project.path
+                        || current.project_id != task.project.project_id
+                        || current.session_id != task.project.session_id
+                        || (task.mode == TaskMode::Script
+                            && current.revision != task.project.revision)
+                })
+        {
+            return Err("agent.errorRecoveryChanged".into());
+        }
+        let generation = if task.mode == TaskMode::Script {
+            Some(self.recover_writing_context(&task)?)
+        } else {
+            if task.generation_snapshot.is_some() {
+                return Err("agent.errorRecoverySnapshotInvalid".into());
+            }
+            None
+        };
+        let intent = SubmissionIntent {
+            languages: task.languages,
+            model: Some(task.model.clone()),
+            id: task.id,
+            project: task.project,
+            mode: task.mode,
+            input: task.input,
+            ui_draft: task.ui_draft,
+            reference_keys: Vec::new(),
+            selected: task.selected,
+            generation: generation.clone(),
+        };
+        let result = (|| -> Result<(), String> {
+            let mut view = self.view.lock().map_err(|_| "runtime.protocolViolation")?;
+            let mut submission = self
+                .submission
+                .lock()
+                .map_err(|_| "runtime.protocolViolation")?;
+            let mut accepted = self
+                .accepted_submission
+                .lock()
+                .map_err(|_| "runtime.protocolViolation")?;
+            let mut observed = self
+                .observed_conversation
+                .lock()
+                .map_err(|_| "runtime.protocolViolation")?;
+            if self.revoked.load(Ordering::Acquire)
+                || view.closed
+                || view.phase != "ready"
+                || !view.error.is_empty()
+                || view.waiting_for_ready
+                || submission.is_some()
+                || accepted.is_some()
+            {
+                return Err("agent.errorRecoveryChanged".into());
+            }
+            *observed = Some(receipt.conversation);
+            *accepted = Some(receipt);
+            *submission = Some(intent);
+            view.task_running = true;
+            view.task_title = match task.mode {
+                TaskMode::Chat => "agent.runningChat",
+                TaskMode::Script => "agent.runningWriting",
+                TaskMode::Edit => "agent.runningEdit",
+            }
+            .into();
+            view.configuration =
+                Some(json!({"id":task.model.id.as_str(), "model":task.model.model}));
+            Ok(())
+        })();
+        if let Err(error) = &result
+            && let Some(generation) = generation
+        {
+            deliver_generation(generation, Err(error.clone()));
+        }
+        result
+    }
+
+    /// The mailbox waits only for a native UI capture, never for a model or
+    /// approval. Subsequent completion frames stay ordered behind this event.
+    fn recover_writing_context(
+        &self,
+        task: &crate::agent::tasks::RecoveredTask,
+    ) -> Result<crate::panes::script::GenerationRequest, String> {
+        let saved = task
+            .generation_snapshot
+            .clone()
+            .ok_or("agent.errorRecoverySnapshotMissing")?;
+        let expected = task.project.clone();
+        let task_id = task.id.clone();
+        let component = self.component.clone();
+        let revoked = Arc::clone(&self.revoked);
+        let (send, receive) = mpsc::sync_channel(1);
+        slint::invoke_from_event_loop(move || {
+            let mut result = Err("agent.errorRecoveryChanged".to_owned());
+            Shell::with(|shell, app| {
+                if revoked.load(Ordering::Acquire)
+                    || shell
+                        .embedded
+                        .borrow()
+                        .as_ref()
+                        .is_none_or(|runtime| runtime.component() != component)
+                {
+                    return;
+                }
+                let mut studio = shell.studio.borrow_mut();
+                let valid = studio.session.as_ref().is_some_and(|session| {
+                    session.path() == expected.path
+                        && session.project_identity() == expected.project_id
+                        && session.session_id() == expected.session_id
+                        && session.revision() == expected.revision
+                });
+                if !valid {
+                    return;
+                }
+                result = studio
+                    .script
+                    .recover_generation(&task_id, expected.session_id, expected.revision, &saved)
+                    .and_then(|request| {
+                        if let Err(error) = request.bind_component_revocation(Arc::clone(&revoked))
+                        {
+                            studio.script.cancel_generation();
+                            return Err(error);
+                        }
+                        Ok(request)
+                    });
+                studio.script.publish(&app);
+            });
+            // A timed-out or stopped mailbox cannot leave a writing spinner
+            // behind when the UI finally processes its queued capture.
+            if let Err(mpsc::SendError(Ok(request))) = send.send(result) {
+                crate::panes::script::complete_generation(
+                    request,
+                    Err("agent.errorRecoveryChanged".into()),
+                );
+            }
+        })
+        .map_err(|_| "agent.errorRecoveryChanged".to_owned())?;
+        receive
+            .recv_timeout(Duration::from_secs(15))
+            .map_err(|_| "agent.errorRecoveryChanged".to_owned())?
     }
 
     fn complete_submission(&self, event: &Value) {
@@ -1427,43 +1643,45 @@ impl EmbeddedRuntime {
             if self
                 .accepted_submission
                 .lock()
-                .map_err(|_| "任务接受回执不可用。")?
+                .map_err(|_| "agent.sessionUnavailable")?
                 .as_ref()
                 != Some(&completed)
             {
-                return Err("任务终态与原版接受回执不一致，结果未写入。".into());
+                return Err("runtime.protocolViolation".into());
             }
-            let id = event["taskId"].as_str().ok_or("任务完成编号缺失。")?;
+            let id = event["taskId"]
+                .as_str()
+                .ok_or("runtime.protocolViolation")?;
             let conversation = event["conversationId"]
                 .as_u64()
-                .ok_or("任务完成会话编号缺失。")?;
+                .ok_or("runtime.protocolViolation")?;
             let successful = match event["status"].as_str() {
                 Some("done") => true,
                 Some("unanswered") => false,
-                _ => return Err("任务没有返回明确终态。".into()),
+                _ => return Err("runtime.protocolViolation".into()),
             };
             let text = event["text"]
                 .as_str()
                 .filter(|text| text.len() <= 1024 * 1024)
-                .ok_or("任务回答无效或超过本次上限。")?;
+                .ok_or("runtime.protocolViolation")?;
             let intent = self
                 .submission
                 .lock()
-                .map_err(|_| "本次任务状态不可用。")?
+                .map_err(|_| "agent.sessionUnavailable")?
                 .clone()
                 .filter(|intent| intent.id == id)
-                .ok_or("任务完成不属于当前原生请求。")?;
+                .ok_or("runtime.protocolViolation")?;
             let native_edit_verified = self.native.tasks.finish(id, conversation)?;
             let edit_without_changes =
                 successful && intent.mode == TaskMode::Edit && !native_edit_verified;
             let native_refusal = self.native.tool_approval.last_refusal(conversation);
             self.accepted_submission
                 .lock()
-                .map_err(|_| "任务接受回执不可用。")?
+                .map_err(|_| "agent.sessionUnavailable")?
                 .take();
             self.submission
                 .lock()
-                .map_err(|_| "本次任务状态不可用。")?
+                .map_err(|_| "agent.sessionUnavailable")?
                 .take();
             if let Some(generation) = intent.generation {
                 deliver_generation(
@@ -1471,7 +1689,7 @@ impl EmbeddedRuntime {
                     if successful {
                         Ok(text.to_owned())
                     } else {
-                        Err("文案生成没有成功完成，已保留原手稿；请查看模型错误后重新发送。".into())
+                        Err("script.generationFailed".into())
                     },
                 );
             }
@@ -1508,7 +1726,7 @@ impl EmbeddedRuntime {
         let result = self
             .view
             .lock()
-            .map_err(|_| "本次任务状态不可用。".to_owned())
+            .map_err(|_| "agent.sessionUnavailable".to_owned())
             .and_then(|mut view| {
                 finish_task_view(&mut view, successful, edit_without_changes, native_refusal)
             });
@@ -1532,7 +1750,7 @@ impl EmbeddedRuntime {
 
     fn encode_command(&self, payload: Value) -> Result<EncodedCommand, SubmissionError> {
         if self.revoked.load(Ordering::Acquire) {
-            return Err("聊天运行组件已停止。".into());
+            return Err("agent.stopDetail".into());
         }
         let sequence = self
             .next
@@ -1540,12 +1758,15 @@ impl EmbeddedRuntime {
             .map_err(|_| "native command sequence exhausted")?;
         let id = format!("native:{sequence}");
         let serialized = encode_frame(&self.component, json!({"id":id,"payload":payload}))?;
+        if serialized.len() > MAX_COMMAND_FRAME_BYTES {
+            return Err(FrameEncodingError::TooLarge.into());
+        }
         Ok(EncodedCommand { id, serialized })
     }
 
     fn send_command(&self, command: EncodedCommand, kind: CommandKind) -> Result<(), String> {
         if self.revoked.load(Ordering::Acquire) {
-            return Err("聊天运行组件已停止。".into());
+            return Err("agent.stopDetail".into());
         }
         let EncodedCommand { id, serialized } = command;
         {
@@ -1584,13 +1805,17 @@ impl EmbeddedRuntime {
 
     pub(crate) fn inspect(&self) -> Result<(), String> {
         if self.view().phase != "recovery" {
-            return Err("当前没有待核对的恢复会话。".into());
+            return Err("agent.connectAndReview".into());
         }
         self.command(json!({"method":"runtime.inspect"}), CommandKind::Inspect)
     }
 
     pub(crate) fn confirm(&self) -> Result<(), String> {
         self.confirm_decision("continue")
+    }
+
+    pub(crate) fn confirm_current_review(&self) -> Result<(), String> {
+        self.confirm_decision("review")
     }
 
     pub(crate) fn discard_interrupted(&self) -> Result<(), String> {
@@ -1600,12 +1825,12 @@ impl EmbeddedRuntime {
     fn confirm_decision(&self, decision: &str) -> Result<(), String> {
         let view = self.view();
         if view.phase != "recovery" {
-            return Err("当前会话不在恢复确认阶段。".into());
+            return Err("agent.connectAndReview".into());
         }
-        let snapshot = view.snapshot.ok_or("请先核对当前工程和会话。")?;
+        let snapshot = view.snapshot.ok_or("agent.reviewBeforeContinue")?;
         let id = snapshot["snapshotId"]
             .as_str()
-            .ok_or("恢复核对编号缺失。")?;
+            .ok_or("agent.errorRecoverySnapshotInvalid")?;
         let approval = self.native.approve_from_ui(id, decision)?;
         self.command(
             json!({"method":"runtime.confirmRecovery","approval":approval}),
@@ -1657,7 +1882,7 @@ impl EmbeddedRuntime {
             && let Some(intent) = submission.take()
             && let Some(generation) = intent.generation
         {
-            deliver_generation(generation, Err("文案生成已停止，未覆盖手稿。".into()));
+            deliver_generation(generation, Err("script.stopped".into()));
         }
         self.publish();
     }
@@ -1667,7 +1892,7 @@ impl EmbeddedRuntime {
             && terminal_reason_replaces_placeholder(&view.error, reason)
         {
             log::error!("bk-cat-agent: platform_failed reason={reason}");
-            view.error = format!("内置运行组件异常：{reason}");
+            view.error = format!("runtime.platformFailed\n{reason}");
         }
     }
 
@@ -1679,7 +1904,7 @@ impl EmbeddedRuntime {
 
     pub(crate) fn set_tool_mode_from_ui(&self, index: i32) -> Result<(), String> {
         if self.revoked.load(Ordering::Acquire) || self.view().phase != "ready" {
-            return Err("请先连接并核对智能体会话，再修改操作权限。".into());
+            return Err("agent.connectAndReview".into());
         }
         self.native.tool_approval.set_mode_from_ui(index)
     }
@@ -1690,7 +1915,7 @@ impl EmbeddedRuntime {
         approve: bool,
     ) -> Result<(), String> {
         if self.revoked.load(Ordering::Acquire) || self.view().phase != "ready" {
-            return Err("当前会话未就绪，不能批准剪辑。".into());
+            return Err("agent.notReady".into());
         }
         self.native
             .tool_approval
@@ -1760,6 +1985,7 @@ impl EmbeddedRuntime {
         let component = self.component.clone();
         let _ = slint::invoke_from_event_loop(move || {
             let mut refresh_permission = false;
+            let mut task_finished = false;
             let mut claim_waiting = false;
             Shell::with(|shell, app| {
                 let current = shell
@@ -1781,10 +2007,11 @@ impl EmbeddedRuntime {
                     .agent
                     .borrow()
                     .as_ref()
-                    .ok_or_else(|| "会话暂不可用，仍可使用手动编辑。".to_owned())
+                    .ok_or_else(|| "agent.sessionUnavailable".to_owned())
                     .and_then(|bridge| bridge.status());
                 let mut pane = shell.agent_pane.borrow_mut();
                 let was_ready = pane.readiness.runtime_ready;
+                task_finished = pane.task.running && !view.task_running;
                 pane.apply_runtime(&view);
                 refresh_permission = was_ready != pane.readiness.runtime_ready;
                 pane.publish(&app, owner);
@@ -1793,6 +2020,9 @@ impl EmbeddedRuntime {
                 // The original poll also updated the tool's connected badge.
                 // Preserve that update on actual connect/disconnect only.
                 crate::agent::window::refresh_tool_permission();
+            }
+            if task_finished {
+                crate::panes::agent::refresh_model_choices();
             }
             if claim_waiting {
                 resume_waiting_from_ui(&component);
@@ -1805,14 +2035,14 @@ impl EmbeddedRuntime {
 fn platform_reason_is_placeholder(reason: &str) -> bool {
     matches!(
         reason,
-        "" | "Windows runtime stopping" | "Windows runtime closed"
+        "" | "lifecycle.windowsStopping" | "lifecycle.windowsClosed"
     ) || platform_reason_is_background(reason)
 }
 
 fn platform_reason_is_background(reason: &str) -> bool {
     matches!(
         reason,
-        "安卓应用已转入后台。" | "安卓应用已停止显示。" | "安卓应用正在保存状态。"
+        "lifecycle.activityPaused" | "lifecycle.activityStopped" | "lifecycle.activitySaved"
     )
 }
 
@@ -1933,7 +2163,7 @@ pub(crate) fn authorize_call_from_ui() {
             }
             ModelGrantAction::Refuse => {
                 pane.readiness.calls_authorized = false;
-                pane.error = "请先配置本项目渠道和系统凭据，并连接、核对当前会话。".into();
+                pane.error = "agent.configureBeforeSend".into();
             }
         }
         pane.publish(
@@ -1942,7 +2172,7 @@ pub(crate) fn authorize_call_from_ui() {
                 .agent
                 .borrow()
                 .as_ref()
-                .ok_or_else(|| "会话暂不可用。".into())
+                .ok_or_else(|| "agent.sessionUnavailable".into())
                 .and_then(|bridge| bridge.status()),
         );
     });
@@ -1951,7 +2181,7 @@ pub(crate) fn authorize_call_from_ui() {
 /// Only a trusted Slint window callback calls these; the web component never
 /// receives a port to set modes or resolve approvals.
 pub(crate) fn set_tool_mode_from_ui(index: i32) -> Result<(), String> {
-    let mut result = Err("聊天运行组件尚未连接。".to_owned());
+    let mut result = Err("agent.chatNotReady".to_owned());
     Shell::with(|shell, _| {
         if let Some(runtime) = shell.embedded.borrow().as_ref() {
             result = runtime.set_tool_mode_from_ui(index);
@@ -1961,7 +2191,7 @@ pub(crate) fn set_tool_mode_from_ui(index: i32) -> Result<(), String> {
 }
 
 pub(crate) fn decide_tool_from_ui(request_id: String, approve: bool) -> Result<(), String> {
-    let mut result = Err("聊天运行组件尚未连接。".to_owned());
+    let mut result = Err("agent.chatNotReady".to_owned());
     Shell::with(|shell, _| {
         if let Some(runtime) = shell.embedded.borrow().as_ref() {
             result = runtime.decide_tool_from_ui(&request_id, approve);
@@ -2011,16 +2241,16 @@ fn start_first_chat_from_send(input: &str) -> Result<(), String> {
         }
         result = (|| {
             if app.global::<crate::ui::AgentSettingsUi>().get_busy() {
-                return Err("模型设置仍在保存或读取，请等待完成后发送。".into());
+                return Err("runtime.modelSettingsBusy".into());
             }
             if shell.studio.borrow().session.is_none() {
-                return Err("请先打开原生工程。".into());
+                return Err("agent.openProject".into());
             }
             let owner = shell
                 .agent
                 .borrow()
                 .as_ref()
-                .ok_or("当前会话不可用。")?
+                .ok_or("agent.sessionUnavailable")?
                 .status();
             shell
                 .agent_pane
@@ -2064,16 +2294,13 @@ fn resume_waiting_from_ui(component: &str) {
                     .as_ref()
                     .is_none_or(|bridge| !Arc::ptr_eq(bridge, &runtime.bridge))
             {
-                return Err("等待期间会话已停止或更换，本次消息未发送。".into());
+                return Err("runtime.stateChanged".into());
             }
             if app.global::<crate::ui::AgentSettingsUi>().get_busy() {
-                return Err("等待期间模型设置正在改变，本次消息未发送，草稿已保留。".into());
+                return Err("runtime.modelSettingsBusy".into());
             }
             let studio = shell.studio.borrow();
-            let session = studio
-                .session
-                .as_ref()
-                .ok_or("当前工程已关闭，本次消息未发送。")?;
+            let session = studio.session.as_ref().ok_or("agent.openProject")?;
             let current = crate::live::CurrentProject {
                 path: session.path().to_owned(),
                 project_id: session.project_identity().to_owned(),
@@ -2081,10 +2308,16 @@ fn resume_waiting_from_ui(component: &str) {
                 revision: session.revision(),
             };
             if current != waiting.intent.project {
-                return Err("等待期间工程或修订已变化，本次消息未发送，草稿已保留。".into());
+                return Err("runtime.stateChanged".into());
             }
+            let selected = waiting
+                .intent
+                .model
+                .as_ref()
+                .or_else(|| waiting.configuration.active())
+                .ok_or("agent.errorModelRequired")?;
             crate::panes::agent_settings::configuration_store(&studio.host.dirs)
-                .assert_current(&waiting.configuration)
+                .assert_connection_current(selected)
                 .map_err(|error| error.to_string())?;
             shell
                 .agent_pane
@@ -2115,22 +2348,26 @@ fn submit_from_ui(input: String, mode: TaskMode, rewrite: bool) -> Result<(), St
     if mode != TaskMode::Script {
         start_first_chat_from_send(&input)?;
     }
-    let mut result = Err("原生窗口不可用。".to_owned());
+    let mut result = Err("agent.sessionUnavailable".to_owned());
     Shell::with(|shell, app| {
         result = (|| {
             let runtime = shell
                 .embedded
                 .borrow()
                 .clone()
-                .ok_or("请先连接聊天会话。")?;
-            let bridge = shell.agent.borrow().clone().ok_or("当前会话不可用。")?;
+                .ok_or("agent.connectAndReview")?;
+            let bridge = shell
+                .agent
+                .borrow()
+                .clone()
+                .ok_or("agent.sessionUnavailable")?;
             if app.global::<crate::ui::AgentSettingsUi>().get_busy() {
-                return Err("模型设置仍在保存或读取，请等待完成后发送。".into());
+                return Err("runtime.modelSettingsBusy".into());
             }
             let view = runtime.view();
             shell.agent_pane.borrow_mut().apply_runtime(&view);
             if view.waiting_for_ready {
-                return Err("已有消息正在等待连接，请等待完成或停止；草稿已保留。".into());
+                return Err("agent.alreadyWaiting".into());
             }
             let waiting = mode != TaskMode::Script && view.may_wait_for_readiness();
             // Pressing Send is the user's explicit intent for this model
@@ -2149,7 +2386,7 @@ fn submit_from_ui(input: String, mode: TaskMode, rewrite: bool) -> Result<(), St
                     log::info!("bk-cat-agent-audit event=user_send_authorized_model_call");
                 }
                 if !pane.readiness.calls_authorized {
-                    return Err("模型调用授权暂不可用，请等待会话就绪后重新发送。".into());
+                    return Err("agent.notReady".into());
                 }
             }
             let text = if waiting {
@@ -2170,13 +2407,27 @@ fn submit_from_ui(input: String, mode: TaskMode, rewrite: bool) -> Result<(), St
                 shell.agent_pane.borrow().resolve_references(&studio)?
             };
             let ui_draft = input.clone();
-            let session = studio.session.as_ref().ok_or("请先打开原生工程。")?;
+            let session = studio.session.as_ref().ok_or("agent.openProject")?;
             let project = crate::live::CurrentProject {
                 path: session.path().to_owned(),
                 project_id: session.project_identity().to_owned(),
                 session_id: session.session_id(),
                 revision: session.revision(),
             };
+            // All fallible model preflight precedes begin_generation: a removed
+            // connection must never leave a writing task marked in progress.
+            let configuration_store =
+                crate::panes::agent_settings::configuration_store(&studio.host.dirs);
+            let configuration = configuration_store
+                .load()
+                .map_err(|error| error.to_string())?;
+            let model = crate::panes::agent::capture_session_model(&mut studio, &configuration)?;
+            // Persist bookkeeping before any external writing/session work.
+            // This does not save unrelated edits, change native revision, or
+            // invalidate the task snapshot if the whole process exits now.
+            concat_host::projects::drafts::retain_external_work(std::path::Path::new(
+                &project.path,
+            ))?;
             let generation = if mode == TaskMode::Script {
                 Some(studio.script.begin_generation(
                     project.session_id,
@@ -2195,7 +2446,7 @@ fn submit_from_ui(input: String, mode: TaskMode, rewrite: bool) -> Result<(), St
                 // A direct edit does not depend on an unfinished script save.
                 // Only a task bound to a script version must wait for it.
                 if selected.is_some() && !studio.script.selection_settled() {
-                    return Err("请等待文案保存和选版操作完成。".into());
+                    return Err("script.waitOperation".into());
                 }
                 selected
             } else {
@@ -2209,7 +2460,18 @@ fn submit_from_ui(input: String, mode: TaskMode, rewrite: bool) -> Result<(), St
                 || format!("{text}{reference_context}"),
                 |generation| generation.prompt().to_owned(),
             );
+            let reply_language = app.global::<crate::ui::AgentUi>().get_reply_language();
+            let languages = crate::agent::tasks::TaskLanguages::capture(
+                Some(reply_language.as_str()),
+                studio
+                    .prefs
+                    .script_content_languages
+                    .get(&project.project_id)
+                    .map(String::as_str),
+            );
             let intent = SubmissionIntent {
+                languages,
+                model: Some(model),
                 id,
                 project,
                 mode,
@@ -2267,7 +2529,7 @@ fn stop_current_task(shell: &Shell, app: &crate::ui::App) {
             .agent
             .borrow()
             .as_ref()
-            .ok_or_else(|| "会话暂不可用。".into())
+            .ok_or_else(|| "agent.sessionUnavailable".into())
             .and_then(|bridge| bridge.status()),
     );
 }
@@ -2415,13 +2677,13 @@ pub(crate) fn project_opened() {
 /// Explicit native UI action. Reopening after background/stop first requires
 /// the old platform's destruction and its database/ownership release.
 pub(crate) fn connect_from_ui() -> Result<(), String> {
-    let mut result = Err("原生窗口不可用。".into());
+    let mut result = Err("agent.sessionUnavailable".into());
     Shell::with(|shell, _| {
         result = (|| {
             if let Some(runtime) = shell.embedded.borrow().as_ref()
                 && !runtime.view().closed
             {
-                return Err("聊天运行组件尚未关闭，请等待停止完成。".into());
+                return Err("agent.stopping".into());
             }
             let existing = shell.agent.borrow().clone();
             let bridge = if let Some(existing) = existing {
@@ -2437,7 +2699,7 @@ pub(crate) fn connect_from_ui() -> Result<(), String> {
                             studio.host.exporter.clone(),
                         )?)
                     }
-                    _ => return Err("旧会话尚未排空，不能接管存储。".into()),
+                    _ => return Err("agent.stopping".into()),
                 }
             } else {
                 let studio = shell.studio.borrow();
@@ -2626,6 +2888,26 @@ fn finish_assistant_connection() {
     }
 }
 
+/// One explicit language-change projection. Unlike runtime publication this
+/// cannot claim queued input, resume a conversation, load a directory or start
+/// a model request. Native task snapshots and historical body text stay intact.
+pub(crate) fn refresh_language_from_ui() {
+    Shell::with(|shell, app| {
+        let owner = shell
+            .agent
+            .borrow()
+            .as_ref()
+            .ok_or_else(|| "agent.sessionUnavailable".to_owned())
+            .and_then(|bridge| bridge.status());
+        // Titles, errors, authors and previews are rendered from their stable
+        // state. Do not reapply RuntimeView: it can overwrite a still-valid
+        // local refusal that has no corresponding runtime.error.
+        shell.agent_pane.borrow().publish(&app, owner);
+    });
+    crate::panes::agent_settings::retranslate_from_ui();
+    crate::agent::window::refresh_tool_permission();
+}
+
 /// No API key, model provider or fee authorization is inferred by startup.
 #[cfg(feature = "bk-cat-native-probe")]
 pub(crate) fn start_for_window() {
@@ -2649,7 +2931,7 @@ pub(crate) fn start_for_window() {
                     .agent
                     .borrow()
                     .as_ref()
-                    .ok_or_else(|| "聊天会话暂不可用。".to_owned())
+                    .ok_or_else(|| "agent.sessionUnavailable".to_owned())
                     .and_then(|bridge| bridge.status()),
             );
         });
@@ -2668,7 +2950,7 @@ pub(crate) fn show_ui_error(result: Result<(), String>) {
                     .agent
                     .borrow()
                     .as_ref()
-                    .ok_or_else(|| "会话暂不可用。".to_owned())
+                    .ok_or_else(|| "agent.sessionUnavailable".to_owned())
                     .and_then(|bridge| bridge.status()),
             );
         });
@@ -2678,6 +2960,7 @@ pub(crate) fn show_ui_error(result: Result<(), String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slint::Model;
 
     #[test]
     fn a_task_receipt_never_replaces_an_existing_native_or_runtime_error() {
@@ -2685,14 +2968,14 @@ mod tests {
             let mut view = RuntimeView {
                 error: "工程版本已变化，原生操作未执行。".into(),
                 task_running: true,
-                task_title: "正在剪辑当前工程".into(),
+                task_title: "agent.runningEdit".into(),
                 ..Default::default()
             };
             finish_task_view(
                 &mut view,
                 successful,
                 edit_without_changes,
-                Some("用户拒绝了本次剪辑操作，工程未修改。".into()),
+                Some(crate::i18n::t("permission.userDenied").as_str().into()),
             )
             .unwrap_err();
             assert_eq!(view.error, "工程版本已变化，原生操作未执行。");
@@ -2704,12 +2987,12 @@ mod tests {
     #[test]
     fn only_completed_refused_edits_get_a_nonblocking_refusal_title() {
         for reason in [
-            "用户拒绝了本次剪辑操作，工程未修改。",
-            "等待剪辑批准超时，工程未修改。",
+            crate::i18n::t("permission.userDenied").as_str(),
+            crate::i18n::t("permission.timeout").as_str(),
         ] {
             let mut view = RuntimeView {
                 task_running: true,
-                task_title: "正在剪辑当前工程".into(),
+                task_title: "agent.runningEdit".into(),
                 ..Default::default()
             };
             finish_task_view(&mut view, true, true, Some(reason.into())).unwrap();
@@ -2718,7 +3001,7 @@ mod tests {
             assert_eq!(view.task_title, reason);
 
             let error = finish_task_view(&mut view, false, false, Some(reason.into())).unwrap_err();
-            assert!(error.contains("模型任务未完成"));
+            assert!(error.contains("runtime.taskIncomplete"));
             assert!(
                 view.error.is_empty(),
                 "classification cannot publish an error before winning retirement"
@@ -2727,12 +3010,12 @@ mod tests {
         }
         let mut view = RuntimeView::default();
         let error = finish_task_view(&mut view, true, true, None).unwrap_err();
-        assert!(error.contains("没有可核实的原生剪辑修改"));
+        assert!(error.contains("runtime.editUnverified"));
         assert!(view.error.is_empty());
 
         let mut view = RuntimeView {
             task_running: true,
-            task_title: "正在剪辑当前工程".into(),
+            task_title: "agent.runningEdit".into(),
             ..Default::default()
         };
         finish_task_view(&mut view, true, false, None).unwrap();
@@ -3094,6 +3377,8 @@ mod tests {
 
     fn waiting_intent(id: &str) -> SubmissionIntent {
         SubmissionIntent {
+            languages: crate::agent::tasks::TaskLanguages::default(),
+            model: None,
             id: id.into(),
             project: crate::live::CurrentProject {
                 path: "isolated-waiting-project".into(),
@@ -3312,6 +3597,8 @@ mod tests {
 
     fn queued_size_fixture(fixture: &StartupFixture, id: &str) -> SubmissionIntent {
         let intent = SubmissionIntent {
+            languages: crate::agent::tasks::TaskLanguages::default(),
+            model: None,
             id: id.into(),
             project: crate::live::CurrentProject {
                 project_id: "isolated-size-project".into(),
@@ -3362,7 +3649,13 @@ mod tests {
             .finish_submission_preparation(intent.clone(), result);
         assert_eq!(fixture.runtime.view().phase, "ready");
         assert!(!fixture.runtime.view().task_running);
-        assert!(fixture.runtime.view().task_title.contains("请缩短"));
+        assert!(
+            fixture
+                .runtime
+                .view()
+                .task_title
+                .contains("runtime.inputTooLarge")
+        );
         assert!(fixture.runtime.view().error.is_empty());
         assert!(!fixture.runtime.revoked.load(Ordering::Acquire));
         assert!(fixture.runtime.submission.lock().unwrap().is_none());
@@ -3437,7 +3730,13 @@ mod tests {
         assert_eq!(fixture.runtime.view().phase, "stopping");
         assert!(!fixture.runtime.view().task_running);
         assert!(fixture.runtime.view().error.is_empty());
-        assert!(!fixture.runtime.view().task_title.contains("请缩短"));
+        assert!(
+            !fixture
+                .runtime
+                .view()
+                .task_title
+                .contains("runtime.inputTooLarge")
+        );
         assert!(fixture.runtime.submission.lock().unwrap().is_none());
         assert_eq!(fixture.closes.load(Ordering::Acquire), 1);
         fixture.finish();
@@ -3506,6 +3805,8 @@ mod tests {
             9,
         );
         *fixture.runtime.submission.lock().unwrap() = Some(SubmissionIntent {
+            languages: crate::agent::tasks::TaskLanguages::default(),
+            model: None,
             id: id.into(),
             project: project.clone(),
             mode: TaskMode::Edit,
@@ -3524,7 +3825,7 @@ mod tests {
             loaded: true,
             phase: "ready".into(),
             task_running: true,
-            task_title: "正在剪辑当前工程".into(),
+            task_title: "agent.runningEdit".into(),
             ..Default::default()
         };
         let invocation = concat_agent::operations::Invocation {
@@ -3776,6 +4077,9 @@ mod tests {
             .stack_size(32 << 20)
             .spawn(|| {
                 use concat_agent::configuration::{ChannelDraft, ModelProtocol};
+                use concat_agent::credentials::{
+                    CredentialError, CredentialScope, CredentialStatus, CredentialStore, Secret,
+                };
                 use concat_host::playback::{Playback, PlaybackEvents};
                 use slint::ComponentHandle;
                 use slint::platform::software_renderer::{
@@ -3785,6 +4089,39 @@ mod tests {
                 use std::cell::RefCell;
                 use std::collections::VecDeque;
                 use std::rc::Rc;
+                // The window fixture has no system-vault item. Keep availability
+                // stable through real asynchronous refreshes, for only this
+                // random connection and its complete service origin. This store
+                // cannot read, write or delete a credential or authorize a call.
+                struct ReadinessCredentials(CredentialScope);
+                impl CredentialStore for ReadinessCredentials {
+                    fn read(
+                        &self,
+                        _scope: &CredentialScope,
+                    ) -> Result<Option<Secret>, CredentialError> {
+                        Err(CredentialError::Unavailable)
+                    }
+                    fn write(
+                        &self,
+                        _scope: &CredentialScope,
+                        _secret: &Secret,
+                    ) -> Result<(), CredentialError> {
+                        Err(CredentialError::Unavailable)
+                    }
+                    fn delete(&self, _scope: &CredentialScope) -> Result<(), CredentialError> {
+                        Err(CredentialError::Unavailable)
+                    }
+                    fn status(
+                        &self,
+                        scope: &CredentialScope,
+                    ) -> Result<CredentialStatus, CredentialError> {
+                        if scope == &self.0 {
+                            Ok(CredentialStatus::Present)
+                        } else {
+                            Err(CredentialError::InvalidScope)
+                        }
+                    }
+                }
                 type UiJobs = Arc<Mutex<VecDeque<Box<dyn FnOnce() + Send>>>>;
                 #[derive(Clone)]
                 struct Proxy(UiJobs);
@@ -3956,6 +4293,7 @@ mod tests {
                 let phone = surface == "phone";
                 let first_send_only = surface == "desktop-first-send";
                 let app = crate::ui::App::new().unwrap();
+                crate::i18n::install(&app);
                 app.set_phone(phone);
                 app.window().set_size(slint::LogicalSize::new(
                     if phone { 600. } else { 1400. },
@@ -3986,6 +4324,31 @@ mod tests {
                     )
                     .unwrap();
                 store.select(&saved, Some(&saved.channels()[0].id)).unwrap();
+                let channel = &saved.channels()[0];
+                let origin = channel.service_origin().unwrap();
+                let scope = CredentialScope::new(channel.id.as_str(), &origin).unwrap();
+                let credential_store_fixture = Arc::new(ReadinessCredentials(scope.clone()));
+                assert_eq!(
+                    credential_store_fixture.status(&scope),
+                    Ok(CredentialStatus::Present)
+                );
+                for other in [
+                    CredentialScope::new(&random_capability().unwrap(), &origin).unwrap(),
+                    CredentialScope::new(channel.id.as_str(), &format!("{origin}/other")).unwrap(),
+                ] {
+                    assert_eq!(
+                        credential_store_fixture.status(&other),
+                        Err(CredentialError::InvalidScope)
+                    );
+                }
+                assert!(matches!(
+                    credential_store_fixture.read(&scope),
+                    Err(CredentialError::Unavailable)
+                ));
+                assert_eq!(
+                    credential_store_fixture.delete(&scope),
+                    Err(CredentialError::Unavailable)
+                );
                 let open_projects = concat_api::OpenProjects::default();
                 let exporter = concat_host::export::Exporter::new();
                 let bridge = Arc::new(
@@ -4017,7 +4380,10 @@ mod tests {
                     studio: RefCell::new(studio),
                     models: crate::studio::Models::new(),
                 });
+                shell.agent_pane.borrow_mut().credential_store_fixture =
+                    Some(credential_store_fixture);
                 Shell::install(Rc::clone(&shell));
+                app.on_settings_language_changed(crate::panes::settings::language_changed_from_ui);
                 app.global::<crate::ui::Editor>()
                     .on_key_chord(crate::editor_key_chord);
                 app.global::<crate::ui::Focus>()
@@ -4111,9 +4477,9 @@ mod tests {
                 let agent = app.global::<crate::ui::AgentUi>();
                 agent.set_composer_mode(0);
                 if !phone && !first_send_only {
-                    click_accessible_control(&app, "收起 Pi 助手");
+                    click_accessible_control(&app, crate::i18n::t("agent.collapseAssistant").as_str());
                     assert!(shell.embedded.borrow().is_none());
-                    click_accessible_control(&app, "展开 Pi 助手");
+                    click_accessible_control(&app, crate::i18n::t("agent.expandAssistant").as_str());
                     let opened = shell.embedded.borrow().clone().unwrap();
                     assert_eq!(callbacks.lock().unwrap().len(), 1);
                     assert!(!opened.view().task_running);
@@ -4121,8 +4487,8 @@ mod tests {
                     assert!(opened.submission.lock().unwrap().is_none());
                     assert!(posted.lock().unwrap().is_empty());
                     assert!(!shell.agent_pane.borrow().readiness.calls_authorized);
-                    click_accessible_control(&app, "收起 Pi 助手");
-                    click_accessible_control(&app, "展开 Pi 助手");
+                    click_accessible_control(&app, crate::i18n::t("agent.collapseAssistant").as_str());
+                    click_accessible_control(&app, crate::i18n::t("agent.expandAssistant").as_str());
                     assert_eq!(callbacks.lock().unwrap().len(), 1);
                     assert_eq!(shell.embedded.borrow().as_ref().unwrap().component(), opened.component());
                 }
@@ -4149,7 +4515,7 @@ mod tests {
                     let delete: slint::SharedString = char::from(Key::Delete).to_string().into();
                     assert_eq!(agent.get_view(), crate::ui::AgentView::Editor);
                     assert_eq!(agent.get_phone_sheet_state(), 0);
-                    click_accessible_control_at(&app, "打开智能助手", 0.1);
+                    click_accessible_control_at(&app, crate::i18n::t("agent.phoneOpen").as_str(), 0.1);
                     assert_eq!(agent.get_phone_sheet_state(), 1);
                     let opened = shell.embedded.borrow().clone().unwrap();
                     assert_eq!(callbacks.lock().unwrap().len(), 1);
@@ -4179,7 +4545,7 @@ mod tests {
                         text: char::from(Key::Control).to_string().into(),
                     });
                     assert_eq!(&*menu_actions.borrow(), &["save"]);
-                    click_accessible_control_at(&app, "收起智能助手", 0.9);
+                    click_accessible_control_at(&app, crate::i18n::t("agent.collapseAssistant").as_str(), 0.9);
                     assert_eq!(agent.get_phone_sheet_state(), 0);
                     assert!(!opened.revoked.load(Ordering::Acquire));
                     assert_eq!(closes.load(Ordering::Acquire), 0);
@@ -4194,13 +4560,19 @@ mod tests {
                     // taking the later approval-isolation disk baseline.
                     let deleted_revision =
                         shell.studio.borrow().session.as_ref().unwrap().revision();
-                    assert_eq!(app.get_project_status(), "unsaved changes");
-                    pump(&jobs, || app.get_project_status() == "saved");
+                    assert_eq!(
+                        app.get_project_status().as_str(),
+                        crate::i18n::t("common.unsavedChanges").as_str()
+                    );
+                    pump(&jobs, || {
+                        app.get_project_status().as_str()
+                            == crate::i18n::t("common.saved").as_str()
+                    });
                     assert_eq!(
                         shell.studio.borrow().session.as_ref().unwrap().revision(),
                         deleted_revision
                     );
-                    click_accessible_control_at(&app, "打开智能助手", 0.9);
+                    click_accessible_control_at(&app, crate::i18n::t("agent.phoneOpen").as_str(), 0.9);
                     assert_eq!(callbacks.lock().unwrap().len(), 1);
                     assert_eq!(
                         shell.embedded.borrow().as_ref().unwrap().component(),
@@ -4209,20 +4581,19 @@ mod tests {
                     );
                 }
                 agent.set_draft("明确首次发送并等待".into());
-                click_accessible_control_at(&app, "发送", if phone { 0.1 } else { 0.5 });
+                click_accessible_control_at(&app, crate::i18n::t("agent.send").as_str(), if phone { 0.1 } else { 0.5 });
                 let first_runtime = shell.embedded.borrow().clone().unwrap();
                 pump(&jobs, || agent.get_status().busy);
                 assert!(first_runtime.waiting.lock().unwrap().is_some());
                 assert!(!first_runtime.view().task_running);
                 assert!(first_runtime.submission.lock().unwrap().is_none());
                 assert!(!shell.agent_pane.borrow().readiness.calls_authorized);
-                assert!(
-                    submit_chat_from_ui("重复发送".into(), false)
-                        .unwrap_err()
-                        .contains("等待连接")
+                assert_eq!(
+                    submit_chat_from_ui("重复发送".into(), false).unwrap_err(),
+                    "agent.alreadyWaiting"
                 );
                 assert!(agent.get_draft() == "明确首次发送并等待");
-                click_accessible_control_at(&app, "停止", if phone { 0.9 } else { 0.5 });
+                click_accessible_control_at(&app, crate::i18n::t("agent.stop").as_str(), if phone { 0.9 } else { 0.5 });
                 assert!(first_runtime.waiting.lock().unwrap().is_none());
                 assert!(!shell.agent_pane.borrow().readiness.calls_authorized);
                 frame(
@@ -4230,13 +4601,13 @@ mod tests {
                     json!({"event":"runtime.phase","phase":"ready"}),
                 );
                 assert!(posted.lock().unwrap().is_empty());
-                (callbacks.lock().unwrap()[0].closed)("Windows runtime closed".into());
+                (callbacks.lock().unwrap()[0].closed)("lifecycle.windowsClosed".into());
                 pump(&jobs, || first_runtime.view().closed);
                 assert_eq!(callbacks.lock().unwrap().len(), 1,
                     "stopping a task must not itself create a replacement");
                 if phone {
                     agent.set_phone_sheet_state(0);
-                    click_accessible_control(&app, "打开智能助手");
+                    click_accessible_control(&app, crate::i18n::t("agent.phoneOpen").as_str());
                     assert_eq!(
                         callbacks.lock().unwrap().len(),
                         2,
@@ -4248,8 +4619,8 @@ mod tests {
                     pump(&jobs, || true);
                     assert_eq!(callbacks.lock().unwrap().len(), 1,
                         "a late settings event after explicit stop must not reconnect");
-                    click_accessible_control(&app, "收起 Pi 助手");
-                    click_accessible_control(&app, "展开 Pi 助手");
+                    click_accessible_control(&app, crate::i18n::t("agent.collapseAssistant").as_str());
+                    click_accessible_control(&app, crate::i18n::t("agent.expandAssistant").as_str());
                     assert_eq!(callbacks.lock().unwrap().len(), 2,
                         "a fresh desktop open reconnects without a separate control");
                 }
@@ -4260,7 +4631,7 @@ mod tests {
                     .agent_pane
                     .borrow()
                     .publish(&app, runtime.bridge.status());
-                click_accessible_control(&app, "发送");
+                click_accessible_control(&app, crate::i18n::t("agent.send").as_str());
                 pump(&jobs, || runtime.view().waiting_for_ready);
                 activate_to_ready_boundary(&jobs, &posted, &runtime);
 
@@ -4286,7 +4657,7 @@ mod tests {
                     shell.agent_pane.borrow().readiness.calls_authorized,
                     "a stale waiting publication cannot revoke an admitted send"
                 );
-                pump(&jobs, || runtime.view().task_title.contains("聊天通道上限"));
+                pump(&jobs, || runtime.view().task_title.contains("runtime.inputTooLarge"));
                 assert_eq!(
                     runtime.next.load(Ordering::Acquire),
                     command_sequence + 1,
@@ -4333,7 +4704,19 @@ mod tests {
                     9,
                 );
                 runtime.native.tool_approval.begin_task().unwrap();
+                // Match queue_submission: the installed native task is also
+                // running in the live view. A delayed model-choice refresh from
+                // the preceding rejected input checks this current pane state
+                // when delivered, so it cannot treat this task as an idle one.
+                // This projection does not grant or restore model permission.
+                {
+                    let mut view = runtime.view.lock().unwrap();
+                    view.task_running = true;
+                    view.task_title = "agent.runningEdit".into();
+                }
                 let authorized_before = shell.agent_pane.borrow().readiness.calls_authorized;
+                shell.agent_pane.borrow_mut().apply_runtime(&runtime.view());
+                assert_eq!(shell.agent_pane.borrow().readiness.calls_authorized, authorized_before);
                 let mut previous_request = String::new();
                 for response_id in [
                     "native-window-approval-first",
@@ -4348,7 +4731,7 @@ mod tests {
                             app.global::<crate::ui::ScriptUi>().set_ready(true);
                             click_accessible_item_at(
                                 &app,
-                                "当前工程的文案，可保存为独立版本",
+                                crate::i18n::t("script.editorHint").as_str(),
                                 slint::private_unstable_api::re_exports::AccessibleRole::TextInput,
                                 0.2,
                             );
@@ -4386,6 +4769,110 @@ mod tests {
                     let request_id = agent.get_tool_request_id().to_string();
                     assert!(!request_id.is_empty() && request_id != previous_request);
                     previous_request = request_id.clone();
+                    if response_id == "native-window-approval-first" {
+                        // Exercise the actual production settings callback
+                        // while a native approval and an immutable submission
+                        // exist. Language changes only their display projection.
+                        let prior_language = crate::i18n::current();
+                        let prior_view = runtime.view();
+                        let history = "Historical body 中文 {1} remains literal";
+                        let summary = "The conversation history before this point was compacted into the following summary:\n\n<summary>\nHistorical summary 中文 {1}\n</summary>";
+                        let languages = crate::agent::tasks::TaskLanguages::capture(Some("de"), Some("ja"));
+                        let model = saved.channels()[0].clone();
+                        let prior_submission = runtime.submission.lock().unwrap().replace(SubmissionIntent {
+                            languages: languages.clone(), model: Some(model.clone()),
+                            id: "native-window-approval".into(), project: project.clone(),
+                            mode: TaskMode::Edit, input: history.into(), ui_draft: history.into(),
+                            reference_keys: Vec::new(), selected: None, generation: None,
+                        });
+                        let presentation = json!({"conversationId":9, "messages":[
+                            {"role":"user","text":history},
+                            {"role":"compaction","text":summary}
+                        ], "partialText":"", "busy":true});
+                        runtime.accept_presentation(&presentation).unwrap();
+                        assert_eq!(runtime.view().presentation.as_ref(), Some(&presentation));
+                        let mut invalid_role = presentation.clone();
+                        invalid_role["messages"][1]["role"] = json!("system");
+                        assert_eq!(runtime.accept_presentation(&invalid_role).unwrap_err(), "runtime.protocolViolation");
+                        let mut other_conversation = presentation.clone();
+                        other_conversation["conversationId"] = json!(10);
+                        runtime.accept_presentation(&other_conversation).unwrap();
+                        assert_eq!(runtime.view().presentation.as_ref(), Some(&presentation));
+                        {
+                            let mut view = runtime.view.lock().unwrap();
+                            view.task_title = "agent.runningEdit".into();
+                            view.task_running = true;
+                        }
+                        shell.agent_pane.borrow_mut().apply_runtime(&runtime.view());
+                        let sent_before = posted.lock().unwrap().len();
+                        let choices_before = runtime.view().configuration;
+                        for language in ["zh-Hans", "en"] {
+                            let index = shell.studio.borrow().languages.iter()
+                                .position(|entry| entry.code == language).unwrap() as i32;
+                            // Ensure the first projection also runs when the
+                            // fixture already started in this language.
+                            if crate::i18n::current() == language {
+                                refresh_language_from_ui();
+                            }
+                            app.invoke_settings_language_changed(index);
+                            pump(&jobs, || agent.get_messages().row_data(0)
+                                .is_some_and(|row| row.author.as_str() == crate::i18n::t("agent.roleUser").as_str())
+                                && agent.get_messages().row_data(1).is_some_and(|row|
+                                    row.author.as_str() == crate::i18n::t("agent.roleCompaction").as_str()
+                                    && row.preview.as_str() == crate::i18n::t("agent.compactionPreview").as_str())
+                                && agent.get_status().title.as_str() == crate::i18n::t("agent.runningEdit").as_str());
+                            let row = agent.get_messages().row_data(0).unwrap();
+                            assert_eq!(row.body.as_str(), history);
+                            let compacted = agent.get_messages().row_data(1).unwrap();
+                            assert_eq!(compacted.role, crate::ui::AgentMessageRole::Compaction);
+                            assert_eq!(compacted.body.as_str(), summary);
+                            assert!(compacted.collapsible && !compacted.pending);
+                            assert_eq!(runtime.view().presentation.as_ref(), Some(&presentation));
+                            assert_eq!(agent.get_tool_request_id().as_str(), request_id);
+                            assert!(agent.get_tool_pending());
+                            let expected = runtime.tool_permission_view().unwrap().pending_summary.unwrap();
+                            assert_eq!(agent.get_tool_summary().as_str(), expected);
+                            let submission = runtime.submission.lock().unwrap();
+                            let submission = submission.as_ref().unwrap();
+                            assert_eq!(submission.languages, languages);
+                            assert_eq!(submission.model.as_ref().unwrap().id, model.id);
+                            assert_eq!(submission.model.as_ref().unwrap().model, model.model);
+                            assert_eq!(submission.input, history);
+                            assert_eq!(posted.lock().unwrap().len(), sent_before,
+                                "a language change must not send a runtime or model command");
+                            assert_eq!(runtime.view().configuration, choices_before);
+                            assert_eq!(shell.agent_pane.borrow().readiness.calls_authorized, authorized_before,
+                                "language projection must preserve the active task's model permission");
+                        }
+                        // A UI-only refusal is not present in RuntimeView.
+                        // Retranslating must not erase it or re-enable Send.
+                        let prior_error = shell.agent_pane.borrow().error.clone();
+                        shell.agent_pane.borrow_mut().error = "runtime.submissionUnconfirmed".into();
+                        assert!(runtime.view().error.is_empty());
+                        for language in ["zh-Hans", "en"] {
+                            let index = shell.studio.borrow().languages.iter()
+                                .position(|entry| entry.code == language).unwrap() as i32;
+                            app.invoke_settings_language_changed(index);
+                            pump(&jobs, || agent.get_status().error.as_str()
+                                == crate::i18n::t("runtime.submissionUnconfirmed").as_str());
+                            assert_eq!(shell.agent_pane.borrow().error, "runtime.submissionUnconfirmed");
+                            assert!(!agent.get_status().can_send);
+                            assert!(runtime.view().error.is_empty());
+                            assert_eq!(posted.lock().unwrap().len(), sent_before);
+                            assert_eq!(shell.agent_pane.borrow().readiness.calls_authorized, authorized_before,
+                                "retranslating a local refusal must not revoke the active task");
+                        }
+                        shell.agent_pane.borrow_mut().error = prior_error;
+                        *runtime.submission.lock().unwrap() = prior_submission;
+                        *runtime.view.lock().unwrap() = prior_view.clone();
+                        shell.agent_pane.borrow_mut().apply_runtime(&prior_view);
+                        let index = shell.studio.borrow().languages.iter()
+                            .position(|entry| entry.code == prior_language).unwrap() as i32;
+                        app.invoke_settings_language_changed(index);
+                        refresh_language_from_ui();
+                        pump(&jobs, || true);
+                        assert_eq!(posted.lock().unwrap().len(), sent_before);
+                    }
                     if phone {
                         assert_eq!(agent.get_phone_sheet_state(), if focused_script { 2 } else { 1 });
                         assert!(!agent.get_phone_script());
@@ -4406,15 +4893,15 @@ mod tests {
                         crate::agent::window::refresh_tool_permission();
                         assert!(agent.get_phone_script());
                         assert_eq!(agent.get_phone_sheet_state(), 1);
-                        click_accessible_control_at(&app, "收起智能助手", 0.1);
+                        click_accessible_control_at(&app, crate::i18n::t("agent.collapseAssistant").as_str(), 0.1);
                         crate::agent::window::refresh_tool_permission();
                         assert_eq!(agent.get_phone_sheet_state(), 0);
                         assert!(agent.get_phone_script());
                         assert!(agent.get_tool_pending());
                         assert_eq!(agent.get_tool_request_id().as_str(), request_id.as_str());
-                        click_accessible_control_at(&app, "打开智能助手", 0.9);
+                        click_accessible_control_at(&app, crate::i18n::t("agent.phoneOpen").as_str(), 0.9);
                         assert!(agent.get_phone_script());
-                        click_accessible_control_at(&app, "返回智能对话", 0.1);
+                        click_accessible_control_at(&app, crate::i18n::t("agent.phoneChat").as_str(), 0.1);
                         assert!(!agent.get_phone_script());
                     } else {
                         assert!(agent.get_sidebar_open());
@@ -4428,7 +4915,7 @@ mod tests {
                     assert_eq!(shell.agent_pane.borrow().readiness.calls_authorized, authorized_before);
                     assert_eq!(runtime.tool_permission_view().unwrap().mode, 0);
                     assert_eq!(std::fs::read(&manifest).unwrap(), project_before);
-                    click_accessible_control(&app, "拒绝");
+                    click_accessible_control(&app, crate::i18n::t("agent.reject").as_str());
                     pump(&jobs, || {
                         !agent.get_tool_pending() && posted.lock().unwrap().iter().any(|raw| {
                             let value: Value = serde_json::from_str(raw).unwrap();
@@ -4443,7 +4930,7 @@ mod tests {
                 );
                 stop_from_ui();
                 assert!(!shell.agent_pane.borrow().readiness.calls_authorized);
-                (callbacks.lock().unwrap()[1].closed)("Windows runtime closed".into());
+                (callbacks.lock().unwrap()[1].closed)("lifecycle.windowsClosed".into());
                 pump(&jobs, || runtime.view().closed);
 
                 for fault in ["configuration", "revision"] {
@@ -4460,25 +4947,32 @@ mod tests {
                             .unwrap()
                             .as_ref()
                             .unwrap()
-                            .configuration
-                            .clone();
+                            .intent
+                            .model
+                            .clone()
+                            .unwrap();
                         let current = store.load().unwrap();
-                        let channel = current.active().unwrap();
+                        // Change the waiting task's captured connection, not
+                        // whichever connection is now the application default.
+                        let channel = current.channel(&captured.id).unwrap();
                         store
                             .save_channel(
                                 &current,
                                 Some(&channel.id),
                                 ChannelDraft {
                                     label: channel.label.clone(),
-                                    protocol: ModelProtocol::OpenAiCompletions,
-                                    endpoint: "https://startup-fixture.invalid/v1".into(),
+                                    protocol: channel.protocol,
+                                    endpoint: channel.endpoint.clone(),
                                     model: channel.model.clone(),
                                     request_timeout_ms: 1_000,
                                     max_output_tokens: 256,
                                 },
                             )
                             .unwrap();
-                        store.assert_current(&captured).unwrap_err().to_string()
+                        store
+                            .assert_connection_current(&captured)
+                            .unwrap_err()
+                            .to_string()
                     } else {
                         shell
                             .studio
@@ -4488,7 +4982,7 @@ mod tests {
                             .unwrap()
                             .apply(concat_project::Command::AddTrack { bottom: false })
                             .unwrap();
-                        "等待期间工程或修订已变化，本次消息未发送，草稿已保留。".into()
+                        "runtime.stateChanged".into()
                     };
                     let sequence = changed.next.load(Ordering::Acquire);
                     frame(&changed, json!({"event":"runtime.phase","phase":"ready"}));
@@ -4507,7 +5001,7 @@ mod tests {
                         "changed binding retains the draft"
                     );
                     (callbacks.lock().unwrap().last().unwrap().closed)(
-                        "Windows runtime closed".into(),
+                        "lifecycle.windowsClosed".into(),
                     );
                     pump(&jobs, || changed.view().closed);
                 }
@@ -4525,20 +5019,20 @@ mod tests {
                 assert!(switching.waiting.lock().unwrap().is_none());
                 let components_before_close = callbacks.lock().unwrap().len();
                 if phone {
-                    click_accessible_control(&app, "打开智能助手");
+                    click_accessible_control(&app, crate::i18n::t("agent.phoneOpen").as_str());
                     assert_eq!(callbacks.lock().unwrap().len(), components_before_close);
                     assert_eq!(shell.embedded.borrow().as_ref().unwrap().component(), switching.component());
-                    click_accessible_control(&app, "收起智能助手");
+                    click_accessible_control(&app, crate::i18n::t("agent.collapseAssistant").as_str());
                 }
                 frame(&switching, json!({"event":"runtime.phase","phase":"ready"}));
-                (callbacks.lock().unwrap().last().unwrap().closed)("Windows runtime closed".into());
+                (callbacks.lock().unwrap().last().unwrap().closed)("lifecycle.windowsClosed".into());
                 if phone {
                     pump(&jobs, || switching.view().closed);
                     assert_eq!(callbacks.lock().unwrap().len(), components_before_close,
                         "finishing the old component must not silently activate the new phone project");
                     assert_eq!(agent.get_phone_sheet_state(), 0);
                     assert!(!shell.agent_pane.borrow().readiness.calls_authorized);
-                    click_accessible_control(&app, "打开智能助手");
+                    click_accessible_control(&app, crate::i18n::t("agent.phoneOpen").as_str());
                     assert_eq!(callbacks.lock().unwrap().len(), components_before_close + 1);
                 }
                 pump(&jobs, || {
@@ -4568,7 +5062,7 @@ mod tests {
                         assert!(retired.waiting.lock().unwrap().is_some());
                         platform_foreground_changed(false);
                         (callbacks.lock().unwrap().last().unwrap().stopping)(
-                            "安卓应用已转入后台。".into(),
+                            "lifecycle.activityPaused".into(),
                         );
                         assert!(retired.revoked.load(Ordering::Acquire));
                         assert!(retired.waiting.lock().unwrap().is_none());
@@ -4581,7 +5075,7 @@ mod tests {
                                 "foreground resume is not proof of platform destruction");
                         }
                         (callbacks.lock().unwrap().last().unwrap().closed)(
-                            "安卓应用已转入后台。".into(),
+                            "lifecycle.activityPaused".into(),
                         );
                         pump(&jobs, || retired.view().closed);
                         if !resume_before_close {
@@ -4615,17 +5109,17 @@ mod tests {
                     let count = callbacks.lock().unwrap().len();
                     platform_foreground_changed(false);
                     (callbacks.lock().unwrap().last().unwrap().stopping)(
-                        "安卓应用已转入后台。".into(),
+                        "lifecycle.activityPaused".into(),
                     );
                     (callbacks.lock().unwrap().last().unwrap().closed)(
-                        "安卓应用已转入后台。".into(),
+                        "lifecycle.activityPaused".into(),
                     );
                     pump(&jobs, || replacement.view().closed);
                     platform_foreground_changed(true);
                     pump(&jobs, || true);
                     assert_eq!(callbacks.lock().unwrap().len(), count,
                         "returning to the manual editor keeps the assistant quiet");
-                    click_accessible_control(&app, "打开智能助手");
+                    click_accessible_control(&app, crate::i18n::t("agent.phoneOpen").as_str());
                     assert_eq!(callbacks.lock().unwrap().len(), count + 1);
                     replacement = shell.embedded.borrow().clone().unwrap();
                 }
@@ -4636,7 +5130,7 @@ mod tests {
                 let count = callbacks.lock().unwrap().len();
                 replacement.stop();
                 (callbacks.lock().unwrap().last().unwrap().closed)(
-                    "Windows runtime closed".into(),
+                    "lifecycle.windowsClosed".into(),
                 );
                 pump(&jobs, || replacement.view().closed);
                 resume_assistant_connection_after_settings();
@@ -4648,11 +5142,11 @@ mod tests {
                 replacement = shell.embedded.borrow().clone().unwrap();
                 replacement.stop();
                 (callbacks.lock().unwrap().last().unwrap().closed)(
-                    "Windows runtime closed".into(),
+                    "lifecycle.windowsClosed".into(),
                 );
                 pump(&jobs, || replacement.view().closed && agent.get_status().can_connect);
                 agent.set_draft("停止后明确发送新消息".into());
-                click_accessible_control(&app, "发送");
+                click_accessible_control(&app, crate::i18n::t("agent.send").as_str());
                 assert_eq!(callbacks.lock().unwrap().len(), count + 2,
                     "a new send also connects without reopening the assistant");
                 replacement = shell.embedded.borrow().clone().unwrap();
@@ -4660,11 +5154,11 @@ mod tests {
                 assert!(!replacement.view().task_running);
                 let reopen = || {
                     if phone {
-                        click_accessible_control(&app, "收起智能助手");
-                        click_accessible_control(&app, "打开智能助手");
+                        click_accessible_control(&app, crate::i18n::t("agent.collapseAssistant").as_str());
+                        click_accessible_control(&app, crate::i18n::t("agent.phoneOpen").as_str());
                     } else {
-                        click_accessible_control(&app, "收起 Pi 助手");
-                        click_accessible_control(&app, "展开 Pi 助手");
+                        click_accessible_control(&app, crate::i18n::t("agent.collapseAssistant").as_str());
+                        click_accessible_control(&app, crate::i18n::t("agent.expandAssistant").as_str());
                     }
                 };
                 for cancel in [false, true] {
@@ -4679,7 +5173,7 @@ mod tests {
                     if cancel {
                         stop_from_ui();
                     }
-                    (callbacks.lock().unwrap().last().unwrap().closed)("Windows runtime closed".into());
+                    (callbacks.lock().unwrap().last().unwrap().closed)("lifecycle.windowsClosed".into());
                     pump(&jobs, || retired.view().closed);
                     pump(&jobs, || true);
                     if cancel {
@@ -4706,7 +5200,7 @@ mod tests {
                 shell.studio.borrow_mut().open_project(third).unwrap();
                 pump(&jobs, || replacement.revoked.load(Ordering::Acquire));
                 stop_from_ui();
-                (callbacks.lock().unwrap().last().unwrap().closed)("Windows runtime closed".into());
+                (callbacks.lock().unwrap().last().unwrap().closed)("lifecycle.windowsClosed".into());
                 pump(&jobs, || replacement.view().closed);
                 resume_assistant_connection_after_settings();
                 pump(&jobs, || true);
@@ -4741,6 +5235,7 @@ mod tests {
                 ))
                 .unwrap();
                 let app = crate::ui::App::new().unwrap();
+                crate::i18n::install(&app);
                 app.set_phone(true);
                 app.set_on_start(false);
                 app.window().set_size(slint::LogicalSize::new(600., 800.));
@@ -4827,10 +5322,13 @@ mod tests {
                     pane.publish(&app, fixture.bridge.status());
                     let agent = app.global::<crate::ui::AgentUi>();
                     assert!(agent.get_status().can_send);
-                    assert_eq!(agent.get_status().title, "操作未执行");
+                    assert_eq!(
+                        agent.get_status().title,
+                        crate::i18n::t("agent.actionRefused").as_str()
+                    );
                     agent.set_composer_mode(1);
                     agent.set_draft(next.clone().into());
-                    click_accessible_control(&app, "发送");
+                    click_accessible_control(&app, crate::i18n::t("agent.send").as_str());
                     assert_eq!(
                         sent.borrow().last(),
                         Some(&next),
@@ -4877,6 +5375,13 @@ mod tests {
         std::thread::Builder::new()
             .stack_size(32 << 20)
             .spawn(|| {
+                let _language = crate::i18n::language_lock();
+                let previous_language = crate::i18n::current();
+                let language_dirs = AppDirs::under(&std::env::temp_dir().join(format!(
+                    "bkcut-completion-language-{}",
+                    random_capability().unwrap()
+                )));
+                crate::i18n::select(crate::i18n::ENGLISH, &language_dirs);
                 use slint::ComponentHandle;
                 use slint::platform::software_renderer::{
                     MinimalSoftwareWindow, RepaintBufferType,
@@ -4887,6 +5392,7 @@ mod tests {
                 ))
                 .unwrap();
                 let app = crate::ui::App::new().unwrap();
+                crate::i18n::install(&app);
                 app.set_phone(true);
                 app.set_on_start(false);
                 app.window().set_size(slint::LogicalSize::new(600., 800.));
@@ -5004,17 +5510,17 @@ mod tests {
                     if case == "existing-error" {
                         assert_eq!(error, existing);
                     } else if case == "prepare-failed" {
-                        assert!(error.contains("原生会话恢复核验尚未完成"));
+                        assert!(error.contains("agent.errorRecoveryPending"));
                     } else if case == "observe-failed" {
                         assert!(error.contains("会话历史读取失败"));
                     } else if case == "start-failed" {
                         assert!(error.contains("启动配置失败"));
                     } else if case == "queue-failed" {
-                        assert!(error.contains("聊天任务队列已满"));
+                        assert!(error.contains("runtime.queueFull"));
                     } else if case == "unanswered" {
-                        assert!(error.contains("模型任务未完成"));
+                        assert!(error.contains("runtime.taskIncomplete"));
                     } else {
-                        assert!(error.contains("没有可核实的原生剪辑修改"));
+                        assert!(error.contains("runtime.editUnverified"));
                     }
                     assert!(
                         fixture
@@ -5025,7 +5531,7 @@ mod tests {
                             .is_none()
                     );
 
-                    (fixture.callbacks.closed)("Windows runtime closed".into());
+                    (fixture.callbacks.closed)("lifecycle.windowsClosed".into());
                     fixture.wait_for(|view| view.closed);
                     assert_eq!(
                         fixture.bridge.status().unwrap().phase,
@@ -5037,9 +5543,36 @@ mod tests {
                     let agent = app.global::<crate::ui::AgentUi>();
                     assert!(!agent.get_status().can_send);
                     assert!(agent.get_status().can_connect);
-                    assert_eq!(agent.get_status().error, error);
+                    let expected_code = match case {
+                        "existing-error" | "observe-failed" | "start-failed" => {
+                            "agent.errorUnexpected"
+                        }
+                        "prepare-failed" => "agent.errorRecoveryPending",
+                        "queue-failed" => "runtime.queueFull",
+                        "unanswered" => "runtime.taskIncomplete",
+                        _ => "runtime.editUnverified",
+                    };
+                    let expected_details = if expected_code == "agent.errorUnexpected" {
+                        error.as_str()
+                    } else {
+                        let (code, details) = error.split_once('\n').unwrap_or((&error, ""));
+                        assert_eq!(code, expected_code);
+                        details
+                    };
+                    for language in [crate::i18n::ENGLISH, "zh-Hans"] {
+                        crate::i18n::select(language, &language_dirs);
+                        pane.publish(&app, fixture.bridge.status());
+                        let status = agent.get_status();
+                        assert_eq!(status.error_code.as_str(), expected_code);
+                        assert_eq!(status.error.as_str(), crate::i18n::t(expected_code));
+                        assert_eq!(status.error_details.as_str(), expected_details);
+                        assert!(!status.can_send && status.can_connect);
+                        assert_eq!(fixture.runtime.view().error, error);
+                    }
+                    crate::i18n::select(crate::i18n::ENGLISH, &language_dirs);
+                    pane.publish(&app, fixture.bridge.status());
                     agent.set_draft("恢复前不能直接执行".into());
-                    click_accessible_control(&app, "发送");
+                    click_accessible_control(&app, crate::i18n::t("agent.send").as_str());
                     // Neither surface has a manual connection button. This
                     // fixture has no Shell; exercise the shared open callback.
                     // Both surfaces' reconnection is covered with a real Shell
@@ -5064,13 +5597,14 @@ mod tests {
                     });
                     pane.publish(&app, replacement.status());
                     assert!(agent.get_status().can_review && !agent.get_status().can_send);
-                    click_accessible_control(&app, "核对工程");
+                    click_accessible_control(&app, crate::i18n::t("agent.reviewProject").as_str());
                     assert_eq!(reviews.get(), index + 1);
                     replacement.finish_handoff(Duration::from_secs(1)).unwrap();
                     drop(replacement);
                     fixture.finish();
                 }
                 app.hide().unwrap();
+                crate::i18n::select(&previous_language, &language_dirs);
             })
             .unwrap()
             .join()
@@ -5117,11 +5651,11 @@ mod tests {
                         .runtime
                         .view()
                         .error
-                        .contains("没有可核实的原生剪辑修改")
+                        .contains("runtime.editUnverified")
                 );
             }
             let before = fixture.runtime.view().error;
-            (fixture.callbacks.closed)("Windows runtime closed".into());
+            (fixture.callbacks.closed)("lifecycle.windowsClosed".into());
             fixture.wait_for(|view| view.closed);
             assert_eq!(fixture.runtime.view().error, before);
             assert_eq!(
@@ -5151,7 +5685,7 @@ mod tests {
         resume.wait();
         worker.join().unwrap();
         assert!(fixture.runtime.view().error.is_empty());
-        (fixture.callbacks.closed)("Windows runtime closed".into());
+        (fixture.callbacks.closed)("lifecycle.windowsClosed".into());
         fixture.wait_for(|view| view.closed);
         assert!(fixture.runtime.view().error.is_empty());
         fixture.finish();
@@ -5172,7 +5706,7 @@ mod tests {
         assert!(!fixture.runtime.revoked.load(Ordering::Acquire));
         fixture.runtime.finish_task_presentation(false, false, None);
         assert!(fixture.runtime.revoked.load(Ordering::Acquire));
-        (fixture.callbacks.closed)("Windows runtime closed".into());
+        (fixture.callbacks.closed)("lifecycle.windowsClosed".into());
         fixture.wait_for(|view| view.closed);
         assert_eq!(fixture.runtime.view().error, original);
         fixture.finish();
@@ -5224,7 +5758,7 @@ mod tests {
                     .unwrap()
                     .is_none()
             );
-            (fixture.callbacks.closed)("Windows runtime closed".into());
+            (fixture.callbacks.closed)("lifecycle.windowsClosed".into());
             fixture.wait_for(|view| view.closed);
             assert!(fixture.runtime.view().error.is_empty());
             fixture.finish();
@@ -5246,7 +5780,7 @@ mod tests {
                 .runtime
                 .view()
                 .error
-                .contains("模型任务提交未得到明确确认")
+                .contains("runtime.submissionUnconfirmed")
         );
         assert!(fixture.runtime.revoked.load(Ordering::Acquire));
         fixture.finish();
@@ -5259,9 +5793,15 @@ mod tests {
             panic!("isolated approval cleanup failure");
         }));
         fixture.runtime.stop();
-        (fixture.callbacks.closed)("Windows runtime closed".into());
+        (fixture.callbacks.closed)("lifecycle.windowsClosed".into());
         fixture.wait_for(|view| view.closed);
-        assert!(fixture.runtime.view().error.contains("审批工作线程"));
+        assert!(
+            fixture
+                .runtime
+                .view()
+                .error
+                .contains("permission.stateUnavailable")
+        );
         assert_eq!(
             fixture.bridge.status().unwrap().phase,
             concat_agent::Phase::Released
@@ -5418,12 +5958,24 @@ mod tests {
             fixture.posted.lock().unwrap().iter().any(|raw| {
                 let frame: Value = serde_json::from_str(raw).unwrap();
                 frame["id"] == "approval-preflight-failed"
-                    && frame["result"]["approved"] == false
-                    && frame["result"]["message"]
-                        .as_str()
-                        .is_some_and(|text| text.contains("会话未就绪"))
             })
         });
+        let response = fixture
+            .posted
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|raw| {
+                let frame: Value = serde_json::from_str(raw).unwrap();
+                (frame["id"] == "approval-preflight-failed").then_some(frame)
+            })
+            .unwrap();
+        assert!(
+            response.get("error").is_none(),
+            "readiness refusal is a native result, not a transport failure"
+        );
+        assert_eq!(response["result"]["approved"], false);
+        assert_eq!(response["result"]["message"], "agent.connectAndReview");
         assert!(
             fixture
                 .runtime
@@ -5451,8 +6003,8 @@ mod tests {
     fn platform_close_cancels_human_wait_before_releasing_native_ownership() {
         for reason in [
             "Native host closed",
-            "安卓应用已转入后台。",
-            "安卓应用正在保存状态。",
+            "lifecycle.activityPaused",
+            "lifecycle.activitySaved",
         ] {
             let fixture = StartupFixture::new(Duration::from_secs(30));
             start_test_approval(&fixture, "approval-close");
@@ -5526,7 +6078,7 @@ mod tests {
                 };
             }
             fixture.message(event);
-            fixture.wait_for(|view| view.error.contains("接受回执不一致"));
+            fixture.wait_for(|view| view.error.contains("runtime.protocolViolation"));
             assert!(fixture.runtime.revoked.load(Ordering::Acquire));
             assert!(
                 fixture
@@ -5624,7 +6176,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_failure_codes_publish_chinese_errors_without_untrusted_diagnostics() {
+    fn startup_failure_codes_publish_stable_errors_without_untrusted_diagnostics() {
         for code in ["weak-references", "script-execution", "credential-secret"] {
             let fixture = StartupFixture::new(Duration::from_secs(30));
             fixture.message(json!({"event":"runtime.loadFailed","code":code,
@@ -5635,7 +6187,10 @@ mod tests {
             let error = fixture.runtime.view().error;
             assert!(!error.contains("credential-secret"));
             assert!(!error.contains("private-project-path"));
-            assert!(error.contains("网页组件") || error.contains("未审核"));
+            assert!(matches!(
+                error.as_str(),
+                "runtime.webCapability" | "runtime.scriptExecution" | "runtime.protocolViolation"
+            ));
             assert_eq!(fixture.closes.load(Ordering::Acquire), 1);
             assert!(fixture.posted.lock().unwrap().is_empty());
             (fixture.callbacks.closed)("Native host closed".into());
@@ -5653,14 +6208,14 @@ mod tests {
         fixture.wait_for(|view| view.phase == "stopping" && !view.error.is_empty());
         assert_eq!(
             fixture.runtime.view().error,
-            "智能体启动失败：原版 Pi 会话存储初始化失败"
+            "runtime.startupFailed\n原版 Pi 会话存储初始化失败"
         );
         assert_eq!(fixture.closes.load(Ordering::Acquire), 1);
-        (fixture.callbacks.closed)("Windows runtime closed".into());
+        (fixture.callbacks.closed)("lifecycle.windowsClosed".into());
         fixture.wait_for(|view| view.closed);
         assert_eq!(
             fixture.runtime.view().error,
-            "智能体启动失败：原版 Pi 会话存储初始化失败"
+            "runtime.startupFailed\n原版 Pi 会话存储初始化失败"
         );
         fixture.finish();
     }
@@ -5711,7 +6266,7 @@ mod tests {
             assert!(fixture.runtime.view().error.is_empty(), "{boundary}");
             assert!(fixture.posted.lock().unwrap().is_empty());
             assert_eq!(fixture.closes.load(Ordering::Acquire), 1);
-            (fixture.callbacks.closed)("Windows runtime closed".into());
+            (fixture.callbacks.closed)("lifecycle.windowsClosed".into());
             fixture.wait_for(|view| view.closed);
             assert!(fixture.runtime.view().error.is_empty());
             fixture.finish();
@@ -5743,7 +6298,7 @@ mod tests {
         delivery.join().unwrap();
         assert!(fixture.runtime.view().error.is_empty());
         assert_eq!(fixture.closes.load(Ordering::Acquire), 1);
-        (fixture.callbacks.closed)("Windows runtime closed".into());
+        (fixture.callbacks.closed)("lifecycle.windowsClosed".into());
         fixture.wait_for(|view| view.closed);
         assert!(fixture.runtime.view().error.is_empty());
         fixture.finish();
@@ -5763,7 +6318,7 @@ mod tests {
                     // Native revocation without runtime stop remains a fault.
                     fixture.bridge.stop();
                     fixture.runtime.reply_native("live", Ok(Value::Null));
-                    "原生执行资格已撤销，请重新核对当前工程和会话。"
+                    "agent.connectAndReview"
                 }
                 "owner-error" => {
                     fixture.runtime.reply_native_via(
@@ -5791,13 +6346,13 @@ mod tests {
                         },
                         |work| Err(mpsc::TrySendError::Full(work)),
                     );
-                    "审批结果无法送达运行组件，已停止执行。"
+                    "runtime.approvalDeliveryFailed"
                 }
             };
             assert_eq!(fixture.runtime.view().error, expected);
             assert!(fixture.runtime.revoked.load(Ordering::Acquire));
             assert_eq!(fixture.closes.load(Ordering::Acquire), 1);
-            (fixture.callbacks.closed)("Windows runtime closed".into());
+            (fixture.callbacks.closed)("lifecycle.windowsClosed".into());
             fixture.wait_for(|view| view.closed);
             assert_eq!(fixture.runtime.view().error, expected);
             fixture.finish();
@@ -5846,7 +6401,7 @@ mod tests {
                 fixture.runtime.stop();
             }
             assert!(observation.recv_timeout(Duration::from_secs(5)).unwrap());
-            (fixture.callbacks.closed)("Windows runtime closed".into());
+            (fixture.callbacks.closed)("lifecycle.windowsClosed".into());
             fixture.wait_for(|view| view.closed);
             assert!(fixture.runtime.view().error.is_empty());
             assert!(fixture.runtime.approval_worker.lock().unwrap().is_none());
@@ -5873,12 +6428,12 @@ mod tests {
             }
             if notify_stopping {
                 for _ in 0..2 {
-                    (fixture.callbacks.stopping)("Windows runtime stopping".into());
+                    (fixture.callbacks.stopping)("lifecycle.windowsStopping".into());
                     assert!(fixture.runtime.view().error.is_empty());
                     assert!(!fixture.runtime.view().closed);
                 }
             }
-            (fixture.callbacks.closed)("Windows runtime closed".into());
+            (fixture.callbacks.closed)("lifecycle.windowsClosed".into());
             fixture.wait_for(|view| view.closed);
             assert!(fixture.runtime.view().error.is_empty());
             assert_eq!(fixture.runtime.view().phase, "closed");
@@ -5898,8 +6453,8 @@ mod tests {
 
             // Late teardown notifications cannot recreate a red error or move
             // the completed terminal view back to an in-progress state.
-            (fixture.callbacks.stopping)("Windows runtime stopping".into());
-            (fixture.callbacks.closed)("Windows runtime closed".into());
+            (fixture.callbacks.stopping)("lifecycle.windowsStopping".into());
+            (fixture.callbacks.closed)("lifecycle.windowsClosed".into());
             assert!(fixture.runtime.view().error.is_empty());
             assert_eq!(fixture.runtime.view().phase, "closed");
             fixture.finish();
@@ -5912,22 +6467,22 @@ mod tests {
         fixture.runtime.view.lock().unwrap().error = "原生工程状态核对失败。".into();
         // This is the first revocation, so it also covers the old `first`
         // branch that could overwrite an already published task error.
-        (fixture.callbacks.stopping)("Windows runtime stopping".into());
-        (fixture.callbacks.closed)("Windows runtime closed".into());
+        (fixture.callbacks.stopping)("lifecycle.windowsStopping".into());
+        (fixture.callbacks.closed)("lifecycle.windowsClosed".into());
         fixture.wait_for(|view| view.closed);
         assert_eq!(fixture.runtime.view().error, "原生工程状态核对失败。");
         fixture.finish();
 
-        for previous in ["", "Windows runtime stopping", "Windows runtime closed"] {
+        for previous in ["", "lifecycle.windowsStopping", "lifecycle.windowsClosed"] {
             let fixture = StartupFixture::new(Duration::from_secs(30));
             fixture.runtime.view.lock().unwrap().error = previous.into();
-            (fixture.callbacks.stopping)("Windows runtime stopping".into());
+            (fixture.callbacks.stopping)("lifecycle.windowsStopping".into());
             (fixture.callbacks.closed)("WebView2 process failed".into());
             fixture.wait_for(|view| view.closed);
             let failure = fixture.runtime.view().error;
             assert!(failure.contains("WebView2 process failed"));
-            (fixture.callbacks.stopping)("Windows runtime stopping".into());
-            (fixture.callbacks.closed)("Windows runtime closed".into());
+            (fixture.callbacks.stopping)("lifecycle.windowsStopping".into());
+            (fixture.callbacks.closed)("lifecycle.windowsClosed".into());
             assert_eq!(fixture.runtime.view().error, failure);
             assert_eq!(fixture.runtime.view().phase, "closed");
             fixture.finish();
@@ -5938,8 +6493,8 @@ mod tests {
     fn completed_native_cleanup_clears_only_placeholders_and_keeps_shutdown_errors() {
         for previous in [
             "",
-            "Windows runtime stopping",
-            "Windows runtime closed",
+            "lifecycle.windowsStopping",
+            "lifecycle.windowsClosed",
             "原始运行错误",
         ] {
             let mut view = RuntimeView {
@@ -5974,7 +6529,7 @@ mod tests {
     #[test]
     fn platform_terminal_reason_replaces_only_generic_placeholder() {
         assert!(terminal_reason_replaces_placeholder(
-            "Windows runtime stopping",
+            "lifecycle.windowsStopping",
             "WebView2 initialisation timed out"
         ));
         assert!(!terminal_reason_replaces_placeholder(
@@ -5982,8 +6537,8 @@ mod tests {
             "WebView2 initialisation timed out"
         ));
         assert!(!terminal_reason_replaces_placeholder(
-            "Windows runtime stopping",
-            "Windows runtime closed"
+            "lifecycle.windowsStopping",
+            "lifecycle.windowsClosed"
         ));
     }
 
@@ -6020,6 +6575,34 @@ mod tests {
         assert!(!fixture.runtime.view().loaded);
         assert!(fixture.posted.lock().unwrap().is_empty());
         fixture.finish();
+    }
+
+    #[test]
+    fn persisted_history_frames_fit_without_relaxing_origin_or_command_admission() {
+        let body = serde_json::to_string(
+            &json!({"messages":[{"role":"user", "content":"history ".repeat(460_000)}]}),
+        )
+        .unwrap();
+        assert!(body.len() > 3 * 1024 * 1024);
+        let payload = json!({"method":"network.open", "body":body});
+        let encoded = encode_frame(
+            "same-native-component",
+            json!({"id":"js:large-history", "payload":payload}),
+        )
+        .unwrap();
+        assert!(encoded.len() > MAX_COMMAND_FRAME_BYTES);
+        let accepted = authenticate(&encoded, "same-native-component").unwrap();
+        assert_eq!(accepted["payload"], payload);
+        assert!(authenticate(&encoded, "other-native-component").is_err());
+        let reply = encode_frame(
+            "same-native-component",
+            json!({"id":"js:database", "result":body}),
+        )
+        .unwrap();
+        assert_eq!(
+            authenticate(&reply, "same-native-component").unwrap()["result"],
+            body
+        );
     }
 
     #[test]

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import { I18n } from "i18n.slint";
 import { Theme } from "theme/theme.slint";
 import { Button } from "primitives/modal.slint";
 
@@ -6,7 +7,7 @@ import { Button } from "primitives/modal.slint";
 export global AgentCallUi {
     in property <bool> allowed;
     in property <bool> can-authorize;
-    in property <string> usage-policy: "不设置任务级请求次数、总费用或会话词元预算；单次输出受渠道技术设置约束，服务商按实际使用计费。";
+    in property <string> usage-policy: I18n.t("agent.billingNotice");
     callback authorize-requested();
 }
 
@@ -20,7 +21,7 @@ export component AgentCallAuthorization inherits VerticalLayout {
         wrap: word-wrap;
     }
     Button {
-        label: root.compact ? (AgentCallUi.allowed ? "撤回授权" : "允许调用") : (AgentCallUi.allowed ? "已授权当前模型 · 点击撤回" : "允许当前模型");
+        label: root.compact ? (AgentCallUi.allowed ? I18n.t("agent.revoke") : I18n.t("agent.allowCalls")) : (AgentCallUi.allowed ? I18n.t("agent.modelAuthorized") : I18n.t("agent.authorizeModel"));
         max-width: root.compact ? 120px : 100000px;
         enabled: AgentCallUi.can-authorize || AgentCallUi.allowed;
         primary: AgentCallUi.allowed;

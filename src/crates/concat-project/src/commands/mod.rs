@@ -1442,6 +1442,19 @@ pub fn apply(
     if command.has_non_finite() {
         return Err(CommandError::NotANumber);
     }
+    let initial = crate::initial_format::before(project);
+    let outcome = apply_inner(project, mint, command)?;
+    if outcome.applied {
+        crate::initial_format::after(project, initial);
+    }
+    Ok(outcome)
+}
+
+fn apply_inner(
+    project: &mut Project,
+    mint: &mut IdMint,
+    command: Command,
+) -> Result<Outcome, CommandError> {
     match command {
         Command::ApplySingleMainTemplate { plan } => single_main::apply(project, mint, plan),
         Command::Batch { commands } => {

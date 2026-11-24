@@ -62,11 +62,25 @@ pub(super) fn apply(
             if !video.is_sane() {
                 return Ok(Outcome::default());
             }
+            let format_changed = project
+                .timelines
+                .iter()
+                .find(|timeline| timeline.id == timeline_id)
+                .is_some_and(|timeline| {
+                    let old = timeline.video;
+                    old.width != video.width
+                        || old.height != video.height
+                        || (i128::from(old.rate_num) * i128::from(video.rate_den)
+                            != i128::from(video.rate_num) * i128::from(old.rate_den))
+                });
             let applied = project
                 .timelines
                 .iter_mut()
                 .find(|timeline| timeline.id == timeline_id)
                 .is_some_and(|timeline| assign(&mut Arc::make_mut(timeline).video, video));
+            if applied && format_changed {
+                crate::initial_format::user_set(project);
+            }
             Ok(Outcome {
                 created_id: None,
                 applied,

@@ -79,12 +79,12 @@ fn main() {
         let icon = "../../../assets/icons/concat.ico";
         println!("cargo:rerun-if-changed={icon}");
         // The file's name and description as Windows shows them in its
-        // properties, and as code signing checks them: "Concat" in every
+        // properties, and as code signing checks them: "BK CUT" in every
         // build, where the default would be the crate's lower-case name.
         winresource::WindowsResource::new()
             .set_icon(icon)
-            .set("ProductName", "Concat")
-            .set("FileDescription", "Concat")
+            .set("ProductName", "BK CUT")
+            .set("FileDescription", "BK CUT")
             .set(
                 "LegalCopyright",
                 "Copyright 2026 Jareer Abdullah, AGPL-3.0-or-later",
@@ -146,7 +146,7 @@ fn bundle_agent_resources() {
         product_release || std::env::var("BK_CAT_REQUIRE_AGENT_ASSETS").as_deref() == Ok("1");
     assert!(
         complete || !required,
-        "build src/agent-runtime with the pinned Pi reference before packaging BK CAT"
+        "build src/agent-runtime with the pinned Pi reference before packaging BK CUT"
     );
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("out dir"));
     let mut table = String::from("pub static ASSETS: &[(&str, &[u8])] = &[\n");

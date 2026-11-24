@@ -111,10 +111,7 @@ fn with_location<T>(
         && previous.path != current
         && read_identity(&previous.path)?.as_deref() == Some(project_id)
     {
-        return Err(format!(
-            "检测到工程副本，原工程仍位于 {}。为防止两份工程共用文案，本副本的文案操作已停止；原生剪辑仍可使用。请打开原工程继续文案工作。",
-            previous.path.display()
-        ));
+        return Err("agent.errorProjectIdentity".into());
     }
     // Read again while holding the identity's lock, before any version action.
     if read_identity(&current)?.as_deref() != Some(project_id) {

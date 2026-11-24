@@ -328,8 +328,19 @@ impl Studio {
             return;
         };
         match concat_host::projects::clear_cache(&path) {
-            Ok(count) => self.notify(&format!("Cleared {count} cache files"), false),
-            Err(error) => self.notify(&format!("Cache clear failed: {error}"), true),
+            Ok(count) => self.notify(&tf("studio.cacheCleared", &[&count]), false),
+            Err(error) => {
+                // This filesystem error includes the current project's cache
+                // path. Hide that exact private path before the existing log
+                // pipeline; keep its operating-system reason for Show the log.
+                let cache = std::path::Path::new(&path)
+                    .join("cache")
+                    .display()
+                    .to_string();
+                let detail = error.replace(cache.as_str(), "[project-cache]");
+                log::warn!("project: cache clear failed: {detail}");
+                self.notify(&t("studio.cacheClearFailed"), true);
+            }
         }
         self.request_media_art();
         self.request_preview();
@@ -379,6 +390,18 @@ impl Studio {
 
     fn save_and_release_project(&mut self) -> Result<(), String> {
         log::debug!("project: closing {}", self.project_name);
+        let mut retain = self.script.has_user_work();
+        crate::host::Shell::with(|shell, app| {
+            retain |= shell.agent_pane.borrow().has_user_work()
+                || !app
+                    .global::<crate::ui::AgentUi>()
+                    .get_draft()
+                    .trim()
+                    .is_empty();
+        });
+        if retain && let Some(session) = self.session.as_mut() {
+            session.preserve_draft()?;
+        }
         // Words still being typed land in the save, not on the floor.
         self.flush_commit();
         // So does a voiceover still being recorded, or stopped a moment ago
@@ -429,6 +452,10 @@ impl Studio {
             // the runtime's native storage or its queued protocol frames.
             crate::embedded::stop_for_project_change(agent);
         }
+        self.media.retire_imports();
+        self.start.retire_imports();
+        self.host.exporter.cancel();
+        self.export.retire_project();
         self.host.cutouts.cancel();
         self.host.stabilizers.cancel();
         self.host.enhancers.cancel();

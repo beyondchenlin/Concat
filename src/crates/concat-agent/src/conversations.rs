@@ -195,13 +195,13 @@ pub fn inspect_project_conversations(
     validate_project(project_id)?;
     inspect(owner, token, Vec::new(), |connection| {
         let mut statement = connection.prepare(
-            "SELECT conversation_id FROM conversation_bindings WHERE project_id=?1 ORDER BY conversation_id LIMIT 65537",
+            "SELECT conversation_id FROM conversation_bindings WHERE project_id=?1 ORDER BY conversation_id",
         )?;
         let rows = statement.query_map([project_id], |row| row.get::<_, i64>(0))?;
         let mut conversations = Vec::new();
         for row in rows {
             let value = u64::try_from(row?).map_err(|_| BindingError::InvalidStorage)?;
-            if value > MAX_CONVERSATION_ID || conversations.len() >= 65_536 {
+            if value > MAX_CONVERSATION_ID {
                 return Err(BindingError::InvalidStorage);
             }
             conversations.push(value);

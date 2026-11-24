@@ -1,0 +1,95 @@
+{
+  "brand": "BK CUT",
+  "original": {
+    "path": "assets/brand/bkcut.png",
+    "sha256": "2d0d0775b513cb417ec48507cce54b9c72b726a94f310eb16fec77d3fe5c23e5",
+    "width": 1254,
+    "height": 1254,
+    "mode": "RGBA"
+  },
+  "smallIcon": {
+    "sourceCrop": [
+      128,
+      128,
+      1174,
+      914
+    ],
+    "maximumCanvasFraction": 0.76,
+    "resampling": "LANCZOS",
+    "background": "transparent"
+  },
+  "largeLogo": "assets/brand/bk-cut-full-512.png",
+  "pillowVersion": "12.0.0",
+  "outputs": [
+    {
+      "path": "assets/brand/bk-cut-full-512.png",
+      "bytes": 116081,
+      "sha256": "cdb60d845e53558e4a70b755d622c5ff4f6ca0289879edc49d06b5d74b1ecdb4"
+    },
+    {
+      "path": "assets/concat_logo_512.png",
+      "bytes": 70933,
+      "sha256": "96eed21f872efb897758dc39db4496f7978b76b92471ad216cd055dc37d694a0"
+    },
+    {
+      "path": "assets/icons/concat.ico",
+      "bytes": 42029,
+      "sha256": "9b2c9428f23cee2868c3582bcd8fbcc48b173989e3c48eb34515543f889f795c"
+    },
+    {
+      "path": "assets/icons/concat_logo_128.png",
+      "bytes": 8613,
+      "sha256": "8f2688a00a6006eacd1a5f86a078069ef1201a244a34ec9324fd54ea8f4e55c1"
+    },
+    {
+      "path": "assets/icons/concat_logo_16.png",
+      "bytes": 494,
+      "sha256": "3ea9e28709e60adcda55678291cedec9c945a3048caf27534dc9d8c4703efd40"
+    },
+    {
+      "path": "assets/icons/concat_logo_256.png",
+      "bytes": 22955,
+      "sha256": "bdf26935b346726b5e62a67751df35806daa109c1aa42224d91e9b65a864847a"
+    },
+    {
+      "path": "assets/icons/concat_logo_32.png",
+      "bytes": 1203,
+      "sha256": "15f216fec54cd93de70baf711d2c5ba29b5521863aa11c98be678c9baa06a94f"
+    },
+    {
+      "path": "assets/icons/concat_logo_512.png",
+      "bytes": 70933,
+      "sha256": "96eed21f872efb897758dc39db4496f7978b76b92471ad216cd055dc37d694a0"
+    },
+    {
+      "path": "assets/icons/concat_logo_64.png",
+      "bytes": 3452,
+      "sha256": "4b9a23d59547f91a99d4c2217f2689cd0e285ef1143f82a8f0c883818ed79396"
+    },
+    {
+      "path": "src/crates/concat-android/res/mipmap-hdpi/ic_launcher.png",
+      "bytes": 4017,
+      "sha256": "c8f55230a3b957b3b5e30bc714ee11edf083641ee95fdb7f60d09fce0476cc70"
+    },
+    {
+      "path": "src/crates/concat-android/res/mipmap-mdpi/ic_launcher.png",
+      "bytes": 2218,
+      "sha256": "99c8bfcf4c50047880709775061a1a681a8c433391e0ebbb78e78fc02d94e7ad"
+    },
+    {
+      "path": "src/crates/concat-android/res/mipmap-xhdpi/ic_launcher.png",
+      "bytes": 5910,
+      "sha256": "97401ae7a163e3e328fe66d38301feac1532e0b665168f14923dd1d59525de33"
+    },
+    {
+      "path": "src/crates/concat-android/res/mipmap-xxhdpi/ic_launcher.png",
+      "bytes": 10219,
+      "sha256": "fb6576b2dff23de351f94d7271a68966b4d953cd1773138af2a55bfc077a0442"
+    },
+    {
+      "path": "src/crates/concat-android/res/mipmap-xxxhdpi/ic_launcher.png",
+      "bytes": 15142,
+      "sha256": "55e119997ca9aff87ecbef45065608c11535c1ddacc310362f33f396d5f298fb"
+    }
+  ]
+}

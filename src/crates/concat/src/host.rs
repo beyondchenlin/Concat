@@ -767,10 +767,25 @@ pub fn pick_files_then(
     if cfg!(any(target_os = "android", target_os = "ios")) {
         let _ = slint::invoke_from_event_loop(move || {
             let filter = filter.as_ref().map(|(name, list)| (name.as_str(), *list));
-            crate::platform::pick_files_async(&title, filter, move |paths| {
-                if !paths.is_empty() {
-                    on_ui(move |studio, app, models| then(studio, app, models, paths));
-                }
+            let epoch = project_epoch();
+            crate::platform::pick_files_async(&title, filter, move |picked| {
+                on_ui_in_project(epoch, move |studio, app, models| {
+                    // Dropping a retired callback cancels its unaccepted copies.
+                    match picked.accept() {
+                        Ok(Some(paths)) if !paths.is_empty() => then(studio, app, models, paths),
+                        Ok(Some(paths)) => {
+                            let failures =
+                                crate::panes::media_bin::take_platform_import_failures(&paths);
+                            if !failures.is_empty() {
+                                studio.notify(&failures.join("\n"), true);
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            studio.notify(&crate::platform::pick_error_message(&error), true);
+                        }
+                    }
+                });
             });
         });
     } else {

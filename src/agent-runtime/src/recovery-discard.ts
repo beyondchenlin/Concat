@@ -11,42 +11,41 @@ const TASKS: Readonly<Record<string, { version: number; phases: readonly string[
   "pi.compaction": { version: 1, phases: ["select", "summarize", "retry"] },
 };
 const LIVE_TASK_STATES = new Set(["pending", "running", "waiting", "sleeping", "completing"]);
-const MAX_SCAN_RECORDS = 1_000_000;
 
 type InspectedTask = HarnessInspection["tasks"][number]["record"];
 
-function reviewTask(record: InspectedTask, allowed: ReadonlySet<number>): void {
-  if (!LIVE_TASK_STATES.has(record.state.status)) throw new RuntimeRefused("存在未知历史任务状态，未自动放弃。");
-  if (!allowed.has(record.conversationId)) throw new RuntimeRefused("仍有其他工程或未绑定会话的任务，请切换到对应工程处理。");
+export function reviewTask(record: InspectedTask, allowed: ReadonlySet<number>): void {
+  if (!LIVE_TASK_STATES.has(record.state.status)) throw new RuntimeRefused("agent.errorRecoverySnapshotInvalid");
+  if (!allowed.has(record.conversationId)) throw new RuntimeRefused("agent.errorRecoveryOtherProject");
   const known = Object.hasOwn(TASKS, record.kind) ? TASKS[record.kind] : undefined;
-  if (!known || record.version !== known.version) throw new RuntimeRefused("存在未经审核的任务种类或版本，未自动放弃。");
+  if (!known || record.version !== known.version) throw new RuntimeRefused("agent.errorRecoverySnapshotInvalid");
   if (record.state.status !== "completing" && record.state.status !== "terminal") {
     const checkpoint = record.state.checkpoint;
     if (!checkpoint || typeof checkpoint !== "object" || Array.isArray(checkpoint)
       || typeof checkpoint.phase !== "string" || !known.phases.includes(checkpoint.phase)
       || (record.kind === "pi.generation" && "poll" in checkpoint)) {
-      throw new RuntimeRefused("存在延期网络轮询或未经审核的任务阶段，未自动放弃。");
+      throw new RuntimeRefused("agent.errorRecoveryScope");
     }
   }
 }
 
 function reviewSubmission(submission: SubmissionRecord, allowed: ReadonlySet<number>): void {
-  if (!allowed.has(submission.conversationId)) throw new RuntimeRefused("仍有其他工程或未绑定会话的输入，请切换到对应工程处理。");
+  if (!allowed.has(submission.conversationId)) throw new RuntimeRefused("agent.errorRecoveryOtherProject");
   if (!["input", "write", "continue"].includes(submission.type) || !["queued", "placed"].includes(submission.status)) {
-    throw new RuntimeRefused("存在未经审核的历史输入状态，未自动放弃。");
+    throw new RuntimeRefused("agent.errorRecoverySnapshotInvalid");
   }
 }
 
 function assertLocal(gate: ExecutionGate, lease: OwnerLease): void {
   gate.assertStorageWrite(lease);
-  if (gate.phase !== "activating") throw new RuntimeRefused("放弃操作只能在原生恢复核对阶段执行。");
+  if (gate.phase !== "activating") throw new RuntimeRefused("agent.errorRecoveryChanged");
 }
 
 function fixedFailure(error: unknown): never {
   if (error instanceof RuntimeRefused) throw error;
   // Never forward raw stored/provider error or model text. Original records
   // retain their actual outcomes for a separately reviewed diagnostic path.
-  throw new RuntimeRefused("原版会话取消或持久化未能完成，已有记录保留，运行组件未进入就绪状态。");
+  throw new RuntimeRefused("agent.errorRecoveryChanged");
 }
 
 /** Harness.open writes running -> pending even with scheduling paused. Use
@@ -64,15 +63,14 @@ export async function reviewDiscardStorage(
     for (const kind of ["tasks", "submissions"] as const) {
       let cursor: Cursor | undefined;
       let previousId = -1;
-      let reviewed = 0;
       do {
         const page = kind === "tasks"
           ? await storage.scanTasks({}, 256, cursor, context)
           : await storage.scanSubmissions({}, 256, cursor, context);
         assertLocal(gate, lease);
         for (const record of page.items) {
-          if (++reviewed > MAX_SCAN_RECORDS || !Number.isSafeInteger(record.id) || record.id <= previousId) {
-            throw new RuntimeRefused("历史记录超出审核上限或分页编号不一致，未自动放弃。");
+          if (!Number.isSafeInteger(record.id) || record.id <= previousId) {
+            throw new RuntimeRefused("agent.errorRecoverySnapshotInvalid");
           }
           previousId = record.id;
           if (kind === "tasks") {
@@ -84,7 +82,7 @@ export async function reviewDiscardStorage(
             if (["done", "unanswered"].includes(submission.status)) continue;
             reviewSubmission(submission, allowed);
           }
-          if (mustBeSettled) throw new RuntimeRefused("原版存储仍有未完成记录，会话未恢复就绪。");
+          if (mustBeSettled) throw new RuntimeRefused("agent.errorRecoveryChanged");
         }
         cursor = page.next;
       } while (cursor !== undefined);
@@ -97,19 +95,19 @@ export async function reviewDiscardStorage(
  * A generation's deferred poll can call a provider even while aborting it;
  * it therefore cannot use this strictly local discard path. */
 function review(inspection: HarnessInspection, allowed: ReadonlySet<number>, marked: boolean): void {
-  if (inspection.scheduling !== "paused") throw new RuntimeRefused("会话执行器未暂停，不能安全放弃历史任务。");
+  if (inspection.scheduling !== "paused") throw new RuntimeRefused("agent.errorRecoveryChanged");
   for (const { record, state } of inspection.tasks) {
     reviewTask(record, allowed);
     if (state.kind === "blocked" || state.kind === "running"
       || (state.kind === "pending" && state.migrates)) {
-      throw new RuntimeRefused("存在未经审核的任务种类、版本或迁移状态，未自动放弃。");
+      throw new RuntimeRefused("agent.errorRecoveryScope");
     }
-    if (marked && record.abortRequested !== true) throw new RuntimeRefused("历史任务未全部标记取消，会话未恢复就绪。");
+    if (marked && record.abortRequested !== true) throw new RuntimeRefused("agent.errorRecoveryChanged");
   }
   for (const submission of inspection.submissions) {
     reviewSubmission(submission, allowed);
     if (marked && submission.status === "queued") {
-      throw new RuntimeRefused("历史输入没有全部安全撤销，会话未恢复就绪。");
+      throw new RuntimeRefused("agent.errorRecoveryChanged");
     }
   }
 }
@@ -133,7 +131,7 @@ export async function discardOriginalWork(
       if (submission.status !== "queued") continue;
       const outcome = await harness.abortSubmission(submission.id, context, submission.conversationId);
       assert();
-      if (outcome !== "aborted" && outcome !== "settled") throw new RuntimeRefused("历史排队输入未能撤销，会话未恢复就绪。");
+      if (outcome !== "aborted" && outcome !== "settled") throw new RuntimeRefused("agent.errorRecoveryChanged");
     }
     for (const { record } of before.tasks) {
       await harness.abortTask(record.id, context);
@@ -148,13 +146,13 @@ export async function discardOriginalWork(
       const settled = await harness.waitForTask(record.id, context);
       assert();
       if (settled.state.outcome.status !== "aborted" && record.state.status !== "completing") {
-        throw new RuntimeRefused("原版任务取消没有正常结束，未将会话标记为就绪。");
+        throw new RuntimeRefused("agent.errorRecoveryChanged");
       }
     }
     await harness.waitForIdle(context);
     assert();
     const after = await harness.inspect(context);
     assert();
-    if (after.tasks.length || after.submissions.length) throw new RuntimeRefused("仍有未完成会话记录，未自动恢复新任务。");
+    if (after.tasks.length || after.submissions.length) throw new RuntimeRefused("agent.errorRecoveryChanged");
   } catch (error) { fixedFailure(error); }
 }

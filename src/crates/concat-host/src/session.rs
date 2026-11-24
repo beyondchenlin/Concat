@@ -40,6 +40,7 @@ pub struct Session {
     /// The project folder, for saving.
     path: String,
     settings: DocumentSettings,
+    draft_retained: bool,
     editor: Editor,
     /// The links to retired effects the open rewrote, old id and new, each
     /// pair once: what the window names as the project opens.
@@ -187,6 +188,7 @@ impl Session {
         };
         let save_authority =
             projects::SaveAuthority::opened(project_identity.clone(), source, already_identified);
+        let draft_retained = !projects::drafts::unretained(editor.project());
         Ok(Session {
             session_id: next_session_id()?,
             project_identity,
@@ -194,6 +196,7 @@ impl Session {
             revision: 0,
             path: path.to_owned(),
             settings,
+            draft_retained,
             editor,
             upgraded,
             retired,
@@ -242,6 +245,7 @@ impl Session {
             revision: self.revision,
             path: self.path.clone(),
             settings: self.settings.clone(),
+            draft_retained: self.draft_retained,
             editor: Editor::from_project(self.editor.project().clone()),
             upgraded: Vec::new(),
             retired: Default::default(),
@@ -389,6 +393,39 @@ impl Session {
             .map_err(|error| error.to_string())?;
         if outcome.applied {
             self.revision = next;
+            self.draft_retained = true;
+        }
+        Ok(self.view_with(outcome.created_id))
+    }
+
+    /// Commit a user-picked source batch. Native state decides whether this is
+    /// the draft's first import; the caller supplies the current window locks.
+    pub fn import_media(
+        &mut self,
+        items: Vec<concat_project::commands::NewMedia>,
+        locked_tracks: &HashSet<String>,
+    ) -> Result<EditorView, String> {
+        let next = self
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| "native project revision exhausted".to_owned())?;
+        let place_initial = self
+            .project()
+            .extra
+            .contains_key(projects::drafts::DRAFT_FIELD)
+            && self.project().media.is_empty()
+            && self
+                .project()
+                .timelines
+                .iter()
+                .all(|timeline| timeline.clips.is_empty());
+        let outcome = self
+            .editor
+            .import_media(items, place_initial, locked_tracks)
+            .map_err(|error| error.to_string())?;
+        if outcome.applied {
+            self.revision = next;
+            self.draft_retained = true;
         }
         Ok(self.view_with(outcome.created_id))
     }
@@ -414,6 +451,7 @@ impl Session {
             .map_err(|error| error.to_string())?;
         if outcome.applied {
             self.revision = next;
+            self.draft_retained = true;
         }
         Ok(self.view_with(outcome.created_id))
     }
@@ -461,6 +499,7 @@ impl Session {
                     .ok_or_else(|| "native project revision exhausted".to_owned())?;
                 self.settings.name = trimmed.to_owned();
                 self.revision = next;
+                self.draft_retained = true;
             }
         }
         Ok((self.path.clone(), self.document()))
@@ -478,10 +517,40 @@ impl Session {
         .map(|_| ())
     }
 
+    /// Explicit keep/save or independently persisted writing/conversation work.
+    pub fn preserve_draft(&mut self) -> Result<(), String> {
+        if !self.draft_retained {
+            let next = self
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| "native project revision exhausted".to_owned())?;
+            projects::drafts::retain_external_work(std::path::Path::new(&self.path))?;
+            self.revision = next;
+            self.draft_retained = true;
+        }
+        Ok(())
+    }
+
+    /// Only the current unused native draft is eligible for reuse.
+    pub fn is_unused_draft(&self) -> bool {
+        !self.draft_retained
+            && !projects::drafts::external_work_retained(std::path::Path::new(&self.path))
+            && projects::drafts::unretained(self.project())
+            && self.project().media.is_empty()
+            && self
+                .project()
+                .timelines
+                .iter()
+                .all(|timeline| timeline.clips.is_empty())
+    }
+
     /// The document as it would be saved.
     pub fn document(&self) -> serde_json::Value {
         let mut document = self.editor.to_document(&self.settings);
         document[crate::project_identity::FIELD] = self.project_identity.clone().into();
+        if let Some(draft) = document.get_mut(projects::drafts::DRAFT_FIELD) {
+            draft["retained"] = self.draft_retained.into();
+        }
         document
     }
 

@@ -78,6 +78,47 @@ pub struct SavedLayout {
     pub maximized: bool,
 }
 
+/// Defaults copied into future projects, never applied to an open edit.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct NewProjectDefaults {
+    pub location: Option<String>,
+    pub match_media: bool,
+    pub width: u32,
+    pub height: u32,
+    pub rate_num: i64,
+    pub rate_den: i64,
+}
+
+impl Default for NewProjectDefaults {
+    fn default() -> Self {
+        Self {
+            location: None,
+            match_media: true,
+            width: 1920,
+            height: 1080,
+            rate_num: 30,
+            rate_den: 1,
+        }
+    }
+}
+
+impl NewProjectDefaults {
+    pub fn video(&self) -> concat_project::model::VideoSettings {
+        let defaults = concat_project::model::VideoSettings::default();
+        let mut video = concat_project::model::VideoSettings {
+            width: self.width.clamp(2, concat_core::frame::MAX_SIDE),
+            height: self.height.clamp(2, concat_core::frame::MAX_SIDE),
+            ..defaults
+        };
+        if concat_core::time::FrameRate::checked(self.rate_num, self.rate_den).is_some() {
+            video.rate_num = self.rate_num;
+            video.rate_den = self.rate_den;
+        }
+        video
+    }
+}
+
 /// Remembered preferences.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -86,6 +127,18 @@ pub struct Preferences {
     pub dark: Option<bool>,
     /// The parent folder of the last project created successfully.
     pub last_project_location: Option<String>,
+    #[serde(default)]
+    pub new_project_defaults: NewProjectDefaults,
+    /// Workspace content language keyed by persistent native project identity.
+    #[serde(default)]
+    pub script_content_languages: BTreeMap<String, String>,
+    #[serde(default)]
+    pub agent_session_models: BTreeMap<String, String>,
+    /// Ordinary assistant reply language, independent from writing content.
+    #[serde(default)]
+    pub agent_reply_languages: BTreeMap<String, String>,
+    /// Reuse only a verified unused native draft; never delete it on lookup.
+    pub empty_draft_path: Option<String>,
     /// The accent, by the lower-cased name the theme lists it under —
     /// "lime", "sky", ... — or as "#rrggbb" for a colour picked by hand.
     /// `None`, or a name no longer on the list, is the first one, which is
@@ -182,7 +235,7 @@ pub struct Preferences {
     /// the tray's meter button puts them away.
     pub vu_meters: Option<bool>,
     /// Where model downloads look first: a `SourcePreference` by name.
-    /// Absent is automatic.
+    /// Absent uses the verified ModelScope mirror first.
     pub download_source: Option<String>,
     /// The base URL a custom download source appends a model's file to.
     pub download_base: Option<String>,
@@ -1257,5 +1310,35 @@ mod tests {
             .count();
         assert_eq!(leftovers, 0);
         let _ = std::fs::remove_dir_all(dirs.config.parent().expect("a root"));
+    }
+}
+
+#[cfg(test)]
+mod new_project_defaults_tests {
+    use super::NewProjectDefaults;
+
+    #[test]
+    fn invalid_fields_do_not_erase_other_defaults_or_exact_rates() {
+        let mut settings = NewProjectDefaults {
+            width: u32::MAX,
+            height: 1080,
+            rate_num: 30000,
+            rate_den: 1001,
+            ..Default::default()
+        };
+        let video = settings.video();
+        assert_eq!(
+            (video.width, video.height),
+            (concat_core::frame::MAX_SIDE, 1080)
+        );
+        assert_eq!((video.rate_num, video.rate_den), (30000, 1001));
+        assert!(video.is_sane());
+        settings.width = 640;
+        settings.height = 0;
+        settings.rate_den = 0;
+        let video = settings.video();
+        assert_eq!((video.width, video.height), (640, 2));
+        assert_eq!((video.rate_num, video.rate_den), (30, 1));
+        assert!(video.is_sane());
     }
 }

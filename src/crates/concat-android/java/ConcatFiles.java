@@ -16,9 +16,11 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.AssetFileDescriptor;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
+import android.os.CancellationSignal;
 import android.os.Environment;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
@@ -33,6 +35,8 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * The system's document picker, for an activity that has no Java of its
@@ -71,7 +75,14 @@ public class ConcatFiles extends Fragment {
      * older pick must not deliver into the new one's callback, so only
      * this fragment's answer is sent.
      */
-    private static volatile ConcatFiles current;
+    private static final AtomicReference<ConcatFiles> current = new AtomicReference<ConcatFiles>();
+    private long requestId;
+    private final OwnedCopies copies = new OwnedCopies();
+    private volatile boolean cancelled;
+    private volatile InputStream activeInput;
+    private volatile CancellationSignal activeCancellation;
+    private long nextProgress;
+
 
     /**
      * Where a finished export goes, under the phone's storage: Movies/Concat.
@@ -771,17 +782,32 @@ public class ConcatFiles extends Fragment {
     }
 
     /** Registered from Rust: the picked files' paths, or none. */
-    public static native void filesPicked(String[] paths);
+    public static native void filesPicked(long request, String[] paths, String[] failedNames, String[] failures);
+
+    /** Returns false for a cancelled, replaced or already delivered request. */
+    public static native boolean copyProgress(long request, int completed, int total,
+            long copiedBytes, long totalBytes);
+
+    /** A native UI decision for this exact request, never the next picker. */
+    public static boolean finishPick(long request, boolean accepted) {
+        ConcatFiles fragment = current.get();
+        if (fragment != null && fragment.requestId == request) return fragment.settle(accepted);
+        // Retirement is idempotent. Acceptance always needs the exact live
+        // owner to acknowledge it before native code receives any paths.
+        return !accepted;
+    }
 
     /**
      * Shows the picker, offering the MIME types in {@code types} - comma
      * separated, "video/*,audio/*" - or every file when it is empty. From
      * any thread; the fragment is added on the UI thread.
      */
-    public static void pick(final Activity activity, final String types) {
+    public static void pick(final Activity activity, final String types, final long request) {
         activity.runOnUiThread(new Runnable() {
             @Override
             public void run() {
+                // A queued old launch must not replace a newer native request.
+                if (!copyProgress(request, 0, 0, 0, 0)) return;
                 FragmentManager manager = activity.getFragmentManager();
                 Fragment previous = manager.findFragmentByTag(TAG);
                 if (previous != null) {
@@ -791,26 +817,64 @@ public class ConcatFiles extends Fragment {
                     manager.executePendingTransactions();
                 }
                 ConcatFiles fragment = new ConcatFiles();
-                current = fragment;
+                fragment.requestId = request;
+                ConcatFiles retired = current.getAndSet(fragment);
+                if (retired != null) retired.settle(false);
                 manager.beginTransaction()
                         .add(fragment, TAG)
                         .commitAllowingStateLoss();
                 manager.executePendingTransactions();
 
-                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-                intent.addCategory(Intent.CATEGORY_OPENABLE);
-                intent.setType("*/*");
-                if (types != null && !types.isEmpty()) {
-                    intent.putExtra(Intent.EXTRA_MIME_TYPES, types.split(","));
+                Intent photos = photoPicker(types);
+                if (photos != null) {
+                    try {
+                        fragment.startActivityForResult(photos, REQUEST_PICK);
+                        return;
+                    } catch (Exception unavailable) {
+                        Log.i(TAG, "system photo picker unavailable; opening Files", unavailable);
+                    }
                 }
-                intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
                 try {
-                    fragment.startActivityForResult(intent, REQUEST_PICK);
-                } catch (Exception e) {
-                    fragment.done(new ArrayList<Uri>());
+                    fragment.startActivityForResult(documentPicker(types), REQUEST_PICK);
+                } catch (Exception error) {
+                    fragment.answer(new String[0], new String[] {""},
+                            new String[] {reason(error)});
                 }
             }
         });
+    }
+
+    /** Native visual picker; Files and audio always retain the document path. */
+    private static Intent photoPicker(String types) {
+        if (types == null || types.isEmpty() || types.contains("audio/")) return null;
+        boolean available = Build.VERSION.SDK_INT >= 33
+                || (Build.VERSION.SDK_INT >= 30
+                    && android.os.ext.SdkExtensions.getExtensionVersion(Build.VERSION_CODES.R) >= 2);
+        if (!available) return null;
+        Intent intent = new Intent(MediaStore.ACTION_PICK_IMAGES);
+        if (types.equals("image/*") || types.equals("video/*")) intent.setType(types);
+        intent.putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX, MediaStore.getPickImagesMaxLimit());
+        // This optional extra is ignored by older picker implementations.
+        intent.putExtra("android.provider.extra.PICK_IMAGES_IN_ORDER", true);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        return intent;
+    }
+
+    private static Intent documentPicker(String types) {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        if (types != null && !types.isEmpty()) {
+            intent.putExtra(Intent.EXTRA_MIME_TYPES, types.split(","));
+        }
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        return intent;
+    }
+
+    private static String reason(Exception error) {
+        String message = error.getMessage();
+        return message == null || message.isEmpty() ? error.toString() : message;
     }
 
     @Override
@@ -835,7 +899,7 @@ public class ConcatFiles extends Fragment {
         done(uris);
     }
 
-    /** Copies what was picked and reports it; then the fragment goes. */
+    /** Copies what was picked and reports it; native UI still owns acceptance. */
     private void done(final List<Uri> uris) {
         final Activity activity = getActivity();
         try {
@@ -846,55 +910,200 @@ public class ConcatFiles extends Fragment {
             answer(new String[0]);
             return;
         }
-        // Off the UI thread: a video is big and the copy takes a while.
         new Thread(new Runnable() {
             @Override
             public void run() {
-                // With no external storage mounted the private folder
-                // stands in; a folder that cannot be made fails the pick
-                // out loud rather than as an empty answer.
-                File base = activity.getExternalFilesDir(null);
-                if (base == null) {
-                    base = activity.getFilesDir();
-                }
-                File dir = new File(base, "Imported");
-                if (!dir.isDirectory() && !dir.mkdirs()) {
-                    Log.w(TAG, "could not make " + dir);
-                    answer(new String[0]);
-                    return;
-                }
                 List<String> paths = new ArrayList<String>();
-                for (Uri uri : uris) {
-                    File out = unique(dir, displayName(activity, uri));
-                    if (copy(activity, uri, out)) {
-                        paths.add(out.getAbsolutePath());
+                List<String> names = new ArrayList<String>();
+                List<String> failures = new ArrayList<String>();
+                try {
+                    report(0, uris.size(), 0, 0, true);
+                    File base = activity.getExternalFilesDir(null);
+                    if (base == null) base = activity.getFilesDir();
+                    File imported = new File(base, "Imported");
+                    checkAllowed();
+                    if (!imported.isDirectory() && !imported.mkdirs()) {
+                        throw new IOException("cannot create persistent media directory: " + imported);
                     }
+                    // No later request reuses this directory, including after
+                    // a failed file. Retirement cannot delete another pick.
+                    File dir = new File(imported, "pick-" + UUID.randomUUID().toString());
+                    checkAllowed();
+                    copies.directory(dir);
+                    for (int index = 0; index < uris.size(); index++) {
+                        report(index, uris.size(), 0, 0, true);
+                        Uri uri = uris.get(index);
+                        String name = uri.getLastPathSegment();
+                        if (name == null) name = "";
+                        CancellationSignal signal = new CancellationSignal();
+                        activeCancellation = signal;
+                        try {
+                            checkAllowed();
+                            name = displayName(activity, uri, signal);
+                            File out = copies.reserve(name);
+                            copy(activity, uri, out, index, uris.size(), signal);
+                            paths.add(out.getAbsolutePath());
+                        } catch (CopyCancelled stopped) {
+                            throw stopped;
+                        } catch (IOException | RuntimeException error) {
+                            checkAllowed();
+                            names.add(name);
+                            failures.add(reason(error));
+                        } finally {
+                            activeCancellation = null;
+                        }
+                        report(index + 1, uris.size(), 0, 0, true);
+                    }
+                    checkAllowed();
+                    answer(paths.toArray(new String[0]), names.toArray(new String[0]), failures.toArray(new String[0]));
+                } catch (CopyCancelled stopped) {
+                    settle(false);
+                    answer(new String[0]);
+                } catch (IOException | RuntimeException error) {
+                    names.add(""); failures.add(reason(error));
+                    answer(paths.toArray(new String[0]), names.toArray(new String[0]), failures.toArray(new String[0]));
+                } finally {
+                    if (cancelled) cleanupCopies();
                 }
-                answer(paths.toArray(new String[0]));
             }
         }, TAG).start();
     }
 
-    /** Reports to the native side, unless a newer pick took the slot. */
+    private void checkAllowed() throws CopyCancelled {
+        if (cancelled || current.get() != this || !copyProgress(requestId, 0, 0, 0, 0)) {
+            throw new CopyCancelled();
+        }
+    }
+
+    private void report(int done, int total, long bytes, long size, boolean force) throws CopyCancelled {
+        checkAllowed();
+        long now = System.nanoTime();
+        if (force || now >= nextProgress) {
+            nextProgress = now + 100000000L;
+            if (!copyProgress(requestId, done, total, bytes, size)) throw new CopyCancelled();
+        }
+    }
+
+    /** Stop I/O immediately; slow provider close and disk cleanup are workers. */
+    private boolean settle(boolean keep) {
+        if (keep) {
+            if (!copies.accept()) return false;
+            current.compareAndSet(this, null);
+            return true;
+        }
+        // Only the first cancellation starts an interrupt worker. A later
+        // cancellation cannot remove files already accepted by native code.
+        if (!copies.cancel()) return true;
+        cancelled = true;
+        final InputStream interrupt = activeInput;
+        final CancellationSignal signal = activeCancellation;
+        current.compareAndSet(this, null);
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    if (signal != null) signal.cancel();
+                } catch (RuntimeException error) {
+                    Log.w(TAG, "provider did not acknowledge cancellation", error);
+                }
+                try {
+                    if (interrupt != null) interrupt.close();
+                } catch (IOException | RuntimeException error) {
+                    Log.w(TAG, "provider stream did not close cleanly", error);
+                } finally {
+                    cleanupCopies();
+                }
+            }
+        }, TAG + "-cancel").start();
+        return true;
+    }
+
+    /** Only files exclusively reserved by this request may be removed. */
+    private void cleanupCopies() {
+        for (File file : copies.cleanup()) {
+            Log.w(TAG, "could not remove retired selection copy " + file);
+        }
+    }
+
+    /** File ownership has no Activity dependency and is exercised directly. */
+    static final class OwnedCopies {
+        private final List<File> files = new ArrayList<File>();
+        private File directory;
+        private boolean accepted;
+        private boolean cancelled;
+
+        synchronized void directory(File dir) throws IOException {
+            if (cancelled || accepted) throw new CopyCancelled();
+            if (directory != null || !dir.mkdir()) throw new IOException("cannot reserve persistent selection directory");
+            directory = dir;
+        }
+
+        synchronized File reserve(String name) throws IOException {
+            if (cancelled || accepted) throw new CopyCancelled();
+            if (directory == null) throw new IOException("selection directory was not reserved");
+            File out = unique(directory, name);
+            files.add(out);
+            return out;
+        }
+
+        synchronized boolean accept() {
+            if (cancelled) return false;
+            accepted = true;
+            // Empty failed selections do not leave an empty directory. This
+            // never removes a directory containing a completed accepted file.
+            if (directory != null) directory.delete();
+            files.clear();
+            directory = null;
+            return true;
+        }
+
+        synchronized boolean cancel() {
+            if (cancelled || accepted) return false;
+            cancelled = true;
+            return true;
+        }
+
+        synchronized List<File> cleanup() {
+            List<File> failed = new ArrayList<File>();
+            if (accepted || !cancelled) return failed;
+            for (File file : files) {
+                if (!file.delete() && file.exists()) failed.add(file);
+            }
+            // Refuses non-empty directories; unrelated content is preserved.
+            if (directory != null && !directory.delete() && directory.exists()) failed.add(directory);
+            return failed;
+        }
+    }
+
     private void answer(String[] paths) {
-        if (current == this) {
-            filesPicked(paths);
+        answer(paths, new String[0], new String[0]);
+    }
+
+    private void answer(String[] paths, String[] names, String[] failures) {
+        if (!cancelled && current.get() == this) {
+            filesPicked(requestId, paths, names, failures);
+        } else {
+            settle(false);
         }
     }
 
     /** The name the picker showed for the file, or one made from the URI. */
     private static String displayName(Activity activity, Uri uri) {
+        return displayName(activity, uri, null);
+    }
+
+    private static String displayName(Activity activity, Uri uri, CancellationSignal signal) {
         String name = null;
         Cursor cursor = null;
         try {
-            cursor = activity.getContentResolver().query(uri, null, null, null, null);
+            cursor = activity.getContentResolver().query(uri, null, null, null, null, signal);
             if (cursor != null && cursor.moveToFirst()) {
                 int column = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
                 if (column >= 0) {
                     name = cursor.getString(column);
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception error) {
+            if (signal != null && signal.isCanceled()) throw new android.os.OperationCanceledException();
         } finally {
             if (cursor != null) {
                 cursor.close();
@@ -911,9 +1120,9 @@ public class ConcatFiles extends Fragment {
     }
 
     /** `name`, or `name (2)`, `name (3)`... until nothing is overwritten. */
-    private static File unique(File dir, String name) {
+    private static synchronized File unique(File dir, String name) throws IOException {
         File out = new File(dir, name);
-        if (!out.exists()) {
+        if (out.createNewFile()) {
             return out;
         }
         int dot = name.lastIndexOf('.');
@@ -921,43 +1130,89 @@ public class ConcatFiles extends Fragment {
         String ext = dot > 0 ? name.substring(dot) : "";
         for (int n = 2; ; n++) {
             out = new File(dir, stem + " (" + n + ")" + ext);
-            if (!out.exists()) {
+            if (out.createNewFile()) {
                 return out;
             }
         }
     }
 
-    private static boolean copy(Activity activity, Uri uri, File out) {
-        InputStream in = null;
-        OutputStream os = null;
+    private static long displaySize(Activity activity, Uri uri, CancellationSignal signal) {
+        try (Cursor cursor = activity.getContentResolver().query(uri,
+                new String[] {OpenableColumns.SIZE}, null, null, null, signal)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int column = cursor.getColumnIndex(OpenableColumns.SIZE);
+                if (column >= 0 && !cursor.isNull(column)) return Math.max(0, cursor.getLong(column));
+            }
+        } catch (Exception error) {
+            if (signal.isCanceled()) throw new android.os.OperationCanceledException();
+        }
+        return 0;
+    }
+
+    static final class CopyCancelled extends IOException {
+        CopyCancelled() { super("selection was cancelled or replaced"); }
+    }
+
+    interface CopyControl {
+        void update(long copiedBytes) throws IOException;
+    }
+
+    /** Actual stream-copy core, also exercised by the host bridge regression. */
+    static void copyStream(InputStream input, File out, CopyControl control) throws IOException {
+        boolean complete = false;
         try {
-            in = activity.getContentResolver().openInputStream(uri);
-            if (in == null) {
-                return false;
+            try (FileOutputStream output = new FileOutputStream(out, false)) {
+                byte[] buffer = new byte[1 << 16];
+                long copied = 0;
+                control.update(copied);
+                for (;;) {
+                    int read = input.read(buffer);
+                    // Check again after a provider read: cancellation can close
+                    // a blocked stream; returned bytes must not then be written.
+                    control.update(copied);
+                    if (read == -1) break;
+                    if (read != 0) {
+                        output.write(buffer, 0, read);
+                        copied += read;
+                        control.update(copied);
+                    }
+                }
+                output.flush();
+                output.getFD().sync();
+                control.update(copied);
             }
-            os = new FileOutputStream(out);
-            byte[] buffer = new byte[1 << 16];
-            int read;
-            while ((read = in.read(buffer)) > 0) {
-                os.write(buffer, 0, read);
-            }
-            return true;
-        } catch (IOException | RuntimeException e) {
-            // A provider that revokes its grant mid-copy throws a
-            // SecurityException, not an IOException; uncaught on this
-            // thread it closed the app and lost the rest of the pick.
-            Log.w(TAG, "could not copy " + uri + ": " + e);
-            out.delete();
-            return false;
+            // A close failure also rejects the output, before it can be handed
+            // to native code as a persistent, completely copied file.
+            complete = true;
         } finally {
-            try {
-                if (in != null) in.close();
-            } catch (IOException ignored) {
+            if (!complete) out.delete();
+        }
+    }
+
+    private void copy(Activity activity, Uri uri, File out, final int index, final int total,
+            CancellationSignal signal) throws IOException {
+        try {
+            final long size = displaySize(activity, uri, signal);
+            report(index, total, 0, size, true);
+            try (AssetFileDescriptor descriptor = activity.getContentResolver().openAssetFileDescriptor(uri, "r", signal);
+                 InputStream input = descriptor == null ? null : descriptor.createInputStream()) {
+                if (input == null) throw new IOException("the provider returned no readable stream");
+                activeInput = input;
+                checkAllowed();
+                report(index, total, 0, size, true);
+                copyStream(input, out, new CopyControl() {
+                    @Override public void update(long bytes) throws IOException {
+                        report(index, total, bytes, size, false);
+                    }
+                });
+                checkAllowed();
             }
-            try {
-                if (os != null) os.close();
-            } catch (IOException ignored) {
-            }
+        } catch (IOException | RuntimeException error) {
+            out.delete();
+            if (cancelled) throw new CopyCancelled();
+            throw error;
+        } finally {
+            activeInput = null;
         }
     }
 }

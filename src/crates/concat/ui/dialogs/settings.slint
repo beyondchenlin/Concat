@@ -97,6 +97,13 @@ export struct SettingsData {
     download-source: int,
     /// the base URL of a custom source
     download-base: string,
+    model-download-location: string,
+    default-project-location: string,
+    default-match-media: bool,
+    default-project-max-side: float,
+    default-project-width: float,
+    default-project-height: float,
+    default-project-rate: float,
     /// the Concat API served on a socket while the window is open
     server-enabled: bool,
     /// the two halves of "127.0.0.1:7420"
@@ -684,6 +691,11 @@ export component SettingsDialog inherits Sheet {
     callback magnetic-changed(on: bool);
     callback download-source-changed(index: int);
     callback download-base-edited(text: string);
+    callback default-project-location-edited(text: string);
+    callback default-match-media-changed(on: bool);
+    callback default-project-width-changed(value: float);
+    callback default-project-height-changed(value: float);
+    callback default-project-rate-changed(value: float);
     callback server-enabled-changed(on: bool);
     callback server-host-edited(text: string);
     callback server-port-edited(port: int);
@@ -946,6 +958,41 @@ export component SettingsDialog inherits Sheet {
                     chose(index) => { root.language-changed(index); }
                 }
 
+                DialogSection {
+                    ruled: false;
+                    title: I18n.t("settings.newProjectDefaults");
+                    hint: I18n.t("settings.futureProjectsOnly");
+                    Field { value: root.data.default-project-location;
+                        placeholder: I18n.t("settings.defaultProjectLocation");
+                        edited(text) => { root.default-project-location-edited(text); }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: I18n.t("settings.defaultWidth"); color: Theme.fg-muted; font-size: Theme.fs-sm; vertical-alignment: center; }
+                        NumberField { value: root.data.default-project-width; minimum: 2; maximum: root.data.default-project-max-side; precision: 0; step: 2;
+                            changed(value) => { root.default-project-width-changed(value); }
+                        }
+                        Text { text: I18n.t("settings.defaultHeight"); color: Theme.fg-muted; font-size: Theme.fs-sm; vertical-alignment: center; }
+                        NumberField { value: root.data.default-project-height; minimum: 2; maximum: root.data.default-project-max-side; precision: 0; step: 2;
+                            changed(value) => { root.default-project-height-changed(value); }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: I18n.t("settings.defaultRate"); color: Theme.fg-muted; font-size: Theme.fs-sm; vertical-alignment: center; }
+                        NumberField { value: root.data.default-project-rate; minimum: 1; maximum: 240; precision: 3; step: 1;
+                            changed(value) => { root.default-project-rate-changed(value); }
+                        }
+                    }
+                }
+                DialogSection {
+                    ruled: false;
+                    title: I18n.t("settings.matchFirstVisual");
+                    hint: I18n.t("settings.matchFirstVisualHint");
+                    switchable: true; on: root.data.default-match-media; open: false;
+                    switched(on) => { root.default-match-media-changed(on); }
+                }
+
                 // What the log records. Normal is what a bug report needs
                 // most days; Debug and Everything are for when a report
                 // asks, and the file grows faster for them. CONCAT_LOG in
@@ -980,6 +1027,7 @@ export component SettingsDialog inherits Sheet {
                         "hf-mirror.com",
                         I18n.t("settings.originalSource"),
                         I18n.t("settings.customUrl"),
+                        I18n.t("settings.modelscope"),
                     ];
                     choice-details: [
                         "",
@@ -987,6 +1035,7 @@ export component SettingsDialog inherits Sheet {
                         I18n.t("settings.forMainlandChina"),
                         I18n.t("settings.whereEachModelCame"),
                         I18n.t("settings.mirrorOwn"),
+                        I18n.t("settings.modelscopeHint"),
                     ];
                     choice: root.data.download-source;
                     chose(index) => { root.download-source-changed(index); }
@@ -1000,6 +1049,12 @@ export component SettingsDialog inherits Sheet {
                         technical: true;
                         edited(text) => { root.download-base-edited(text); }
                     }
+                }
+
+                // Off, a delete leaves its hole and a trim moves one edge.
+                Text {
+                    text: I18n.t1("settings.modelDownloadLocation", root.data.model-download-location);
+                    color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap;
                 }
 
                 // Off, a delete leaves its hole and a trim moves one edge.
@@ -1663,6 +1718,12 @@ export component SettingsDialog inherits Sheet {
                     ruled: false;
                     first: true;
                     title: I18n.t("settings.about");
+                    Rectangle {
+                        height: 180px; background: #f5f6f3; border-radius: Theme.r-lg;
+                        Image { source: @image-url("../../../../../assets/brand/bk-cut-full-512.png");
+                            width: parent.width; height: parent.height; image-fit: contain;
+                        }
+                    }
 
                     Text {
                         text: I18n.t1("settings.concat", "\{root.data.version}");

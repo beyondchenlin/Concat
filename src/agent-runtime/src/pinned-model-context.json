@@ -1,0 +1,55 @@
+{
+  "version": "1.5.2",
+  "commit": "d36266e06669c6991a7c9509d1da04d18d30378d",
+  "scope": "authored-models-only; no live upstream metadata",
+  "models": [
+    {
+      "provider": "anthropic",
+      "model": "claude-fable-5-2",
+      "protocol": "anthropic-messages",
+      "endpoint": "https://api.anthropic.com",
+      "contextWindow": 1000000,
+      "source": "locked-pi-1.5.2:d36266e06669c6991a7c9509d1da04d18d30378d:catalog/providers/anthropic.ts#claude-fable-5-2"
+    },
+    {
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "protocol": "openai-completions",
+      "endpoint": "https://api.deepseek.com",
+      "contextWindow": 1000000,
+      "source": "locked-pi-1.5.2:d36266e06669c6991a7c9509d1da04d18d30378d:catalog/providers/deepseek.ts#deepseek-flash"
+    },
+    {
+      "provider": "deepseek",
+      "model": "deepseek-v4-pro",
+      "protocol": "openai-completions",
+      "endpoint": "https://api.deepseek.com",
+      "contextWindow": 1000000,
+      "source": "locked-pi-1.5.2:d36266e06669c6991a7c9509d1da04d18d30378d:catalog/providers/deepseek.ts#deepseek-v4-pro"
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5-chat-latest",
+      "protocol": "openai-responses",
+      "endpoint": "https://api.openai.com/v1",
+      "contextWindow": 128000,
+      "source": "locked-pi-1.5.2:d36266e06669c6991a7c9509d1da04d18d30378d:catalog/providers/openai.ts#gpt-5-chat-latest"
+    },
+    {
+      "provider": "openrouter",
+      "model": "auto",
+      "protocol": "openai-completions",
+      "endpoint": "https://openrouter.ai/api/v1",
+      "contextWindow": 2000000,
+      "source": "locked-pi-1.5.2:d36266e06669c6991a7c9509d1da04d18d30378d:catalog/providers/openrouter.ts#auto"
+    },
+    {
+      "provider": "openrouter",
+      "model": "openrouter/fusion",
+      "protocol": "openai-completions",
+      "endpoint": "https://openrouter.ai/api/v1",
+      "contextWindow": 1000000,
+      "source": "locked-pi-1.5.2:d36266e06669c6991a7c9509d1da04d18d30378d:catalog/providers/openrouter.ts#openrouter/fusion"
+    }
+  ]
+}

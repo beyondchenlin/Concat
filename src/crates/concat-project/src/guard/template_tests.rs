@@ -281,6 +281,46 @@ fn template_cannot_implicitly_change_sdr_timeline_to_hdr() {
 }
 
 #[test]
+fn native_first_hdr_template_matches_only_a_waiting_draft() {
+    for state in [
+        crate::initial_format::State::Waiting,
+        crate::initial_format::State::UserSet,
+        crate::initial_format::State::Disabled,
+    ] {
+        let mut project = seeded().project().clone();
+        project.media[0].color_space = crate::model::ColorSpace::Pq;
+        project.media[0].width = Some(1080);
+        project.media[0].height = Some(1920);
+        project.media[0].frame_rate_fraction = Some("30000/1001".into());
+        crate::initial_format::initialize(
+            &mut project,
+            state != crate::initial_format::State::Disabled,
+        );
+        if state == crate::initial_format::State::UserSet {
+            crate::initial_format::user_set(&mut project);
+        }
+        let mut editor = Editor::from_project(project.clone());
+        let result = editor.apply_guarded(command(plan()), &HashSet::new());
+        if state == crate::initial_format::State::Waiting {
+            result.unwrap();
+            assert_eq!(
+                editor.project().active().video.color_space,
+                crate::model::ColorSpace::Hlg
+            );
+            assert_eq!(editor.project().active().video.width, 1080);
+            assert_eq!(editor.project().active().video.height, 1920);
+            assert_eq!(editor.project().active().video.rate_den, 1001);
+            assert!(editor.undo());
+            assert_eq!(editor.project(), &project);
+        } else {
+            assert!(matches!(result, Err(crate::GuardError::UnsupportedEffect)));
+            assert_eq!(editor.project(), &project);
+            assert!(!editor.can_undo());
+        }
+    }
+}
+
+#[test]
 fn rounded_audio_source_tail_is_trimmed_inward_not_rejected_or_expanded() {
     let mut p = plan();
     p.videos = vec![media("v", 0.0, 0.0, 0.3)];
