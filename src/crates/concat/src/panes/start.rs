@@ -523,10 +523,9 @@ impl StartPane {
         }
     }
 
-    /// Files or folders dropped on the launch screen. A project folder
-    /// among them opens, the first if there are several, as Open would;
-    /// anything else is media, and puts up the new-project sheet with the
-    /// files waiting to go into the project it makes.
+    /// An explicit project folder opens. Media starts a persistent desktop
+    /// draft, or goes through the same validation as an accepted phone
+    /// selection before a phone draft can be created.
     fn dropped_on(&mut self, paths: Vec<PathBuf>, studio: &mut Studio) {
         // An explicit project always wins over a pending automatic draft.
         if let Some(folder) = paths
@@ -544,7 +543,25 @@ impl StartPane {
             studio.notify(&t("start.dropNothingToOpen"), true);
             return;
         }
-        // A second drop while the sheet is up adds to the first.
+        // Paths already supplied by the platform must not open another
+        // picker. Phone drops use the same request and validation path as
+        // an accepted selection, including cancellation and epoch checks.
+        if platform::phone() {
+            if self.busy || self.composing {
+                // Keep a phone selection bound to its own request. A
+                // second drop cannot silently survive cancellation and
+                // enter a later project without the initial probe.
+                studio.notify(&t("import.title"), false);
+                return;
+            }
+            self.dropped.clear();
+            self.error.clear();
+            self.busy = true;
+            self.request = self.request.wrapping_add(1);
+            self.prepare_initial_paths(self.request, crate::host::project_epoch(), media);
+            return;
+        }
+        // A second desktop drop during a pending draft joins the queued import.
         for path in media {
             if !self.dropped.contains(&path) {
                 self.dropped.push(path);
@@ -605,39 +622,7 @@ impl StartPane {
                                 return;
                             }
                         };
-                        let failures =
-                            crate::panes::media_bin::take_platform_import_failures(&paths);
-                        if paths.is_empty() && failures.is_empty() {
-                            studio.start.busy = false;
-                            return;
-                        }
-                        let job = ImportJob::new(paths.len());
-                        studio.start.import_job = Some(job.clone());
-                        crate::host::spawn_long(
-                            move || {
-                                let mut results = Vec::with_capacity(paths.len() + failures.len());
-                                for (index, path) in paths.iter().enumerate() {
-                                    if job.cancelled() {
-                                        return Vec::new();
-                                    }
-                                    results
-                                        .push(concat_host::media::probe(&path.to_string_lossy()));
-                                    if job.cancelled() {
-                                        return Vec::new();
-                                    }
-                                    job.progress(index + 1, paths.len());
-                                }
-                                results.extend(failures.into_iter().map(Err));
-                                results
-                            },
-                            move |studio, _, _, results| {
-                                studio.handle(crate::panes::Msg::Start(StartMsg::Prepared {
-                                    request,
-                                    epoch,
-                                    results,
-                                }));
-                            },
-                        );
+                        studio.start.prepare_initial_paths(request, epoch, paths);
                     });
                 },
             );
@@ -682,6 +667,45 @@ impl StartPane {
         }
         self.location = effective_location(studio);
         self.begin_draft(studio, Vec::new());
+    }
+
+    /// Both an accepted picker result and an explicit platform media drop
+    /// must finish the same asynchronous probe before a phone makes a draft.
+    fn prepare_initial_paths(&mut self, request: u64, epoch: u64, paths: Vec<PathBuf>) {
+        if request != self.request || epoch != crate::host::project_epoch() {
+            return;
+        }
+        let failures = crate::panes::media_bin::take_platform_import_failures(&paths);
+        if paths.is_empty() && failures.is_empty() {
+            self.busy = false;
+            return;
+        }
+        let job = ImportJob::new(paths.len());
+        self.import_job = Some(job.clone());
+        crate::host::spawn_long(
+            move || {
+                let mut results = Vec::with_capacity(paths.len() + failures.len());
+                for (index, path) in paths.iter().enumerate() {
+                    if job.cancelled() {
+                        return Vec::new();
+                    }
+                    results.push(concat_host::media::probe(&path.to_string_lossy()));
+                    if job.cancelled() {
+                        return Vec::new();
+                    }
+                    job.progress(index + 1, paths.len());
+                }
+                results.extend(failures.into_iter().map(Err));
+                results
+            },
+            move |studio, _, _, results| {
+                studio.handle(crate::panes::Msg::Start(StartMsg::Prepared {
+                    request,
+                    epoch,
+                    results,
+                }));
+            },
+        );
     }
 
     fn begin_draft(

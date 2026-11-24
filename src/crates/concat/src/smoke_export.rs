@@ -8,8 +8,8 @@
 //! 0.2.10 and 0.2.11 shipped with every export on every phone freezing the
 //! window the moment it started (#747, #786).
 //!
-//! Each step waits for the one before to have landed - the project open,
-//! the clip probed into the bin, the clip on the timeline - and the run
+//! Each step waits for the one before to have landed - asynchronous draft
+//! creation, then the first import's native automatic placement - and the run
 //! ends when the export does: status 0 with "smoke: export finished" in the
 //! log, 1 with the reason. A step that does not land within
 //! [`STEP_LIMIT`] ends it as well, with the step named; a window that has
@@ -17,13 +17,15 @@
 //! not-responding report are for, since a stuck event loop runs no timer.
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use concat_project::model::{Clip, MediaItem};
 
 use crate::host::Shell;
 use crate::panes::Msg;
 use crate::panes::export::ExportMsg;
-use crate::panes::media_bin::MediaMsg;
 use crate::panes::start::StartMsg;
 use crate::ui::ExportPhase;
 
@@ -33,11 +35,13 @@ const STEP_LIMIT: Duration = Duration::from_secs(240);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Step {
-    /// The clip dropped on the launch screen, and its project made.
+    /// Submit the fixture once through the launch screen's media entry.
+    Begin,
+    /// Wait for the asynchronous draft creation to settle.
     Make,
-    /// The project is open: waiting for the clip to be probed into the bin.
+    /// Wait for the atomic first import, including its single clip.
     Place,
-    /// The clip is on its way to the timeline: Export once it is there.
+    /// The fixture is on the timeline; open Export and start it once.
     Export,
     /// The export is running.
     Watch,
@@ -46,9 +50,10 @@ enum Step {
 impl Step {
     fn waiting_for(self) -> &'static str {
         match self {
+            Step::Begin => "the launch screen to accept the fixture",
             Step::Make => "the project to open",
-            Step::Place => "the clip to reach the bin",
-            Step::Export => "the clip to reach the timeline",
+            Step::Place => "the first import to place its clip",
+            Step::Export => "the export to start",
             Step::Watch => "the export to end",
         }
     }
@@ -58,7 +63,7 @@ impl Step {
 /// is held for as long as the loop runs.
 pub(crate) fn drive(clip: PathBuf) -> slint::Timer {
     log::info!("smoke: exporting {}", clip.display());
-    let step = Cell::new(Step::Make);
+    let step = Cell::new(Step::Begin);
     let since = Cell::new(Instant::now());
     let began = RefCell::new(None::<Instant>);
     let timer = slint::Timer::default();
@@ -73,27 +78,48 @@ pub(crate) fn drive(clip: PathBuf) -> slint::Timer {
                 };
                 let now = step.get();
                 let next = match now {
-                    Step::Make => {
-                        studio.handle(Msg::Start(StartMsg::Dropped(vec![clip.clone()])));
-                        studio.handle(Msg::Start(StartMsg::Create));
-                        if studio.session.is_some() {
-                            Some(Step::Place)
-                        } else if !studio.start.error.is_empty() {
-                            fail(&format!("making the project failed: {}", studio.start.error));
-                        } else {
-                            fail("the project was neither made nor refused");
+                    Step::Begin => {
+                        if !studio.on_start || studio.session.is_some() || studio.start.busy {
+                            fail("smoke export requires an idle launch screen");
                         }
+                        if !clip.is_file() {
+                            fail("the smoke export fixture is missing");
+                        }
+                        // On desktop use the isolated app profile, not the
+                        // user's usual Documents folder, for smoke projects.
+                        if crate::platform::phone() {
+                            studio.handle(Msg::Start(StartMsg::Dropped(vec![clip.clone()])));
+                        } else {
+                            let location = studio.host.dirs.data.join("smoke-projects");
+                            let prior = studio.prefs.new_project_defaults.location.replace(
+                                location.to_string_lossy().into_owned(),
+                            );
+                            studio.prefs.empty_draft_path = None;
+                            studio.handle(Msg::Start(StartMsg::Dropped(vec![clip.clone()])));
+                            studio.prefs.new_project_defaults.location = prior;
+                        }
+                        Some(Step::Make)
                     }
-                    Step::Place => {
-                        let first = studio.project().media.first().map(|item| item.id.clone());
-                        first.map(|id| {
-                            studio.media.selected.clear();
-                            studio.media.selected.insert(id);
-                            studio.handle(Msg::Media(MediaMsg::AddSelectedAtPlayhead));
-                            Step::Export
-                        })
-                    }
-                    Step::Export => (!studio.timeline().clips.is_empty()).then(|| {
+                    Step::Make => match project_ready(
+                        studio.start.busy,
+                        studio.session.is_some(),
+                        studio.on_start,
+                        &studio.start.error,
+                    ) {
+                        Ok(true) => Some(Step::Place),
+                        Ok(false) => None,
+                        Err(error) => fail(&error),
+                    },
+                    Step::Place => match first_import_ready(
+                        &studio.project().media,
+                        &studio.timeline().clips,
+                        &clip,
+                    ) {
+                        Ok(true) => Some(Step::Export),
+                        Ok(false) => None,
+                        Err(error) => fail(error),
+                    },
+                    Step::Export => {
                         studio.handle(Msg::Export(ExportMsg::Open));
                         studio.handle(Msg::Export(ExportMsg::Start));
                         // Left from a run before on the same device.
@@ -106,8 +132,8 @@ pub(crate) fn drive(clip: PathBuf) -> slint::Timer {
                         }
                         log::info!("smoke: export started");
                         *began.borrow_mut() = Some(Instant::now());
-                        Step::Watch
-                    }),
+                        Some(Step::Watch)
+                    }
                     Step::Watch => match studio.export.phase {
                         ExportPhase::Done => {
                             let written = studio.export.written.clone();
@@ -157,8 +183,112 @@ pub(crate) fn drive(clip: PathBuf) -> slint::Timer {
     timer
 }
 
+/// A busy launch request is not a refusal. Never submit a second Create
+/// while the first request's probe or draft worker is still in flight.
+fn project_ready(
+    busy: bool,
+    has_session: bool,
+    on_start: bool,
+    error: &str,
+) -> Result<bool, String> {
+    if busy {
+        return Ok(false);
+    }
+    if !error.is_empty() {
+        return Err(format!("making the project failed: {error}"));
+    }
+    if has_session && !on_start {
+        Ok(true)
+    } else {
+        Err("the project request ended without opening its draft".into())
+    }
+}
+
+/// A fresh draft's first source must land in the bin and on its timeline in
+/// the same transaction. Do not manually add a second clip, or mask a
+/// regression that stopped automatic placement.
+fn first_import_ready(
+    media: &[MediaItem],
+    clips: &[Arc<Clip>],
+    expected: &Path,
+) -> Result<bool, &'static str> {
+    if media.is_empty() && clips.is_empty() {
+        return Ok(false);
+    }
+    let ([item], [clip]) = (media, clips) else {
+        return Err("first import did not atomically create exactly one media item and one clip");
+    };
+    let actual = Path::new(&item.path);
+    let same_path = actual == expected
+        || actual
+            .canonicalize()
+            .ok()
+            .zip(expected.canonicalize().ok())
+            .is_some_and(|(a, b)| a == b);
+    if !same_path || item.id.is_empty() || clip.media_id != item.id {
+        return Err("the first timeline clip does not reference the smoke fixture");
+    }
+    if clip.start != 0.0 || !clip.duration.is_finite() || clip.duration <= 0.0 {
+        return Err("the first timeline clip has an invalid placement or duration");
+    }
+    Ok(true)
+}
+
 /// Ends the run as failed, with the reason in the log.
 fn fail(why: &str) -> ! {
     log::error!("smoke: the export run failed: {why}");
     crate::leave(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn asynchronous_draft_completion_is_not_a_refusal() {
+        assert_eq!(project_ready(true, false, true, ""), Ok(false));
+        assert_eq!(project_ready(true, true, true, ""), Ok(false));
+        assert_eq!(project_ready(false, true, false, ""), Ok(true));
+        assert!(project_ready(false, false, true, "").is_err());
+        assert!(project_ready(false, true, true, "").is_err());
+        assert_eq!(
+            project_ready(false, false, true, "disk full"),
+            Err("making the project failed: disk full".into())
+        );
+    }
+
+    #[test]
+    fn first_import_must_land_once_without_manual_placement() {
+        let fixture = Path::new("fixture.mov");
+        let item = MediaItem {
+            id: "m1".into(),
+            path: fixture.to_string_lossy().into_owned(),
+            ..MediaItem::default()
+        };
+        let clip = Arc::new(Clip {
+            media_id: item.id.clone(),
+            start: 0.0,
+            duration: 2.0,
+            ..Clip::default()
+        });
+        let items = std::slice::from_ref(&item);
+        assert_eq!(first_import_ready(&[], &[], fixture), Ok(false));
+        assert!(first_import_ready(items, &[], fixture).is_err());
+        assert_eq!(
+            first_import_ready(items, std::slice::from_ref(&clip), fixture),
+            Ok(true)
+        );
+        assert!(first_import_ready(items, &[clip.clone(), clip.clone()], fixture).is_err());
+        let wrong = Arc::new(Clip {
+            media_id: "m2".into(),
+            ..(*clip).clone()
+        });
+        assert!(first_import_ready(items, &[wrong], fixture).is_err());
+        let shifted = Arc::new(Clip {
+            start: 1.0,
+            ..(*clip).clone()
+        });
+        assert!(first_import_ready(items, &[shifted], fixture).is_err());
+        assert!(first_import_ready(items, &[clip], Path::new("other.mov")).is_err());
+    }
 }
