@@ -27,8 +27,8 @@
     <MajorUpgrade DowngradeErrorMessage="A newer version of BK CUT is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
-    <Icon Id="concat.ico" SourceFile="$(var.Root)\assets\icons\concat.ico" />
-    <Property Id="ARPPRODUCTICON" Value="concat.ico" />
+    <Icon Id="bk-cut-app.ico" SourceFile="$(var.Root)\assets\icons\bk-cut-app.ico" />
+    <Property Id="ARPPRODUCTICON" Value="bk-cut-app.ico" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/beyondchenlin/Concat" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
@@ -54,7 +54,7 @@
                 Description="Video editor"
                 Target="[INSTALLFOLDER]concat.exe"
                 WorkingDirectory="INSTALLFOLDER"
-                Icon="concat.ico" />
+                Icon="bk-cut-app.ico" />
       <!-- The way in when a graphics driver draws the window as coloured
            squares: it turns off Settings > General > Draw on the GPU,
            which that window hides. -->
@@ -64,7 +64,7 @@
                 Target="[INSTALLFOLDER]concat.exe"
                 Arguments="--software"
                 WorkingDirectory="INSTALLFOLDER"
-                Icon="concat.ico" />
+                Icon="bk-cut-app.ico" />
       <RemoveFolder Id="RemoveShortcutFolder" On="uninstall" />
       <RegistryValue Root="HKCU" Key="Software\Concat" Name="StartMenu" Type="integer" Value="1" KeyPath="yes" />
     </Component>

@@ -64,10 +64,6 @@ export struct AgentStatusData {
 
 export global AgentUi {
     in-out property <bool> error-details-open;
-    in-out property <string> reply-language;
-    in property <[string]> reply-languages;
-    in-out property <int> reply-language-index;
-    callback reply-language-chosen(int);
     in-out property <AgentView> view: AgentView.chat;
     changed view => { self.native-scroll-up-pending = false; }
     /// Phone presentation only: 0 closed, 1 half-height, 2 full-height.
@@ -984,16 +980,6 @@ export component AgentChat inherits Rectangle {
                             label: ScriptUi.selected-label;
                             clicked => { AgentUi.script-picker = true; ScriptUi.open-requested(); }
                         }
-                    }
-                }
-                HorizontalLayout {
-                    spacing: 6px;
-                    Text { text: I18n.t("language.reply"); color: Theme.fg-dim; font-size: Theme.fs-sm; vertical-alignment: center; }
-                    Select {
-                        options: AgentUi.reply-languages; current: AgentUi.reply-language-index;
-                        flat: true; snug: true; horizontal-stretch: 1;
-                        popup-above: root.phone;
-                        changed(index) => { AgentUi.reply-language-chosen(index); }
                     }
                 }
                 // Preserve one row above the phone keyboard. Its compact

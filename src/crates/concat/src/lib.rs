@@ -2193,9 +2193,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: Smoke) -> Result<(), slint:
     app.on_export_closed(on_window!(|state| {
         state.handle(Msg::Export(ExportMsg::Close));
     }));
-    app.on_settings_closed(on_window!(|state| {
-        state.handle(Msg::Settings(SettingsMsg::Close));
-    }));
+    app.on_settings_closed(|| panes::agent_settings::navigate_settings(None));
     app.on_export_name_edited(on_window!(|state, name: SharedString| {
         state.handle(Msg::Export(ExportMsg::NameEdited(name.to_string())));
     }));
@@ -2240,9 +2238,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: Smoke) -> Result<(), slint:
     }));
 
     // ── settings ──
-    app.on_settings_page_changed(on_window!(|state, index: i32| {
-        state.handle(Msg::Settings(SettingsMsg::PageChanged(index)));
-    }));
+    app.on_settings_page_changed(|index| panes::agent_settings::navigate_settings(Some(index)));
     // The Shortcuts page: a row asked for the next keys, and the two
     // ways back — one row as it ships, or all of them.
     app.on_settings_shortcut_capture(on_window!(|state, id: SharedString| {
@@ -2810,11 +2806,6 @@ fn start(project: Option<std::path::PathBuf>, smoke: Smoke) -> Result<(), slint:
     };
     if let Some(path) = project {
         open_launch_project(&mut shell.studio.borrow_mut(), path);
-    } else if !cfg!(any(windows, target_os = "android")) && smoke == Smoke::No {
-        shell
-            .studio
-            .borrow_mut()
-            .handle(Msg::Start(StartMsg::Compose));
     }
 
     {
@@ -3001,8 +2992,6 @@ fn start_windows_preview() {
             studio.watch_packages();
             if let Some(path) = WINDOWS_LAUNCH_PROJECT.with(|pending| pending.borrow_mut().take()) {
                 open_launch_project(&mut studio, path);
-            } else if studio.session.is_none() {
-                studio.handle(Msg::Start(StartMsg::Compose));
             }
             studio.host.monitor.warm_shaders();
             studio.refresh_art();

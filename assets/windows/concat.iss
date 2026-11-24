@@ -49,8 +49,9 @@ DisableProgramGroupPage=yes
 LicenseFile=..\..\LICENSE
 OutputDir={#Out}
 OutputBaseFilename=BK CUT-{#Version}-windows-{#Suffix}-setup
-SetupIconFile=..\icons\concat.ico
-UninstallDisplayIcon={app}\concat.ico
+SetupIconFile=..\icons\bk-cut-app.ico
+ChangesAssociations=yes
+UninstallDisplayIcon={app}\bk-cut-app.ico
 UninstallDisplayName=BK CUT
 Compression=lzma2/max
 SolidCompression=yes
@@ -135,14 +136,14 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "{#Stage}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\icons\concat.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\icons\bk-cut-app.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\BK CUT"; Filename: "{app}\concat.exe"; IconFilename: "{app}\concat.ico"
+Name: "{autoprograms}\BK CUT"; Filename: "{app}\concat.exe"; IconFilename: "{app}\bk-cut-app.ico"
 ; The way in when a graphics driver draws the window as coloured squares:
 ; it turns off Settings > General > Draw on the GPU, which that window hides.
-Name: "{autoprograms}\BK CUT ({cm:SafeGraphics})"; Filename: "{app}\concat.exe"; Parameters: "--software"; IconFilename: "{app}\concat.ico"
-Name: "{autodesktop}\BK CUT"; Filename: "{app}\concat.exe"; IconFilename: "{app}\concat.ico"; Tasks: desktopicon
+Name: "{autoprograms}\BK CUT ({cm:SafeGraphics})"; Filename: "{app}\concat.exe"; Parameters: "--software"; IconFilename: "{app}\bk-cut-app.ico"
+Name: "{autodesktop}\BK CUT"; Filename: "{app}\concat.exe"; IconFilename: "{app}\bk-cut-app.ico"; Check: WantsBkDesktopShortcut
 
 [InstallDelete]
 ; Only the known previous BK product shortcuts are retired. User projects,
@@ -152,10 +153,25 @@ Type: files; Name: "{autoprograms}\BK CAT (safe graphics).lnk"; Check: IsBkProdu
 Type: files; Name: "{autodesktop}\BK CAT.lnk"; Check: IsBkProductUpgrade
 
 [Code]
+var
+  PreserveBkDesktopShortcut: Boolean;
+
 function IsBkProductUpgrade: Boolean;
 begin
   Result := RegKeyExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{A8DCE4CA-3E70-4263-9ED8-319D23851DC4}_is1') or
     RegKeyExists(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{A8DCE4CA-3E70-4263-9ED8-319D23851DC4}_is1');
+end;
+
+procedure InitializeWizard;
+begin
+  PreserveBkDesktopShortcut := IsBkProductUpgrade and
+    (FileExists(ExpandConstant('{autodesktop}\BK CUT.lnk')) or
+     FileExists(ExpandConstant('{autodesktop}\BK CAT.lnk')));
+end;
+
+function WantsBkDesktopShortcut: Boolean;
+begin
+  Result := WizardIsTaskSelected('desktopicon') or PreserveBkDesktopShortcut;
 end;
 
 [Run]

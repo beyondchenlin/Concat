@@ -2280,10 +2280,6 @@ pub(crate) mod tests {
                     words.set_lang(crate::i18n::current().into());
                     app.window().set_size(slint::LogicalSize::new(320., 640.));
                     let agent = app.global::<phone_approval::AgentUi>();
-                    let reply_languages = crate::i18n::language_choice_labels();
-                    let reply_language = reply_languages[0].clone();
-                    agent.set_reply_languages(slint::ModelRc::new(slint::VecModel::from(reply_languages)));
-                    agent.set_reply_language_index(0);
                     agent.set_phone_sheet_state(2);
                     agent.set_draft("保留输入高度偏好和未发送草稿".into());
                     agent.set_models(slint::ModelRc::new(slint::VecModel::from(vec![
@@ -2323,10 +2319,8 @@ pub(crate) mod tests {
                         let gap = available_bottom - action.bottom();
                         assert!(action.height >= 43.9 && (-1.0..=16.0).contains(&gap),
                             "the action row must stay at the available bottom with only its padding: bottom={available_bottom}, action={action:?}");
-                        let language = fully_visible_control(app.window(), reply_language.as_str(), AccessibleRole::Combobox);
-                        assert!(input.bottom() <= language.y + 1. && language.y - input.bottom() <= 8.
-                            && language.bottom() <= action.y + 1. && action.y - language.bottom() <= 8.,
-                            "input, reply language and action must remain adjacent and fully reachable: input={input:?}, language={language:?}, action={action:?}");
+                        assert!(input.bottom() <= action.y + 1. && action.y - input.bottom() <= 8.,
+                            "input and action must remain adjacent and fully reachable: input={input:?}, action={action:?}");
                     };
                     for height in [640., 800.] {
                         app.window().set_size(slint::LogicalSize::new(320., height));
@@ -3265,10 +3259,17 @@ pub(crate) mod tests {
                     };
 
                 let set_sheet_open = |chat: &Chat, kind: i32, open: bool| match kind {
-                    0 => chat.app.global::<ui::AgentSettingsUi>().set_open(open),
-                    1 => {
+                    0 | 1 => {
+                        chat.app
+                            .global::<ui::AgentSettingsUi>()
+                            .set_open(kind == 0 && open);
                         let mut settings = chat.app.get_settings();
                         settings.open = open;
+                        settings.tab = if kind == 0 && open {
+                            crate::panes::settings::MODEL_PROVIDERS_PAGE
+                        } else {
+                            0
+                        };
                         chat.app.set_settings(settings);
                     }
                     2 => {
@@ -3287,7 +3288,7 @@ pub(crate) mod tests {
                     .global::<ui::AgentSettingsUi>()
                     .set_has_saved_channel(true);
                 for (kind, title) in [
-                    (0, crate::i18n::t("modelSettings.title")),
+                    (0, crate::i18n::t("common.settings")),
                     (1, crate::i18n::t("common.settings")),
                     (2, crate::i18n::t("common.export")),
                 ] {
@@ -3351,7 +3352,7 @@ pub(crate) mod tests {
                             "the real foreground form must still scroll: before={before:?}, after={after:?}"
                         );
                     }
-                    chat.append(&format!("{title}覆盖聊天时，新内容仍保持跟随"));
+                    chat.append(&format!("{title} [{kind}] 覆盖聊天时，新内容仍保持跟随"));
                     chat.assert_latest_visible();
 
                     set_sheet_open(chat, kind, false);
@@ -3371,7 +3372,7 @@ pub(crate) mod tests {
                         "the real closing header must still cover the wheel point: {title}, header={header:?}"
                     );
                     wheel_on_overlay(chat, position, 120., title);
-                    chat.append(&format!("{title}关闭动画期间也不能暂停后台跟随"));
+                    chat.append(&format!("{title} [{kind}] 关闭动画期间也不能暂停后台跟随"));
                     chat.assert_latest_visible();
 
                     chat.advance(400);
@@ -3400,10 +3401,12 @@ pub(crate) mod tests {
                         "closed foreground must allow real upward intent: {title}"
                     );
                     chat.wheel_at(position, 120.);
-                    chat.append(&format!("{title}完全关闭后，手动阅读历史不被新消息拉走"));
+                    chat.append(&format!(
+                        "{title} [{kind}] 完全关闭后，手动阅读历史不被新消息拉走"
+                    ));
                     chat.assert_latest_below_view();
                     chat.wheel(-100_000.);
-                    chat.append(&format!("{title}关闭后明确滚回底部恢复跟随"));
+                    chat.append(&format!("{title} [{kind}] 关闭后明确滚回底部恢复跟随"));
                     chat.assert_latest_visible();
                 }
 

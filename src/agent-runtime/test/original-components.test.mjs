@@ -755,8 +755,8 @@ test("explicit original-task continuation keeps the same submission and language
       const request=JSON.parse(await new Request(input,init).text());
       assert.equal(request.model,"explicit-model");
       const text=JSON.stringify(request.messages);
-      assert.match(text,/Use Japanese for ordinary replies/);
-      assert.match(text,/Use French for writing candidates/);
+      assert.match(text,/user's language requirements for replies/);
+      assert.doesNotMatch(text,/Use Japanese for ordinary replies|Use French for writing candidates/);
       assert.match(text,/expectedSession.*22/);
       assert.match(text,/Unconfirmed work is not success/);
       assert.ok(request.messages.some(message=>message.role==="tool"&&/interrupt/i.test(JSON.stringify(message))),

@@ -76,22 +76,16 @@ pub(crate) struct TaskLanguages {
 
 impl TaskLanguages {
     fn validate(&self) -> Result<(), String> {
-        if [
-            &self.interface_language,
-            &self.reply_language,
-            &self.content_language,
-        ]
-        .iter()
-        .any(|value| {
-            !crate::i18n::BUILT_IN
-                .iter()
-                .any(|(code, _)| *code == value.as_str())
-        }) {
+        let valid = |value: &str| crate::i18n::BUILT_IN.iter().any(|(code, _)| *code == value);
+        if !valid(&self.interface_language)
+            || !valid(&self.content_language)
+            || (self.reply_language != "auto" && !valid(&self.reply_language))
+        {
             return Err("agent.errorRecoverySnapshotInvalid".into());
         }
         Ok(())
     }
-    pub(crate) fn capture(reply: Option<&str>, content: Option<&str>) -> Self {
+    pub(crate) fn capture(content: Option<&str>) -> Self {
         let interface = crate::i18n::current();
         let valid = |value: &str| crate::i18n::BUILT_IN.iter().any(|(code, _)| *code == value);
         let interface = if valid(&interface) {
@@ -100,10 +94,7 @@ impl TaskLanguages {
             "en".into()
         };
         Self {
-            reply_language: reply
-                .filter(|value| valid(value))
-                .unwrap_or(&interface)
-                .to_owned(),
+            reply_language: "auto".into(),
             content_language: content
                 .filter(|value| valid(value))
                 .unwrap_or(&interface)
@@ -2340,5 +2331,26 @@ pub(crate) mod tests {
             .record_edit_result(&invocation, &response)
             .unwrap();
         assert!(fixture.tasks.finish(TASK, CONVERSATION).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod reply_language_tests {
+    use super::TaskLanguages;
+
+    #[test]
+    fn automatic_reply_policy_accepts_legacy_recovery_metadata_without_locale_injection() {
+        let current = TaskLanguages::capture(Some("ja"));
+        assert_eq!(current.reply_language, "auto");
+        assert_eq!(current.content_language, "ja");
+        assert!(current.validate().is_ok());
+        let mut legacy = current.clone();
+        legacy.reply_language = "de".into();
+        assert!(legacy.validate().is_ok());
+        legacy.reply_language = "arbitrary prompt".into();
+        assert!(legacy.validate().is_err());
+        let mut invalid_content = current;
+        invalid_content.content_language = "auto".into();
+        assert!(invalid_content.validate().is_err());
     }
 }

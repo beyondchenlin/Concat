@@ -90,7 +90,7 @@ import { ColSplitter } from "workspace/splitter.slint";
 import { AgentUi, AgentView, AgentMessageData, AgentStatusData, AgentSuggestion, AgentSidebar } from "agent.slint";
 import { AgentCallUi } from "agent-call.slint";
 import { ScriptUi, ScriptVersionData } from "script.slint";
-import { AgentSettingsDialog, AgentSettingsUi, ModelChannelDraftData } from "dialogs/model-settings.slint";
+import { AgentSettingsUi, ModelChannelDraftData } from "dialogs/model-settings.slint";
 import {
     Backdrop,
     BackdropData,
@@ -281,7 +281,7 @@ export component App inherits Window {
     // these three pages remain visible after their open flag is cleared.
     // Keep the separate sheet/focus behavior unchanged.
     out property <bool> content-overlay-open: root.sheet-open || root.confirm.open || root.relink.open
-        || export-overlay.visible || settings-overlay.visible || model-settings-overlay.visible;
+        || export-overlay.visible || settings-overlay.visible;
     // Floating tool cards use window coordinates. Pages start beneath the
     // desktop title strip, so their hit tests need page-local coordinates.
     // Read their animated geometry without covering the strip they leave free.
@@ -290,7 +290,7 @@ export component App inherits Window {
         return import-progress-overlay.covers-point(x, y) || captions-overlay.covers-point(x, y) || speech-overlay.covers-point(x, y)
             || (sheet-y >= 0 && (
                 new-project-overlay.covers-point(x, sheet-y) || export-overlay.covers-point(x, sheet-y)
-                || settings-overlay.covers-point(x, sheet-y) || model-settings-overlay.covers-point(x, sheet-y)
+                || settings-overlay.covers-point(x, sheet-y)
                 || project-overlay.covers-point(x, sheet-y) || new-voice-overlay.covers-point(x, sheet-y)
                 || relink-overlay.covers-point(x, sheet-y) || confirm-overlay.covers-point(x, sheet-y)));
     }
@@ -1228,18 +1228,6 @@ export component App inherits Window {
         model-remove(id) => { root.model-remove(id); }
         model-open-link(id) => { root.model-open-link(id); }
         model-choose-file(id) => { root.model-choose-file(id); }
-    }
-
-    model-settings-overlay := AgentSettingsDialog {
-        inset-top: root.safe-area-insets.top;
-        inset-bottom: root.safe-area-insets.bottom;
-        inset-left: root.safe-area-insets.left;
-        inset-right: root.safe-area-insets.right;
-        x: 0;
-        y: root.sheets-top;
-        width: root.width;
-        height: root.height - root.sheets-top;
-        phone: root.phone;
     }
 
     in property <RelinkData> relink;

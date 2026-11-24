@@ -56,7 +56,7 @@ def expected_assets(source: Image.Image) -> dict[str, bytes]:
         source.resize((512, 512), Image.Resampling.LANCZOS)
     )
     for density, size in ANDROID_SIZES.items():
-        assets[f"src/crates/concat-android/res/mipmap-{density}/ic_launcher.png"] = png_bytes(
+        assets[f"src/crates/concat-android/res/mipmap-{density}/bk_cut_launcher.png"] = png_bytes(
             icon(source, size)
         )
     buffer = io.BytesIO()
@@ -67,7 +67,7 @@ def expected_assets(source: Image.Image) -> dict[str, bytes]:
         sizes=[(size, size) for size in ICO_SIZES],
         append_images=images[:-1],
     )
-    assets["assets/icons/concat.ico"] = buffer.getvalue()
+    assets["assets/icons/bk-cut-app.ico"] = buffer.getvalue()
     return assets
 
 

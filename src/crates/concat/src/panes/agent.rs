@@ -850,14 +850,6 @@ impl AgentPane {
             }
         }
         ui.set_status(self.data(owner));
-        let languages = crate::i18n::language_choice_labels();
-        if !ui
-            .get_reply_languages()
-            .iter()
-            .eq(languages.iter().cloned())
-        {
-            ui.set_reply_languages(ModelRc::new(VecModel::from(languages)));
-        }
         let messages: Vec<_> = self
             .messages
             .iter()
@@ -1194,23 +1186,6 @@ pub(crate) fn install_composer(app: &App) {
             crate::panes::agent_settings::refresh_directory_for_picker(&connection);
         }
     });
-    ui.on_reply_language_chosen(|index| {
-        Shell::with(|shell, app| {
-            let ui = app.global::<AgentUi>();
-            let code = crate::i18n::language_choice_code(index).unwrap_or_default();
-            ui.set_reply_language_index(crate::i18n::language_choice_index(&code));
-            ui.set_reply_language(code.clone().into());
-            let mut studio = shell.studio.borrow_mut();
-            if let Some(project) = studio
-                .session
-                .as_ref()
-                .map(|session| session.project_identity().to_owned())
-            {
-                studio.prefs.agent_reply_languages.insert(project, code);
-                studio.prefs.save(&studio.host.dirs);
-            }
-        });
-    });
     ui.on_cursor_moved(|cursor| {
         Shell::with(|_, app| {
             let ui = app.global::<AgentUi>();
@@ -1448,20 +1423,12 @@ pub(crate) fn refresh_model_choices() {
     use std::sync::atomic::{AtomicU64, Ordering};
     static REQUEST: AtomicU64 = AtomicU64::new(0);
     let request = REQUEST.fetch_add(1, Ordering::SeqCst) + 1;
-    Shell::with(|shell, app| {
+    Shell::with(|shell, _| {
         let studio = shell.studio.borrow();
         let project = studio
             .session
             .as_ref()
             .map(|session| session.project_identity().to_owned());
-        let reply = project
-            .as_ref()
-            .and_then(|id| studio.prefs.agent_reply_languages.get(id))
-            .cloned()
-            .unwrap_or_default();
-        let ui = app.global::<AgentUi>();
-        ui.set_reply_language_index(crate::i18n::language_choice_index(&reply));
-        ui.set_reply_language(reply.into());
         let saved = project
             .as_ref()
             .and_then(|id| studio.prefs.agent_session_models.get(id))

@@ -134,9 +134,6 @@ pub struct Preferences {
     pub script_content_languages: BTreeMap<String, String>,
     #[serde(default)]
     pub agent_session_models: BTreeMap<String, String>,
-    /// Ordinary assistant reply language, independent from writing content.
-    #[serde(default)]
-    pub agent_reply_languages: BTreeMap<String, String>,
     /// Reuse only a verified unused native draft; never delete it on lookup.
     pub empty_draft_path: Option<String>,
     /// The accent, by the lower-cased name the theme lists it under —

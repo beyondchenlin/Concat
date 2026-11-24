@@ -134,6 +134,8 @@ const VERSION_PAGE: i32 = 6;
 /// The Shortcuts page's index, which the launch screen's Keyboard
 /// shortcuts card opens the sheet on.
 pub const SHORTCUTS_PAGE: i32 = 7;
+/// Provider configuration lives in the same settings sheet.
+pub(crate) const MODEL_PROVIDERS_PAGE: i32 = 8;
 
 /// One downloadable model, as the settings sheet shows it.
 #[derive(Clone, Debug)]

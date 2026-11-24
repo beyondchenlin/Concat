@@ -6,16 +6,19 @@ import { taskLanguages, languageInstructions } from "../src/languages.ts";
 import { nativeTaskInput } from "../src/commands.ts";
 import { conversationPresentation } from "../src/presentation.ts";
 
-test("reply and candidate languages are independently captured and immutable", () => {
+test("ordinary replies use the user request, not any current or legacy locale choice", () => {
   const input = { interfaceLanguage: "de", replyLanguage: "ja", contentLanguage: "fr" };
   const snapshot = taskLanguages(input);
   input.replyLanguage = "en";
   assert.equal(snapshot.replyLanguage, "ja");
   assert.ok(Object.isFrozen(snapshot));
+  const automatic = taskLanguages({ ...input, replyLanguage: "auto" });
+  assert.equal(automatic.replyLanguage, "auto");
   const instructions = languageInstructions(snapshot, false);
-  assert.match(instructions, /Japanese for ordinary replies/);
-  assert.match(instructions, /French for writing candidates/);
-  assert.match(instructions, /does not change the reply language/);
+  assert.match(instructions, /user's language requirements for replies/);
+  assert.equal(instructions, languageInstructions(automatic, false));
+  assert.doesNotMatch(instructions, /Japanese|German|French|ordinary replies/);
+  assert.match(languageInstructions(snapshot, true), /Use French for writing candidates unless the user requests/);
   assert.match(languageInstructions(snapshot, true), /only the candidate text/);
 });
 

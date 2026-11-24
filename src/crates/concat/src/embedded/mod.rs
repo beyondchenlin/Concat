@@ -2460,9 +2460,7 @@ fn submit_from_ui(input: String, mode: TaskMode, rewrite: bool) -> Result<(), St
                 || format!("{text}{reference_context}"),
                 |generation| generation.prompt().to_owned(),
             );
-            let reply_language = app.global::<crate::ui::AgentUi>().get_reply_language();
             let languages = crate::agent::tasks::TaskLanguages::capture(
-                Some(reply_language.as_str()),
                 studio
                     .prefs
                     .script_content_languages
@@ -4777,7 +4775,7 @@ mod tests {
                         let prior_view = runtime.view();
                         let history = "Historical body 中文 {1} remains literal";
                         let summary = "The conversation history before this point was compacted into the following summary:\n\n<summary>\nHistorical summary 中文 {1}\n</summary>";
-                        let languages = crate::agent::tasks::TaskLanguages::capture(Some("de"), Some("ja"));
+                        let languages = crate::agent::tasks::TaskLanguages::capture(Some("ja"));
                         let model = saved.channels()[0].clone();
                         let prior_submission = runtime.submission.lock().unwrap().replace(SubmissionIntent {
                             languages: languages.clone(), model: Some(model.clone()),

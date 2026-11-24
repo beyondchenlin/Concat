@@ -3,8 +3,9 @@
 
 import { RuntimeRefused } from "./gate.ts";
 
-/** Language policy is captured by native UI at submission, independently for
- * ordinary replies and writing candidates. It is never an execution permit. */
+/** Keep the durable language snapshot schema for recovery. A legacy reply
+ * locale is metadata only; ordinary replies are determined by the model
+ * from the user's request, not the application's language preference. */
 export interface TaskLanguages {
   readonly interfaceLanguage: string;
   readonly replyLanguage: string;
@@ -32,7 +33,8 @@ export function taskLanguages(value: unknown): TaskLanguages {
   const keys = ["interfaceLanguage", "replyLanguage", "contentLanguage"] as const;
   if (Object.keys(input).length !== keys.length
     || keys.some((key) => typeof input[key] !== "string"
-      || !Object.hasOwn(languages, input[key] as string))) {
+      || (!(key === "replyLanguage" && input[key] === "auto")
+        && !Object.hasOwn(languages, input[key] as string)))) {
     throw new RuntimeRefused("invalid task language snapshot");
   }
   return Object.freeze({
@@ -43,13 +45,11 @@ export function taskLanguages(value: unknown): TaskLanguages {
 }
 
 export function languageInstructions(snapshot: TaskLanguages, writing: boolean): string {
-  const reply = languages[snapshot.replyLanguage];
   const content = languages[snapshot.contentLanguage];
   return [
-    `Use ${reply} for ordinary replies, explanations, refusals and completion summaries.`,
-    `Use ${content} for writing candidates. A request specifying the candidate language alone does not change the reply language.`,
-    "An explicit language requirement in this user request takes priority only for the kind of output it names.",
-    "These language choices remain fixed for this task, including resumed work. Do not translate or rewrite historical messages, saved drafts, filenames or identifiers unless the user explicitly requests it.",
+    "Follow the user's language requirements for replies; otherwise respond naturally in the language best suited to the request.",
+    writing ? ("Use " + content + " for writing candidates unless the user requests a different candidate language.") : "",
+    "Do not translate or rewrite historical messages, saved drafts, filenames or identifiers unless the user explicitly requests it.",
     writing ? "For this writing task, the final answer must contain only the candidate text in its candidate language." : "",
   ].filter(Boolean).join("\n");
 }

@@ -1234,21 +1234,63 @@ pub(crate) fn refresh_directory_for_picker(connection_id: &str) {
     });
 }
 
-pub(crate) fn install(app: &App) {
-    let ui = app.global::<AgentSettingsUi>();
-    ui.on_open_requested(|| refresh(None, true, true));
-    ui.on_close_requested(|| {
-        Shell::with(|shell, app| {
+/// All entry points share the native settings sheet. Leaving the provider
+/// page retires its local form (and password) and respects the existing
+/// maintenance cancellation/ownership gate.
+pub(crate) fn navigate_settings(page: Option<i32>) {
+    use crate::panes::settings::{MODEL_PROVIDERS_PAGE, SettingsMsg};
+    let mut load = false;
+    let mut left = false;
+    Shell::with(|shell, app| {
+        let ui = app.global::<AgentSettingsUi>();
+        let model_page = page == Some(MODEL_PROVIDERS_PAGE);
+        if model_page {
+            if !ui.get_open() {
+                if shell.agent_settings.borrow().busy {
+                    return;
+                }
+                ui.set_open(true);
+                load = true;
+            }
+        } else if ui.get_open() {
             let pane = shell.agent_settings.borrow();
+            if pane.busy && pane.cancellation.is_none() {
+                return;
+            }
             if let Some(cancel) = &pane.cancellation {
                 cancel.cancel();
             }
-            if !pane.busy || pane.cancellation.is_some() {
-                app.global::<AgentSettingsUi>().set_open(false);
+            ui.set_open(false);
+            left = true;
+        }
+        {
+            let mut studio = shell.studio.borrow_mut();
+            if let Some(index) = page {
+                if !studio.settings.open {
+                    studio.handle(crate::panes::Msg::Settings(SettingsMsg::Open));
+                }
+                studio.handle(crate::panes::Msg::Settings(SettingsMsg::PageChanged(index)));
+            } else {
+                if studio.settings.tab == MODEL_PROVIDERS_PAGE {
+                    studio.handle(crate::panes::Msg::Settings(SettingsMsg::PageChanged(0)));
+                }
+                studio.handle(crate::panes::Msg::Settings(SettingsMsg::Close));
             }
-        });
-        crate::embedded::resume_assistant_connection_after_settings();
+        }
+        shell.studio.borrow().publish(&app, &shell.models);
     });
+    if load {
+        refresh(None, true, true);
+    }
+    if left {
+        crate::embedded::resume_assistant_connection_after_settings();
+    }
+}
+
+pub(crate) fn install(app: &App) {
+    let ui = app.global::<AgentSettingsUi>();
+    ui.on_open_requested(|| navigate_settings(Some(crate::panes::settings::MODEL_PROVIDERS_PAGE)));
+    ui.on_close_requested(|| navigate_settings(None));
     ui.on_cancel_requested(|| {
         Shell::with(|shell, _| {
             if let Some(cancel) = &shell.agent_settings.borrow().cancellation {
@@ -1484,6 +1526,10 @@ mod tests {
                 app.set_on_start(false);
                 app.window().set_size(slint::LogicalSize::new(1400., 2400.));
                 let ui = app.global::<AgentSettingsUi>();
+                let mut settings = app.get_settings();
+                settings.open = true;
+                settings.tab = crate::panes::settings::MODEL_PROVIDERS_PAGE;
+                app.set_settings(settings);
                 ui.set_open(true);
                 ui.set_can_modify(true);
                 ui.set_has_saved_channel(true);
