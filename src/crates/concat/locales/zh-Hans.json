@@ -893,6 +893,7 @@
   "studio.projectOpenElsewhere": "此项目已在另一个 BK CUT 中打开（进程 {0}）。请先在那里关闭，再在这里打开。",
   "studio.projectOpenThroughRemote": "此项目正通过远程 API 打开",
   "studio.projectSaved": "项目已保存",
+  "studio.projectSavedTaskNeedsReview": "工程已保存；智能任务状态需要重新核对。",
   "studio.quit": "退出",
   "studio.reattachAudio": "重新附加音频",
   "studio.redo": "重做",

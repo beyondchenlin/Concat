@@ -893,6 +893,7 @@
   "studio.projectOpenElsewhere": "הפרויקט הזה פתוח ב-BK CUT אחר (תהליך {0}). סגרו אותו שם ואז פתחו אותו כאן.",
   "studio.projectOpenThroughRemote": "הפרויקט הזה פתוח דרך ה-Remote API",
   "studio.projectSaved": "הפרויקט נשמר",
+  "studio.projectSavedTaskNeedsReview": "הפרויקט נשמר; יש לבדוק שוב את מצב המשימה של הסוכן החכם.",
   "studio.quit": "יציאה",
   "studio.reattachAudio": "חיבור השמע מחדש",
   "studio.redo": "ביצוע מחדש",

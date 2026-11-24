@@ -707,7 +707,7 @@ impl Studio {
         if let Some(error) = journal_error {
             log::warn!("native agent save journal requires reconciliation: {error}");
             if current {
-                self.notify("工程已落盘；智能任务回执需要重新核对。", true);
+                self.notify(&t("studio.projectSavedTaskNeedsReview"), true);
             }
         }
         // A real save completion, not a periodic editor timer, triggers the

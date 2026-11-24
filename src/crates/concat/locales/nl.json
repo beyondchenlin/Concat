@@ -893,6 +893,7 @@
   "studio.projectOpenElsewhere": "Dit project is geopend in een andere BK CUT (proces {0}). Sluit het daar en open het dan hier.",
   "studio.projectOpenThroughRemote": "Dit project is geopend via de Remote API",
   "studio.projectSaved": "Project opgeslagen",
+  "studio.projectSavedTaskNeedsReview": "Het project is opgeslagen; de status van de agenttaak moet opnieuw worden gecontroleerd.",
   "studio.quit": "Stoppen",
   "studio.reattachAudio": "Audio opnieuw koppelen",
   "studio.redo": "Opnieuw",

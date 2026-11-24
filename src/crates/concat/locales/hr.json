@@ -893,6 +893,7 @@
   "studio.projectOpenElsewhere": "Ovaj je projekt otvoren u drugom BK CUTu (proces {0}). Zatvorite ga ondje, a zatim ga otvorite ovdje.",
   "studio.projectOpenThroughRemote": "Ovaj je projekt otvoren putem udaljenog API-ja",
   "studio.projectSaved": "Projekt spremljen",
+  "studio.projectSavedTaskNeedsReview": "Projekt je spremljen; stanje zadatka agenta treba ponovno provjeriti.",
   "studio.quit": "Izađi",
   "studio.reattachAudio": "Ponovno spoji zvuk",
   "studio.redo": "Ponovi",

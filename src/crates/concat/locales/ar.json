@@ -893,6 +893,7 @@
   "studio.projectOpenElsewhere": "هذا المشروع مفتوح في نسخة أخرى من BK CUT (العملية {0}). أغلقه هناك، ثم افتحه هنا.",
   "studio.projectOpenThroughRemote": "هذا المشروع مفتوح عبر واجهة Remote API",
   "studio.projectSaved": "تم حفظ المشروع",
+  "studio.projectSavedTaskNeedsReview": "تم حفظ المشروع؛ يجب التحقق مجددًا من حالة مهمة الوكيل الذكي.",
   "studio.quit": "إنهاء",
   "studio.reattachAudio": "إعادة إرفاق الصوت",
   "studio.redo": "إعادة",

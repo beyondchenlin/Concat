@@ -893,6 +893,7 @@
   "studio.projectOpenElsewhere": "Proyek ini terbuka di BK CUT lain (proses {0}). Tutup di sana, lalu buka di sini.",
   "studio.projectOpenThroughRemote": "Proyek ini terbuka melalui API Jarak Jauh",
   "studio.projectSaved": "Proyek disimpan",
+  "studio.projectSavedTaskNeedsReview": "Proyek telah disimpan; status tugas agen perlu diperiksa kembali.",
   "studio.quit": "Keluar",
   "studio.reattachAudio": "Pasang kembali audio",
   "studio.redo": "Ulangi",

@@ -893,6 +893,7 @@
   "studio.projectOpenElsewhere": "এই প্রজেক্টটি আরেকটি BK CUT-এ খোলা আছে (প্রসেস {0})। সেখানে বন্ধ করুন, তারপর এখানে খুলুন।",
   "studio.projectOpenThroughRemote": "এই প্রজেক্টটি রিমোট API-এর মাধ্যমে খোলা",
   "studio.projectSaved": "প্রজেক্ট সেভ হয়েছে",
+  "studio.projectSavedTaskNeedsReview": "প্রকল্পটি সংরক্ষিত হয়েছে; বুদ্ধিমান এজেন্টের কাজের অবস্থা আবার যাচাই করতে হবে।",
   "studio.quit": "বের হন",
   "studio.reattachAudio": "অডিও আবার জুড়ুন",
   "studio.redo": "রিডু",

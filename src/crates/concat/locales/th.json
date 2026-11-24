@@ -893,6 +893,7 @@
   "studio.projectOpenElsewhere": "โปรเจกต์นี้เปิดอยู่ใน BK CUT อีกตัวหนึ่ง (โพรเซส {0}) ปิดที่นั่นก่อน แล้วค่อยเปิดที่นี่",
   "studio.projectOpenThroughRemote": "โปรเจกต์นี้เปิดผ่าน API ระยะไกล",
   "studio.projectSaved": "บันทึกโปรเจกต์แล้ว",
+  "studio.projectSavedTaskNeedsReview": "บันทึกโครงการแล้ว ต้องตรวจสอบสถานะงานของเอเจนต์อีกครั้ง",
   "studio.quit": "ออกจากโปรแกรม",
   "studio.reattachAudio": "รวมเสียงกลับ",
   "studio.redo": "ทำซ้ำ",

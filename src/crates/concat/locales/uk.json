@@ -893,6 +893,7 @@
   "studio.projectOpenElsewhere": "Цей проєкт відкрито в іншому BK CUT (процес {0}). Закрийте його там, а потім відкрийте тут.",
   "studio.projectOpenThroughRemote": "Цей проєкт відкрито через Remote API",
   "studio.projectSaved": "Проєкт збережено",
+  "studio.projectSavedTaskNeedsReview": "Проєкт збережено; стан завдання агента потрібно перевірити повторно.",
   "studio.quit": "Вийти",
   "studio.reattachAudio": "Повернути аудіо",
   "studio.redo": "Повторити",

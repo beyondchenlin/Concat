@@ -893,6 +893,7 @@
   "studio.projectOpenElsewhere": "Bu layihə başqa BK CUT-da açıqdır (proses {0}). Orada bağlayın, sonra burada açın.",
   "studio.projectOpenThroughRemote": "Bu layihə Uzaq API vasitəsilə açıqdır",
   "studio.projectSaved": "Layihə saxlanıldı",
+  "studio.projectSavedTaskNeedsReview": "Layihə yadda saxlanıldı; ağıllı agentin tapşırıq vəziyyəti yenidən yoxlanmalıdır.",
   "studio.quit": "Çıx",
   "studio.reattachAudio": "Audionu yenidən birləşdir",
   "studio.redo": "Təkrar",

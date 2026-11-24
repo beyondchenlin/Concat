@@ -893,6 +893,7 @@
   "studio.projectOpenElsewhere": "Ten projekt jest otwarty w innym BK CUT (proces {0}). Zamknij go tam, a potem otwórz tutaj.",
   "studio.projectOpenThroughRemote": "Ten projekt jest otwarty przez Remote API",
   "studio.projectSaved": "Projekt zapisany",
+  "studio.projectSavedTaskNeedsReview": "Projekt został zapisany; stan zadania agenta wymaga ponownej weryfikacji.",
   "studio.quit": "Zakończ",
   "studio.reattachAudio": "Dołącz dźwięk ponownie",
   "studio.redo": "Ponów",

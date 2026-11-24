@@ -893,6 +893,7 @@
   "studio.projectOpenElsewhere": "Dự án này đang mở trong một BK CUT khác (tiến trình {0}). Hãy đóng nó ở đó, rồi mở ở đây.",
   "studio.projectOpenThroughRemote": "Dự án này đang được mở thông qua API từ xa",
   "studio.projectSaved": "Đã lưu dự án",
+  "studio.projectSavedTaskNeedsReview": "Dự án đã được lưu; cần kiểm tra lại trạng thái tác vụ của tác nhân thông minh.",
   "studio.quit": "Thoát",
   "studio.reattachAudio": "Gắn lại âm thanh",
   "studio.redo": "Làm lại",

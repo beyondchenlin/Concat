@@ -893,6 +893,7 @@
   "studio.projectOpenElsewhere": "Bu proje başka bir BK CUT'te açık (işlem {0}). Önce orada kapatın, sonra burada açın.",
   "studio.projectOpenThroughRemote": "Bu proje Uzak API üzerinden açık",
   "studio.projectSaved": "Proje kaydedildi",
+  "studio.projectSavedTaskNeedsReview": "Proje kaydedildi; ajan görevinin durumu yeniden kontrol edilmelidir.",
   "studio.quit": "Çık",
   "studio.reattachAudio": "Sesi yeniden bağla",
   "studio.redo": "Yinele",

@@ -383,3 +383,75 @@ fn empty_close_and_same_project_open_preserve_the_current_agent() {
     studio.close_project().unwrap();
     bridge.finish_handoff(Duration::from_secs(1)).unwrap();
 }
+
+#[test]
+fn saved_task_review_notice_uses_active_language_and_preserves_newer_dirty_state() {
+    let _language = crate::i18n::language_lock();
+    let scratch = Scratch::new();
+    let first = scratch.project("Saved task review");
+    let mut studio = studio_in(&scratch);
+    studio.open_project(first).unwrap();
+    let bridge = ready_bridge(&studio);
+    let original_language = crate::i18n::current();
+    let session = studio.session.as_ref().unwrap();
+    let saved_session = session.session_id();
+    let saved_revision = session.revision();
+
+    // Exercise the production save-completion path and real catalogs.
+    // The injected journal failure is not a claim of disk or UI acceptance.
+    for (language, expected) in [
+        (
+            "en",
+            "The project was saved; the agent task status needs to be checked again.",
+        ),
+        (
+            "de",
+            "Das Projekt wurde gespeichert; der Status des Agentenauftrags muss erneut geprüft werden.",
+        ),
+        (
+            "ja",
+            "プロジェクトは保存されました。エージェントのタスクの状態を再確認する必要があります。",
+        ),
+        ("zh-Hans", "工程已保存；智能任务状态需要重新核对。"),
+    ] {
+        crate::i18n::select(language, &studio.host.dirs);
+        studio.dirty = true;
+        studio.accept_project_save(
+            saved_session,
+            saved_revision,
+            Ok(projects::Saved::Written),
+            Some("injected journal failure".to_owned()),
+            false,
+        );
+        assert_eq!(studio.toast.message, expected, "{language}");
+        assert_eq!(studio.toast.kind, crate::ui::ToastKind::Failed);
+        assert!(!studio.dirty, "the matching saved revision stays saved");
+    }
+
+    studio
+        .session
+        .as_mut()
+        .unwrap()
+        .apply(Command::AddTrack { bottom: false })
+        .unwrap();
+    studio.dirty = true;
+    let notice_token = studio.toast.token;
+    studio.accept_project_save(
+        saved_session,
+        saved_revision,
+        Ok(projects::Saved::Written),
+        Some("older journal failure".to_owned()),
+        false,
+    );
+    assert!(
+        studio.dirty,
+        "an older receipt cannot acknowledge a newer edit"
+    );
+    assert_eq!(
+        studio.toast.token, notice_token,
+        "a retired receipt cannot replace the current task notice"
+    );
+    crate::i18n::select(&original_language, &studio.host.dirs);
+    studio.close_project().unwrap();
+    bridge.finish_handoff(Duration::from_secs(1)).unwrap();
+}
