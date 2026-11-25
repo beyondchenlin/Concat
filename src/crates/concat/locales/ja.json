@@ -1401,6 +1401,7 @@
   "modelSettings.defaultScope": "アプリの既定モデルは今後の会話の初期値です。会話の次のタスクで使う選択と、実行中のタスクが保持するモデルはそれぞれ独立しています。",
   "modelSettings.verification": "個別の検証結果",
   "modelSettings.realCallNotice": "各検証ボタンは実際のモデル要求を送信し、プロバイダーから課金されることがあります。固定のテスト文のみを使用し、プロジェクトの素材は送信しません。ツール検証は無害なテスト関数を確認するもので、プロジェクトを編集しません。",
+  "modelSettings.verifyCostNotice": "検証は実際のリクエストを送信します。提供元の料金が発生する場合があります。",
   "modelSettings.verifyInference": "モデルの推論を検証",
   "modelSettings.verifyTools": "ツール機能を検証",
   "modelSettings.deleteCredential": "この接続の認証情報を削除",

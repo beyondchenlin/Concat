@@ -1401,6 +1401,7 @@
   "modelSettings.defaultScope": "Le modèle par défaut de l’application initialise les futures conversations. Le choix pour la prochaine tâche d’une conversation et le modèle capturé d’une tâche en cours restent indépendants.",
   "modelSettings.verification": "Résultats de vérification indépendants",
   "modelSettings.realCallNotice": "Chaque bouton de vérification envoie une véritable requête au modèle et peut entraîner des frais du fournisseur. Seul un texte de test fixe est utilisé, sans médias du projet. La vérification des outils teste une fonction inoffensive et ne modifie aucun projet.",
+  "modelSettings.verifyCostNotice": "La vérification envoie des requêtes réelles ; des frais du fournisseur peuvent s’appliquer.",
   "modelSettings.verifyInference": "Vérifier l’inférence du modèle",
   "modelSettings.verifyTools": "Vérifier la prise en charge des outils",
   "modelSettings.deleteCredential": "Supprimer les identifiants de cette connexion",

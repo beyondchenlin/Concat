@@ -22,6 +22,36 @@ import { AgentSettingsUi, AgentSettingsContent } from "model-settings.slint";
 // by the button on the right. That distinction is the whole reason the row
 // reads at a glance.
 
+// The compact label is presentation only: clicking expands the original full
+// path, and the original edit callback always receives the unshortened value.
+component CompactPath inherits VerticalLayout {
+    in property <string> path;
+    in property <string> label;
+    in property <string> full-label;
+    in property <bool> editable;
+    property <bool> expanded: false;
+    callback edited(text: string);
+    spacing: 4px;
+
+    Button {
+        label: root.label;
+        accessible-label: root.full-label;
+        glyph: root.expanded ? Glyph.chevron-down : Glyph.chevron-right;
+        block: true; align-left: true; elide-label: true;
+        clicked => { root.expanded = !root.expanded; }
+    }
+    if root.expanded && root.path != "": Text {
+        text: root.path; color: Theme.fg-muted; font-size: Theme.fs-sm;
+        wrap: char-wrap;
+    }
+    if root.expanded && root.editable: Field {
+        value: root.path;
+        placeholder: I18n.t("settings.defaultProjectLocation");
+        technical: true;
+        edited(text) => { root.edited(text); }
+    }
+}
+
 export struct ModelData {
     id: string,
     name: string,
@@ -98,7 +128,9 @@ export struct SettingsData {
     /// the base URL of a custom source
     download-base: string,
     model-download-location: string,
+    model-download-location-short: string,
     default-project-location: string,
+    default-project-location-short: string,
     default-match-media: bool,
     default-project-max-side: float,
     default-project-width: float,
@@ -959,8 +991,11 @@ export component SettingsDialog inherits Sheet {
                     ruled: false;
                     title: I18n.t("settings.newProjectDefaults");
                     hint: I18n.t("settings.futureProjectsOnly");
-                    Field { value: root.data.default-project-location;
-                        placeholder: I18n.t("settings.defaultProjectLocation");
+                    CompactPath {
+                        path: root.data.default-project-location;
+                        label: I18n.t("settings.defaultProjectLocation") + (root.data.default-project-location-short == "" ? "" : ": " + root.data.default-project-location-short);
+                        full-label: I18n.t("settings.defaultProjectLocation") + ": " + root.data.default-project-location;
+                        editable: true;
                         edited(text) => { root.default-project-location-edited(text); }
                     }
                     HorizontalLayout {
@@ -1048,10 +1083,10 @@ export component SettingsDialog inherits Sheet {
                     }
                 }
 
-                // Off, a delete leaves its hole and a trim moves one edge.
-                Text {
-                    text: I18n.t1("settings.modelDownloadLocation", root.data.model-download-location);
-                    color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap;
+                CompactPath {
+                    path: root.data.model-download-location;
+                    label: I18n.t1("settings.modelDownloadLocation", root.data.model-download-location-short);
+                    full-label: I18n.t1("settings.modelDownloadLocation", root.data.model-download-location);
                 }
 
                 // Off, a delete leaves its hole and a trim moves one edge.

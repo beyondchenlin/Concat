@@ -1401,6 +1401,7 @@
   "modelSettings.defaultScope": "Default aplikasi menginisialisasi percakapan mendatang. Pilihan tugas berikutnya dalam percakapan dan model yang telah ditangkap tugas berjalan tetap terpisah.",
   "modelSettings.verification": "Hasil verifikasi terpisah",
   "modelSettings.realCallNotice": "Setiap tombol verifikasi membuat permintaan model nyata dan dapat dikenai biaya penyedia. Hanya teks uji tetap yang dikirim, tanpa media proyek. Verifikasi alat memeriksa fungsi uji tanpa efek samping dan tidak menyunting proyek.",
+  "modelSettings.verifyCostNotice": "Verifikasi mengirim permintaan nyata; biaya penyedia dapat berlaku.",
   "modelSettings.verifyInference": "Verifikasi inferensi model",
   "modelSettings.verifyTools": "Verifikasi kemampuan alat",
   "modelSettings.deleteCredential": "Hapus kredensial koneksi ini",

@@ -3318,11 +3318,22 @@ pub(crate) mod tests {
                     );
                     wheel_on_overlay(chat, chat.scroll_view().bounds.center(), 120., title);
                     if kind == 0 {
-                        // A lower fallback layer must not take the model
-                        // form's own scroll input. First establish actual
-                        // overflow and a visible hit inside that form; a
-                        // short new-channel form fits this window and has
-                        // no legitimate scrolling distance.
+                        // Advanced settings are intentionally collapsed by
+                        // default. Verify the destructive action is absent,
+                        // then expand through the actual user-facing button.
+                        assert!(
+                            chat.matching_overlay_text(
+                                crate::i18n::t("modelSettings.deleteCredential").as_str(),
+                                false,
+                            )
+                            .is_empty(),
+                            "advanced credential deletion must be collapsed by default"
+                        );
+                        chat.click(crate::i18n::t("modelSettings.showAdvanced").as_str());
+                        chat.render();
+                        // A lower fallback layer must not take the expanded
+                        // model form's own scroll input. Establish actual
+                        // overflow and a visible hit inside the form.
                         let before = chat.overlay_text_bounds(
                             crate::i18n::t("modelSettings.connection").as_str(),
                             true,

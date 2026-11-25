@@ -581,7 +581,7 @@ impl AgentPane {
         Ok(text.to_owned())
     }
 
-    fn missing(&self) -> String {
+    fn missing_items(&self, include_runtime: bool) -> String {
         let mut missing = Vec::new();
         if self.readiness.provider.trim().is_empty() {
             missing.push(t("agent.missingProvider"));
@@ -592,7 +592,7 @@ impl AgentPane {
         if !self.readiness.credentials_ready {
             missing.push(t("agent.missingCredential"));
         }
-        if !self.readiness.runtime_ready {
+        if include_runtime && !self.readiness.runtime_ready {
             missing.push(t("agent.missingRuntime"));
         }
         if missing.is_empty() {
@@ -606,9 +606,15 @@ impl AgentPane {
     /// This never confirms recovery, acquires an execution permit or resumes
     /// interrupted work. UI enablement is not an execution credential.
     pub fn data(&self, owner: Result<OwnerStatus, String>) -> AgentStatusData {
+        self.project_data(Some(owner))
+    }
+
+    // An intentionally dormant assistant is not a failed connection.
+    // Absence is a presentation fact, never a native execution permit.
+    fn project_data(&self, owner: Option<Result<OwnerStatus, String>>) -> AgentStatusData {
         let task_title = localize_product_message(&crate::i18n::task_status(&self.task.title));
         let task_detail = crate::i18n::task_status(&self.task.detail);
-        let missing = self.missing();
+        let missing = self.missing_items(owner.is_some());
         let raw_error = if self.error.is_empty() {
             &self.configuration_error
         } else {
@@ -645,8 +651,30 @@ impl AgentPane {
             ..AgentStatusData::default()
         };
         let owner = match owner {
-            Ok(owner) => owner,
-            Err(error) => {
+            None => {
+                data.title = t(if raw_error.is_empty() {
+                    "agent.idle"
+                } else {
+                    "agent.sessionUnavailable"
+                })
+                .into();
+                data.detail = t(if raw_error.is_empty() {
+                    "agent.autoConnect"
+                } else {
+                    "agent.manualAvailable"
+                })
+                .into();
+                data.can_connect = true;
+                data.can_review = false;
+                data.can_continue = false;
+                data.resume_interrupted = false;
+                data.can_review_current = false;
+                data.recovery_facts = "".into();
+                data.can_discard = false;
+                return data;
+            }
+            Some(Ok(owner)) => owner,
+            Some(Err(error)) => {
                 data.title = t("agent.sessionUnavailable").into();
                 data.detail = t("agent.manualAvailable").into();
                 let (code, summary, details) = error_presentation(&error);
@@ -837,6 +865,10 @@ impl AgentPane {
     /// Native UI-thread publication only. It does not touch conversation
     /// storage or the current project and is safe in read-only recovery.
     pub fn publish(&self, app: &App, owner: Result<OwnerStatus, String>) {
+        self.publish_for_bridge(app, Some(owner));
+    }
+
+    pub(crate) fn publish_for_bridge(&self, app: &App, owner: Option<Result<OwnerStatus, String>>) {
         let call = app.global::<AgentCallUi>();
         call.set_allowed(self.readiness.calls_authorized);
         // Pressing Send now grants the current model request. The separate
@@ -849,7 +881,7 @@ impl AgentPane {
                 ui.set_script_index(0);
             }
         }
-        ui.set_status(self.data(owner));
+        ui.set_status(self.project_data(owner));
         let messages: Vec<_> = self
             .messages
             .iter()
@@ -1526,11 +1558,8 @@ pub(crate) fn refresh_model_choices() {
                         }
                         Err(_) => {}
                     }
-                    let owner = shell.agent.borrow().as_ref().map_or_else(
-                        || Err(crate::i18n::t("agent.sessionUnavailable")),
-                        |bridge| bridge.status(),
-                    );
-                    pane.publish(&app, owner);
+                    let owner = shell.agent.borrow().as_ref().map(|bridge| bridge.status());
+                    pane.publish_for_bridge(&app, owner);
                 });
             });
         });
@@ -1948,6 +1977,34 @@ mod tests {
             },
             ..AgentPane::default()
         }
+    }
+
+    #[test]
+    fn dormant_assistant_has_no_spurious_connection_error_or_authority() {
+        let _language = crate::i18n::language_lock();
+        let mut pane = configured();
+        pane.readiness.runtime_ready = false;
+        pane.readiness.calls_authorized = false;
+        let idle = pane.project_data(None);
+        assert_eq!(idle.title, t("agent.idle"));
+        assert!(idle.error.is_empty() && idle.missing.is_empty());
+        assert!(idle.can_connect && !idle.can_send);
+        assert!(!idle.can_review && !idle.can_continue);
+        let failed = pane.project_data(Some(Err("agent.sessionUnavailable".into())));
+        assert!(!failed.error.is_empty());
+        pane.error = "agent.errorAuthentication".into();
+        assert_eq!(
+            pane.project_data(None).error_code,
+            "agent.errorAuthentication"
+        );
+        pane.error.clear();
+        pane.configuration_error = "modelSettings.configurationUnavailable".into();
+        assert!(!pane.project_data(None).error.is_empty());
+        pane.configuration_error.clear();
+        pane.readiness.credentials_ready = false;
+        let missing = pane.project_data(None);
+        assert!(missing.needs_model_setup && !missing.missing.is_empty());
+        assert_eq!(missing.missing, pane.missing_items(false));
     }
 
     #[test]

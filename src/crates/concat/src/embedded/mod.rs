@@ -2166,14 +2166,9 @@ pub(crate) fn authorize_call_from_ui() {
                 pane.error = "agent.configureBeforeSend".into();
             }
         }
-        pane.publish(
+        pane.publish_for_bridge(
             &app,
-            shell
-                .agent
-                .borrow()
-                .as_ref()
-                .ok_or_else(|| "agent.sessionUnavailable".into())
-                .and_then(|bridge| bridge.status()),
+            shell.agent.borrow().as_ref().map(|bridge| bridge.status()),
         );
     });
 }
@@ -2521,14 +2516,9 @@ fn stop_current_task(shell: &Shell, app: &crate::ui::App) {
         bridge.stop();
     }
     shell.studio.borrow().script.publish(app);
-    shell.agent_pane.borrow().publish(
+    shell.agent_pane.borrow().publish_for_bridge(
         app,
-        shell
-            .agent
-            .borrow()
-            .as_ref()
-            .ok_or_else(|| "agent.sessionUnavailable".into())
-            .and_then(|bridge| bridge.status()),
+        shell.agent.borrow().as_ref().map(|bridge| bridge.status()),
     );
 }
 
@@ -2676,7 +2666,7 @@ pub(crate) fn project_opened() {
 /// the old platform's destruction and its database/ownership release.
 pub(crate) fn connect_from_ui() -> Result<(), String> {
     let mut result = Err("agent.sessionUnavailable".into());
-    Shell::with(|shell, _| {
+    Shell::with(|shell, app| {
         result = (|| {
             if let Some(runtime) = shell.embedded.borrow().as_ref()
                 && !runtime.view().closed
@@ -2720,6 +2710,7 @@ pub(crate) fn connect_from_ui() -> Result<(), String> {
                         .map(|session| session.session_id()),
                 );
             });
+            let owner = bridge.status();
             *shell.agent.borrow_mut() = Some(Arc::clone(&bridge));
             shell.studio.borrow_mut().host.agent = Some(bridge);
             *shell.embedded.borrow_mut() = Some(runtime);
@@ -2733,6 +2724,7 @@ pub(crate) fn connect_from_ui() -> Result<(), String> {
             pane.can_discard = false;
             pane.can_review = false;
             pane.readiness.runtime_ready = false;
+            pane.publish(&app, owner);
             Ok(())
         })();
     });
@@ -2891,16 +2883,11 @@ fn finish_assistant_connection() {
 /// a model request. Native task snapshots and historical body text stay intact.
 pub(crate) fn refresh_language_from_ui() {
     Shell::with(|shell, app| {
-        let owner = shell
-            .agent
-            .borrow()
-            .as_ref()
-            .ok_or_else(|| "agent.sessionUnavailable".to_owned())
-            .and_then(|bridge| bridge.status());
+        let owner = shell.agent.borrow().as_ref().map(|bridge| bridge.status());
         // Titles, errors, authors and previews are rendered from their stable
         // state. Do not reapply RuntimeView: it can overwrite a still-valid
         // local refusal that has no corresponding runtime.error.
-        shell.agent_pane.borrow().publish(&app, owner);
+        shell.agent_pane.borrow().publish_for_bridge(&app, owner);
     });
     crate::panes::agent_settings::retranslate_from_ui();
     crate::agent::window::refresh_tool_permission();
@@ -2923,14 +2910,9 @@ pub(crate) fn start_for_window() {
         Shell::with(|shell, app| {
             let mut pane = shell.agent_pane.borrow_mut();
             pane.error = error;
-            pane.publish(
+            pane.publish_for_bridge(
                 &app,
-                shell
-                    .agent
-                    .borrow()
-                    .as_ref()
-                    .ok_or_else(|| "agent.sessionUnavailable".to_owned())
-                    .and_then(|bridge| bridge.status()),
+                shell.agent.borrow().as_ref().map(|bridge| bridge.status()),
             );
         });
     }
@@ -2942,14 +2924,9 @@ pub(crate) fn show_ui_error(result: Result<(), String>) {
         Shell::with(|shell, app| {
             let mut pane = shell.agent_pane.borrow_mut();
             pane.error = error;
-            pane.publish(
+            pane.publish_for_bridge(
                 &app,
-                shell
-                    .agent
-                    .borrow()
-                    .as_ref()
-                    .ok_or_else(|| "agent.sessionUnavailable".to_owned())
-                    .and_then(|bridge| bridge.status()),
+                shell.agent.borrow().as_ref().map(|bridge| bridge.status()),
             );
         });
     }

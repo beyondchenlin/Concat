@@ -14,9 +14,15 @@
       1174,
       914
     ],
-    "maximumCanvasFraction": 0.76,
+    "maximumCanvasFraction": 0.92,
     "resampling": "LANCZOS",
     "background": "transparent"
+  },
+  "androidAdaptive": {
+    "layerDp": 108,
+    "safeRadiusDp": 32.0,
+    "background": "@android:color/white",
+    "foreground": "@mipmap/bk_cut_launcher_foreground"
   },
   "largeLogo": "assets/brand/bk-cut-full-512.png",
   "pillowVersion": "12.0.0",
@@ -28,68 +34,98 @@
     },
     {
       "path": "assets/concat_logo_512.png",
-      "bytes": 70933,
-      "sha256": "96eed21f872efb897758dc39db4496f7978b76b92471ad216cd055dc37d694a0"
+      "bytes": 99293,
+      "sha256": "ed00136ca75157d6b67df89ba78943a4cf4b4d647033d275dcbe005e7008ec7d"
     },
     {
       "path": "assets/icons/bk-cut-app.ico",
-      "bytes": 42029,
-      "sha256": "9b2c9428f23cee2868c3582bcd8fbcc48b173989e3c48eb34515543f889f795c"
+      "bytes": 55579,
+      "sha256": "26f5d1ce3f74a1959bbed00ca5949fcbce90dbd9bd2ad0726437b25e360d6b5c"
     },
     {
       "path": "assets/icons/concat_logo_128.png",
-      "bytes": 8613,
-      "sha256": "8f2688a00a6006eacd1a5f86a078069ef1201a244a34ec9324fd54ea8f4e55c1"
+      "bytes": 11267,
+      "sha256": "f6a8762234c161e6c961090cfadf7aa79d540dac002653f92bd726276b921a95"
     },
     {
       "path": "assets/icons/concat_logo_16.png",
-      "bytes": 494,
-      "sha256": "3ea9e28709e60adcda55678291cedec9c945a3048caf27534dc9d8c4703efd40"
+      "bytes": 629,
+      "sha256": "d5e7c2a96ccd040ecdd258e89d301c3c96ce6e9fb85a2d0fe5c2ed20b1adac5d"
     },
     {
       "path": "assets/icons/concat_logo_256.png",
-      "bytes": 22955,
-      "sha256": "bdf26935b346726b5e62a67751df35806daa109c1aa42224d91e9b65a864847a"
+      "bytes": 30550,
+      "sha256": "dd418ff024267a1a2081a9c1e31972ebd2f9078c20dd8d4ad8371d399bb3750c"
     },
     {
       "path": "assets/icons/concat_logo_32.png",
-      "bytes": 1203,
-      "sha256": "15f216fec54cd93de70baf711d2c5ba29b5521863aa11c98be678c9baa06a94f"
+      "bytes": 1600,
+      "sha256": "2e2db291ad56f29c6a9c7c59e211bdb92a18b2fd400bd3c516c2e37ee47dcdda"
     },
     {
       "path": "assets/icons/concat_logo_512.png",
-      "bytes": 70933,
-      "sha256": "96eed21f872efb897758dc39db4496f7978b76b92471ad216cd055dc37d694a0"
+      "bytes": 99293,
+      "sha256": "ed00136ca75157d6b67df89ba78943a4cf4b4d647033d275dcbe005e7008ec7d"
     },
     {
       "path": "assets/icons/concat_logo_64.png",
-      "bytes": 3452,
-      "sha256": "4b9a23d59547f91a99d4c2217f2689cd0e285ef1143f82a8f0c883818ed79396"
+      "bytes": 4337,
+      "sha256": "2357f64f8a8a5842a6455dc0d8c119ec811f5e4c36d7e7d188e943586fa0badd"
+    },
+    {
+      "path": "src/crates/concat-android/res/mipmap-anydpi-v26/bk_cut_launcher.xml",
+      "bytes": 263,
+      "sha256": "7adf434298f82f71c21f402485ea36a2c1eaf0862d25f56d673a04b7df199866"
     },
     {
       "path": "src/crates/concat-android/res/mipmap-hdpi/bk_cut_launcher.png",
-      "bytes": 4017,
-      "sha256": "c8f55230a3b957b3b5e30bc714ee11edf083641ee95fdb7f60d09fce0476cc70"
+      "bytes": 5097,
+      "sha256": "71b57c706d00d6ab36a0461dd89a05453cfb13e49e371f91855e6815c3c7fe78"
+    },
+    {
+      "path": "src/crates/concat-android/res/mipmap-hdpi/bk_cut_launcher_foreground.png",
+      "bytes": 6761,
+      "sha256": "28a0e65ad78ddd6f89472f2ad869890f42c03a5a765bdb831009d1fb142368b7"
     },
     {
       "path": "src/crates/concat-android/res/mipmap-mdpi/bk_cut_launcher.png",
-      "bytes": 2218,
-      "sha256": "99c8bfcf4c50047880709775061a1a681a8c433391e0ebbb78e78fc02d94e7ad"
+      "bytes": 2883,
+      "sha256": "7cff065e3d7f2602ba97f08347adcf9fb667f53102d13b49c681c3667feac8b4"
+    },
+    {
+      "path": "src/crates/concat-android/res/mipmap-mdpi/bk_cut_launcher_foreground.png",
+      "bytes": 3810,
+      "sha256": "89a761c493b547b91d7a22b7c27be1c02dc830fc9999cfdaf28c96f80b8f42f4"
     },
     {
       "path": "src/crates/concat-android/res/mipmap-xhdpi/bk_cut_launcher.png",
-      "bytes": 5910,
-      "sha256": "97401ae7a163e3e328fe66d38301feac1532e0b665168f14923dd1d59525de33"
+      "bytes": 7615,
+      "sha256": "701cdac9f5bb22f59635385135a30fc1fb4bbe274f5c52abd757fc026f38a06e"
+    },
+    {
+      "path": "src/crates/concat-android/res/mipmap-xhdpi/bk_cut_launcher_foreground.png",
+      "bytes": 10164,
+      "sha256": "5b50a37826e304e4d7da154ac57ce384090f2c1b2c9964c736edd4ef2a45bf4f"
     },
     {
       "path": "src/crates/concat-android/res/mipmap-xxhdpi/bk_cut_launcher.png",
-      "bytes": 10219,
-      "sha256": "fb6576b2dff23de351f94d7271a68966b4d953cd1773138af2a55bfc077a0442"
+      "bytes": 13103,
+      "sha256": "b7106a0da4803104baea87760a8e8e3220f36b48e2f54a93731e9954bc9a767f"
+    },
+    {
+      "path": "src/crates/concat-android/res/mipmap-xxhdpi/bk_cut_launcher_foreground.png",
+      "bytes": 18001,
+      "sha256": "97853b7876a9efb491717f97d0fb747732e5550b02ce70b012c0363809630c34"
     },
     {
       "path": "src/crates/concat-android/res/mipmap-xxxhdpi/bk_cut_launcher.png",
-      "bytes": 15142,
-      "sha256": "55e119997ca9aff87ecbef45065608c11535c1ddacc310362f33f396d5f298fb"
+      "bytes": 19751,
+      "sha256": "a4df6f3f5ead66f736d60e19cbb2514204a78b7e380c2d7b26dba0e63b838529"
+    },
+    {
+      "path": "src/crates/concat-android/res/mipmap-xxxhdpi/bk_cut_launcher_foreground.png",
+      "bytes": 27444,
+      "sha256": "68fa9337f009185fd5c3a4b70514079a0d796d7e10cec1b3997491679240ca3f"
     }
   ]
 }

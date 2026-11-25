@@ -1401,6 +1401,7 @@
   "modelSettings.defaultScope": "Der Anwendungsstandard wird für neue Unterhaltungen übernommen. Die Modellauswahl für die nächste Aufgabe einer Unterhaltung und das Modell einer laufenden Aufgabe bleiben unabhängig.",
   "modelSettings.verification": "Unabhängige Prüfergebnisse",
   "modelSettings.realCallNotice": "Jede Prüfschaltfläche sendet eine echte Modellanfrage und kann Kosten beim Anbieter verursachen. Verwendet werden nur feste Testtexte, keine Projektmedien. Die Werkzeugprüfung testet eine harmlose Funktion und bearbeitet kein Projekt.",
+  "modelSettings.verifyCostNotice": "Die Prüfung sendet echte Anfragen; Anbietergebühren können anfallen.",
   "modelSettings.verifyInference": "Modellinferenz prüfen",
   "modelSettings.verifyTools": "Werkzeugfähigkeit prüfen",
   "modelSettings.deleteCredential": "Zugangsdaten dieser Verbindung löschen",

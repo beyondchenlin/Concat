@@ -1401,6 +1401,7 @@
   "modelSettings.defaultScope": "Zadani model aplikacije postavlja se za buduće razgovore. Odabir za sljedeći zadatak razgovora i model zabilježen u aktivnom zadatku neovisni su.",
   "modelSettings.verification": "Zasebni rezultati provjere",
   "modelSettings.realCallNotice": "Svaki gumb za provjeru šalje stvarni zahtjev modelu i može uzrokovati trošak kod pružatelja. Koristi se samo fiksni testni tekst, bez medija projekta. Provjera alata koristi bezopasnu testnu funkciju i ne uređuje projekt.",
+  "modelSettings.verifyCostNotice": "Provjera šalje stvarne zahtjeve; pružatelj može naplatiti troškove.",
   "modelSettings.verifyInference": "Provjeri izvođenje modela",
   "modelSettings.verifyTools": "Provjeri sposobnost alata",
   "modelSettings.deleteCredential": "Izbriši vjerodajnice ove veze",

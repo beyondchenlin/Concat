@@ -902,6 +902,7 @@ export component Field inherits Rectangle {
     /// The value the caller owns. One-way: what is typed comes back through
     /// `edited`, and this is re-seeded from whatever the caller does with it.
     in property <string> value;
+    in property <bool> enabled: true;
     in property <string> placeholder;
     /// numbers, paths and names read better in the technical face
     in property <bool> technical;
@@ -927,6 +928,7 @@ export component Field inherits Rectangle {
     min-height: 28px;
     max-height: 28px;
     horizontal-stretch: 1;
+    opacity: root.enabled ? 1.0 : 0.55;
     border-top-left-radius: root.radius-left;
     border-bottom-left-radius: root.radius-left;
     border-top-right-radius: root.radius-right;
@@ -963,6 +965,7 @@ export component Field inherits Rectangle {
     }
 
     touch := TouchArea {
+        enabled: root.enabled;
         mouse-cursor: MouseCursor.text;
         clicked => { input.focus(); }
     }
@@ -992,6 +995,7 @@ export component Field inherits Rectangle {
             height: self.preferred-height;
             text <=> root.draft;
             input-type: root.secret ? InputType.password : InputType.text;
+            enabled: root.enabled;
             color: Theme.fg;
             font-family: root.technical ? Theme.font-technical : Theme.font;
             font-size: Theme.fs;

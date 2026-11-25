@@ -49,12 +49,20 @@ pub struct AgentSettingsPane {
 impl AgentSettingsPane {
     fn show_error(&mut self, ui: &AgentSettingsUi, source: String) {
         self.error = source;
+        self.message.clear();
         ui.set_error(t(&self.error).into());
+        ui.set_message("".into());
     }
 
     fn project_messages(&self, ui: &AgentSettingsUi) {
         ui.set_error(t(&self.error).into());
-        ui.set_message(t(&self.message).into());
+        // Routine local reads are not a connection result; do not add a
+        // success banner every time the user opens the settings page.
+        ui.set_message(if self.message == "modelSettings.localRead" {
+            "".into()
+        } else {
+            t(&self.message).into()
+        });
         ui.set_credential_status(t(&self.credential_status).into());
     }
 }
@@ -299,6 +307,40 @@ fn project_provider(ui: &AgentSettingsUi, id: &str) {
     );
     ui.set_custom_provider(provider.id == "custom");
 }
+fn choose_provider(
+    pane: &mut AgentSettingsPane,
+    ui: &AgentSettingsUi,
+    provider: &concat_agent::configuration::providers::ProviderPreset,
+) {
+    let same = PROVIDERS
+        .get(ui.get_provider_index() as usize)
+        .is_some_and(|current| current.id == provider.id);
+    if same {
+        return;
+    }
+    // A provider change is a new connection, not an edit of an unrelated
+    // saved account. Keep all existing connections and their credential scopes.
+    pane.selected = None;
+    pane.choices.clear();
+    pane.facts = CatalogueFacts::default();
+    pane.credential_status = "modelSettings.credentialNew".into();
+    pane.error.clear();
+    pane.message.clear();
+    ui.set_channel_index(0);
+    ui.set_has_saved_channel(false);
+    project_provider(ui, provider.id);
+    let mut draft = draft_to_ui(None);
+    draft.protocol = protocol_index(provider.protocol);
+    draft.endpoint = provider.endpoint.into();
+    if provider.id != "custom" {
+        draft.label = provider_label(provider.id).into();
+    }
+    ui.set_draft(draft);
+    project_facts(ui, &pane.facts, None, "");
+    project_choices(pane, ui, "");
+    pane.project_messages(ui);
+}
+
 fn project_provider_labels(ui: &AgentSettingsUi, id: &str) {
     let provider = preset(id).unwrap_or_else(|| preset("custom").expect("custom preset"));
     ui.set_provider_labels(string_model(
@@ -321,6 +363,8 @@ fn project_provider_labels(ui: &AgentSettingsUi, id: &str) {
     ui.set_provider_help(t(key).into());
 }
 fn project_choices(pane: &mut AgentSettingsPane, ui: &AgentSettingsUi, query: &str) {
+    ui.set_search_query(query.into());
+    ui.set_model_count(pane.choices.len() as i32);
     let query = query.to_lowercase();
     pane.visible_choices = pane
         .choices
@@ -420,6 +464,33 @@ fn project_fact_labels(
     model: &str,
 ) {
     let now = now_seconds();
+    ui.set_catalogue_summary(
+        facts
+            .directory
+            .as_ref()
+            .map_or_else(
+                || t("modelSettings.catalogueNone"),
+                |directory| {
+                    let count = directory.models.len();
+                    let age = now.saturating_sub(directory.fetched_at) / 60;
+                    let kind = match directory.source {
+                        CatalogueSource::Official if directory.is_fresh(now) => {
+                            "modelSettings.catalogueOfficial"
+                        }
+                        CatalogueSource::Official => "modelSettings.catalogueCached",
+                        CatalogueSource::PublicRecommended => "modelSettings.catalogueRecommended",
+                        CatalogueSource::Manual => "modelSettings.catalogueManual",
+                    };
+                    let count_age = tf("modelSettings.catalogueCountAge", &[&count, &age]);
+                    if kind == "modelSettings.catalogueOfficial" {
+                        count_age
+                    } else {
+                        format!("{count_age}\n{}", t(kind))
+                    }
+                },
+            )
+            .into(),
+    );
     ui.set_catalogue_status(
         facts
             .directory
@@ -445,6 +516,15 @@ fn project_fact_labels(
                     )
                 },
             )
+            .into(),
+    );
+    ui.set_refresh_error(
+        facts
+            .refresh
+            .as_ref()
+            .and_then(|refresh| refresh.error_code.as_ref())
+            .map(|code| tf("modelSettings.refreshFailed", &[&t(code)]))
+            .unwrap_or_default()
             .into(),
     );
     ui.set_refresh_status(
@@ -473,26 +553,35 @@ fn project_fact_labels(
             "modelSettings.tools"
         });
         let Some(channel) = channel else {
-            return tf(
+            let label = tf(
                 "modelSettings.verificationState",
                 &[&prefix, &t("modelSettings.notVerified")],
             );
+            return (label.clone(), label, 0);
         };
         let summary = facts.verification_summary(channel, model, capability);
-        let current = summary.latest_current.map_or_else(
-            || t("modelSettings.notVerified"),
+        let (short, result_state) = summary.latest_current.map_or_else(
+            || (t("modelSettings.notVerified"), 0),
             |record| {
-                let result = if record.succeeded {
-                    t("modelSettings.verified")
+                if record.succeeded {
+                    (t("modelSettings.verified"), 1)
                 } else {
-                    record
-                        .error_code
-                        .as_ref()
-                        .map_or_else(|| t("modelSettings.verificationFailed"), |code| t(code))
-                };
+                    (
+                        record
+                            .error_code
+                            .as_ref()
+                            .map_or_else(|| t("modelSettings.verificationFailed"), |code| t(code)),
+                        2,
+                    )
+                }
+            },
+        );
+        let current = summary.latest_current.map_or_else(
+            || short.clone(),
+            |record| {
                 tf(
                     "modelSettings.factAt",
-                    &[&result, &utc_timestamp(record.checked_at)],
+                    &[&short, &utc_timestamp(record.checked_at)],
                 )
             },
         );
@@ -510,10 +599,20 @@ fn project_fact_labels(
             state.push('\n');
             state.push_str(&tf(key, &[&utc_timestamp(success.checked_at)]));
         }
-        state
+        (
+            state,
+            tf("modelSettings.verificationState", &[&prefix, &short]),
+            result_state,
+        )
     };
-    ui.set_inference_status(verification(VerificationCapability::Inference).into());
-    ui.set_tools_status(verification(VerificationCapability::Tools).into());
+    let (detail, summary, result) = verification(VerificationCapability::Inference);
+    ui.set_inference_status(detail.into());
+    ui.set_inference_summary(summary.into());
+    ui.set_inference_result(result);
+    let (detail, summary, result) = verification(VerificationCapability::Tools);
+    ui.set_tools_status(detail.into());
+    ui.set_tools_summary(summary.into());
+    ui.set_tools_result(result);
     ui.set_context_status(
         channel
             .and_then(|channel| {
@@ -632,6 +731,7 @@ fn publish(
                     draft.model = model.as_str().into();
                 }
                 let displayed_model = draft.model.to_string();
+                ui.set_saved_draft(draft_to_ui(selected));
                 ui.set_draft(draft);
                 project_provider(&ui, selected.map_or("custom", |c| c.provider_id.as_str()));
                 ui.set_can_modify(true);
@@ -711,17 +811,8 @@ fn refresh(wanted: Option<ChannelId>, choose_existing: bool, open: bool) {
         let store = configuration_store(&shell.studio.borrow().host.dirs);
         host::spawn_detached(move || {
             let inspection = inspect(&store, wanted, choose_existing);
-            let stale = open
-                && inspection
-                    .credential
-                    .as_ref()
-                    .is_some_and(|status| matches!(status, Ok(CredentialStatus::Present)))
-                && inspection.facts.as_ref().is_ok_and(|facts| {
-                    facts
-                        .directory
-                        .as_ref()
-                        .is_none_or(|d| !d.is_fresh(now_seconds()))
-                });
+            // Opening/selecting settings reads local facts only. Network
+            // discovery remains an explicit Save+Load or Refresh action.
             let _ = slint::invoke_from_event_loop(move || {
                 Shell::with(|shell, app| {
                     publish(
@@ -732,9 +823,6 @@ fn refresh(wanted: Option<ChannelId>, choose_existing: bool, open: bool) {
                         Ok("modelSettings.localRead".to_owned()),
                     )
                 });
-                if stale {
-                    configuration_request(None);
-                }
             });
         });
     });
@@ -1318,18 +1406,12 @@ pub(crate) fn install(app: &App) {
         let Some(provider) = usize::try_from(index).ok().and_then(|i| PROVIDERS.get(i)) else {
             return;
         };
-        Shell::with(|_, app| {
+        Shell::with(|shell, app| {
+            let mut pane = shell.agent_settings.borrow_mut();
             let ui = app.global::<AgentSettingsUi>();
-            let mut draft = ui.get_draft();
-            project_provider(&ui, provider.id);
-            draft.protocol = protocol_index(provider.protocol);
-            draft.endpoint = provider.endpoint.into();
-            draft.model = "".into();
-            if draft.label.is_empty() {
-                draft.label = provider_label(provider.id).into();
+            if !pane.busy {
+                choose_provider(&mut pane, &ui, provider);
             }
-            ui.set_draft(draft);
-            ui.set_model_index(-1);
         });
     });
     ui.on_model_search_changed(|text| {
@@ -1670,8 +1752,14 @@ mod tests {
                 let cancellation = Arc::new(ConfigurationCancellation::default());
                 pane.busy = true;
                 pane.cancellation = Some(Arc::clone(&cancellation));
+                assert_eq!(password_text(&app, Some(TYPED)), TYPED);
                 ui.set_busy(true);
                 ui.set_cancellable(true);
+                assert_eq!(
+                    password_text(&app, None),
+                    "",
+                    "busy form must erase password"
+                );
                 crate::i18n::select("en", &dirs);
                 app.global::<crate::ui::I18n>().set_lang("en".into());
                 retranslate(&pane, &ui);
@@ -1701,6 +1789,20 @@ mod tests {
                     .unwrap(),
                     configuration_before
                 );
+                pane.busy = false;
+                ui.set_busy(false);
+                let previous = pane.snapshot.clone().unwrap();
+                choose_provider(&mut pane, &ui, preset("deepseek").unwrap());
+                assert!(pane.selected.is_none());
+                assert!(!ui.get_has_saved_channel());
+                assert_eq!(ui.get_channel_index(), 0);
+                assert_eq!(ui.get_draft().endpoint, "https://api.deepseek.com");
+                assert_eq!(ui.get_draft().model, "");
+                assert!(pane.choices.is_empty() && pane.visible_choices.is_empty());
+                assert_eq!(pane.facts, CatalogueFacts::default());
+                assert_eq!(pane.snapshot.as_ref(), Some(&previous));
+                assert_eq!(store.load().unwrap(), previous);
+                assert_eq!(password_text(&app, None), "");
                 app.hide().unwrap();
             })
             .unwrap()

@@ -1401,6 +1401,7 @@
   "modelSettings.defaultScope": "Domyślny model aplikacji inicjuje przyszłe rozmowy. Wybór dla następnego zadania rozmowy i model przechwycony przez trwające zadanie pozostają niezależne.",
   "modelSettings.verification": "Niezależne wyniki weryfikacji",
   "modelSettings.realCallNotice": "Każdy przycisk weryfikacji wysyła rzeczywiste żądanie do modelu i może powodować opłaty dostawcy. Wysyłany jest tylko stały tekst testowy, bez multimediów projektu. Weryfikacja narzędzi sprawdza nieszkodliwą funkcję testową i nie edytuje projektu.",
+  "modelSettings.verifyCostNotice": "Weryfikacja wysyła rzeczywiste żądania; dostawca może naliczyć opłaty.",
   "modelSettings.verifyInference": "Zweryfikuj wnioskowanie modelu",
   "modelSettings.verifyTools": "Zweryfikuj obsługę narzędzi",
   "modelSettings.deleteCredential": "Usuń dane uwierzytelniające tego połączenia",

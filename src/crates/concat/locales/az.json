@@ -1401,6 +1401,7 @@
   "modelSettings.defaultScope": "Tətbiqin ilkin modeli gələcək söhbətlər üçün istifadə olunur. Söhbətin növbəti tapşırıq seçimi və işləyən tapşırığın sabitlənmiş modeli müstəqildir.",
   "modelSettings.verification": "Müstəqil yoxlama nəticələri",
   "modelSettings.realCallNotice": "Hər yoxlama düyməsi real model sorğusu göndərir və təchizatçı ödənişi yarada bilər. Yalnız sabit sınaq mətni istifadə olunur, layihə mediası deyil. Alət yoxlaması zərərsiz sınaq funksiyasını yoxlayır və layihəni redaktə etmir.",
+  "modelSettings.verifyCostNotice": "Yoxlama real sorğular göndərir; provayder ödənişi tətbiq oluna bilər.",
   "modelSettings.verifyInference": "Modelin işləməsini yoxla",
   "modelSettings.verifyTools": "Alət imkanlarını yoxla",
   "modelSettings.deleteCredential": "Bu bağlantının giriş məlumatlarını sil",

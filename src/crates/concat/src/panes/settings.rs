@@ -31,6 +31,36 @@ use crate::prefs;
 use crate::studio::Studio;
 use crate::ui::{ModelData, SettingsData, ShortcutData};
 
+/// Short label only; the complete path remains the stored and editable value.
+fn compact_path_label(path: &str) -> String {
+    let parts: Vec<_> = path
+        .split(['/', '\\'])
+        .filter(|part| !part.is_empty())
+        .collect();
+    let drive = parts
+        .first()
+        .filter(|part| part.len() == 2 && part.ends_with(':'));
+    let skip = if drive.is_some() { 1 } else { 0 };
+    if parts.len().saturating_sub(skip) <= 2 {
+        return path.to_owned();
+    }
+    let separator = if path.contains('\\') { "\\" } else { "/" };
+    let prefix = if let Some(drive) = drive {
+        format!("{drive}{separator}")
+    } else if path.starts_with("\\\\") {
+        "\\\\".to_owned()
+    } else if path.starts_with(['/', '\\']) {
+        separator.to_owned()
+    } else {
+        String::new()
+    };
+    format!(
+        "{prefix}\u{2026}{separator}{}{separator}{}",
+        parts[parts.len() - 2],
+        parts[parts.len() - 1]
+    )
+}
+
 /// Everything that can happen to the settings sheet.
 #[derive(Clone, Debug)]
 pub enum SettingsMsg {
@@ -1118,6 +1148,8 @@ impl SettingsPane {
     /// The sheet as Slint shows it.
     pub fn data(&self, studio: &Studio) -> SettingsData {
         let defaults = studio.prefs.new_project_defaults.video();
+        let model_path = studio.host.dirs.data.to_string_lossy();
+        let project_path = crate::panes::start::effective_location(studio);
         SettingsData {
             open: self.open,
             tab: self.tab,
@@ -1154,8 +1186,10 @@ impl SettingsPane {
             magnetic: studio.prefs.magnetic(),
             download_source: self.download_source as i32,
             download_base: self.download_base.as_str().into(),
-            model_download_location: studio.host.dirs.data.to_string_lossy().as_ref().into(),
-            default_project_location: crate::panes::start::effective_location(studio).into(),
+            model_download_location: model_path.as_ref().into(),
+            model_download_location_short: compact_path_label(&model_path).into(),
+            default_project_location_short: compact_path_label(&project_path).into(),
+            default_project_location: project_path.into(),
             default_match_media: studio.prefs.new_project_defaults.match_media,
             default_project_max_side: concat_core::frame::MAX_SIDE as f32,
             default_project_width: defaults.width as f32,
@@ -1330,6 +1364,28 @@ pub fn new_token() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn settings_paths_are_shortened_only_for_presentation() {
+        let dots = "\u{2026}";
+        let windows = r"C:\Users\AI\AppData\Local\app.concat.editor";
+        let android = "/storage/emulated/0/Android/data/app.concat.editor/files/Concat";
+        let unc = r"\\server\share\some\folder\project";
+        assert_eq!(
+            super::compact_path_label(windows),
+            format!(r"C:\{dots}\Local\app.concat.editor")
+        );
+        assert_eq!(
+            super::compact_path_label(android),
+            format!("/{dots}/files/Concat")
+        );
+        assert_eq!(
+            super::compact_path_label(unc),
+            format!(r"\\{dots}\folder\project")
+        );
+        assert_eq!(super::compact_path_label(r"D:\Projects"), r"D:\Projects");
+        assert_eq!(super::compact_path_label(""), "");
+    }
+
     use super::*;
 
     #[test]

@@ -1401,6 +1401,7 @@
   "modelSettings.defaultScope": "De applicatiestandaard initialiseert toekomstige gesprekken. De keuze voor de volgende gesprekstaak en het vastgelegde model van een lopende taak blijven onafhankelijk.",
   "modelSettings.verification": "Afzonderlijke verificatieresultaten",
   "modelSettings.realCallNotice": "Elke verificatieknop doet een echt modelverzoek waarvoor de aanbieder kosten kan rekenen. Er wordt alleen vaste testtekst gebruikt, zonder projectmedia. Hulpmiddelverificatie controleert een onschadelijke testfunctie en bewerkt geen project.",
+  "modelSettings.verifyCostNotice": "Verificatie verstuurt echte verzoeken; de aanbieder kan kosten rekenen.",
   "modelSettings.verifyInference": "Modelinferentie verifiëren",
   "modelSettings.verifyTools": "Hulpmiddelondersteuning verifiëren",
   "modelSettings.deleteCredential": "Aanmeldgegevens van deze verbinding verwijderen",

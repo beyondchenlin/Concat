@@ -4,6 +4,8 @@ import { Theme } from "../theme/theme.slint";
 import { I18n } from "../i18n.slint";
 import { Button, Field } from "../primitives/modal.slint";
 import { Select } from "../primitives/select.slint";
+import { Focus } from "../util.slint";
+import { Glyph, Icon } from "../icons.slint";
 
 /// Non-secret form data only. The password has no persistent/global property.
 export struct ModelChannelDraftData {
@@ -24,6 +26,7 @@ export global AgentSettingsUi {
     in-out property <string> region-label;
     in-out property <string> provider-help;
     in-out property <ModelChannelDraftData> draft;
+    in-out property <ModelChannelDraftData> saved-draft;
     in-out property <string> active-name;
     in-out property <string> configuration-version;
     in-out property <string> credential-status;
@@ -31,9 +34,17 @@ export global AgentSettingsUi {
     in-out property <[string]> model-details;
     in-out property <int> model-index: -1;
     in-out property <string> catalogue-status;
+    in-out property <string> catalogue-summary;
+    in-out property <string> search-query;
+    in-out property <int> model-count;
+    in-out property <string> refresh-error;
     in-out property <string> refresh-status;
     in-out property <string> inference-status;
     in-out property <string> tools-status;
+    in-out property <string> inference-summary;
+    in-out property <string> tools-summary;
+    in-out property <int> inference-result;
+    in-out property <int> tools-result;
     in-out property <string> context-status;
     in-out property <string> context-capacity;
     in-out property <string> message;
@@ -60,80 +71,108 @@ export global AgentSettingsUi {
 component Caption inherits Text {
     color: Theme.fg; font-size: Theme.fs; wrap: word-wrap;
 }
+// A single quiet group surface, using the existing theme and shared controls.
+// Its height comes from the contained layout, not the allocated viewport.
+component SettingsGroup inherits Rectangle {
+    min-height: body.preferred-height;
+    preferred-height: body.preferred-height;
+    max-height: body.preferred-height;
+    border-radius: Theme.r-lg;
+    border-width: 1px;
+    border-color: Theme.line;
+    background: Theme.well;
+    body := VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        @children
+    }
+}
+
+component ResultLine inherits HorizontalLayout {
+    in property <string> label;
+    in property <int> result;
+    spacing: 6px;
+    if root.result != 0: Icon {
+        glyph: root.result == 1 ? Glyph.check : Glyph.alert;
+        size: 14px;
+        tint: root.result == 1 ? Theme.green : Theme.danger;
+    }
+    Text {
+        text: root.label;
+        color: root.result == 1 ? Theme.green : root.result == 2 ? Theme.danger : Theme.fg-muted;
+        font-size: Theme.fs-sm;
+        wrap: word-wrap;
+        horizontal-stretch: 1;
+        vertical-alignment: center;
+    }
+}
+
 export component AgentSettingsContent inherits VerticalLayout {
     in property <bool> phone;
     property <bool> advanced-open: false;
-    padding-top: 16px; padding-bottom: 24px;
+    padding-top: 12px; padding-bottom: 20px;
     padding-left: 12px; padding-right: 12px;
     spacing: 12px;
-    Caption { text: I18n.t1("modelSettings.applicationDefault", AgentSettingsUi.active-name); font-weight: Theme.weight-title; }
-    Caption { text: I18n.t("modelSettings.configurationOnly"); color: Theme.fg-muted; }
-    if AgentSettingsUi.error != "": Caption { text: AgentSettingsUi.error; color: Theme.danger; }
-    if AgentSettingsUi.message != "": Caption { text: AgentSettingsUi.message; color: Theme.fg-muted; }
-    if AgentSettingsUi.busy: Caption { text: I18n.t("modelSettings.working"); }
-    if AgentSettingsUi.cancellable: Button {
-        label: I18n.t("modelSettings.cancelRequest");
-        clicked => { AgentSettingsUi.cancel-requested(); }
+
+    Text {
+        text: I18n.t1("modelSettings.applicationDefault", AgentSettingsUi.active-name);
+        color: Theme.fg-muted; font-size: Theme.fs-sm; wrap: word-wrap;
     }
-    if !AgentSettingsUi.busy: Button {
-        label: I18n.t("modelSettings.reload");
-        clicked => { AgentSettingsUi.reload-requested(); }
+    if !AgentSettingsUi.can-modify: VerticalLayout {
+        if AgentSettingsUi.busy: Caption { text: I18n.t("modelSettings.working"); }
+        if AgentSettingsUi.error != "": Caption { text: AgentSettingsUi.error; color: Theme.danger; }
+        if !AgentSettingsUi.busy: Button { label: I18n.t("modelSettings.reload"); block: true; elide-label: true;
+            clicked => { AgentSettingsUi.reload-requested(); } }
     }
-    // Destroying the bounded form clears its password after every action.
-    if AgentSettingsUi.open && !AgentSettingsUi.busy && AgentSettingsUi.can-modify: VerticalLayout {
+
+    // Non-secret form stays mounted while requests run. The ephemeral
+    // password is cleared on every busy transition and on page dismissal.
+    if AgentSettingsUi.open && AgentSettingsUi.can-modify: form := VerticalLayout {
         spacing: 10px;
-        Caption { text: I18n.t("modelSettings.connection"); }
-        Select {
-            options: AgentSettingsUi.channel-labels; current: AgentSettingsUi.channel-index;
-            placeholder: I18n.t("modelSettings.newConnection");
-            changed(index) => { key-input.text = ""; AgentSettingsUi.channel-chosen(index); }
+        property <bool> request-busy: AgentSettingsUi.busy;
+        property <bool> verification-current: AgentSettingsUi.has-saved-channel
+            && key-input.text == ""
+            && AgentSettingsUi.draft.label == AgentSettingsUi.saved-draft.label
+            && AgentSettingsUi.draft.protocol == AgentSettingsUi.saved-draft.protocol
+            && AgentSettingsUi.draft.endpoint == AgentSettingsUi.saved-draft.endpoint
+            && AgentSettingsUi.draft.timeout-seconds == AgentSettingsUi.saved-draft.timeout-seconds
+            && AgentSettingsUi.draft.max-output-tokens == AgentSettingsUi.saved-draft.max-output-tokens;
+        changed request-busy => {
+            if self.request-busy {
+                key-input.text = "";
+                Focus.release();
+            }
         }
-        Caption { text: I18n.t("modelSettings.provider"); }
-        Select {
-            options: AgentSettingsUi.provider-labels; current: AgentSettingsUi.provider-index;
-            changed(index) => { key-input.text = ""; AgentSettingsUi.provider-chosen(index); }
+        SettingsGroup {
+            Caption { text: I18n.t("modelSettings.connection"); color: Theme.fg-muted; }
+            Select { enabled: !AgentSettingsUi.busy;
+                options: AgentSettingsUi.channel-labels; current: AgentSettingsUi.channel-index;
+                placeholder: I18n.t("modelSettings.newConnection");
+                changed(index) => { key-input.text = ""; root.advanced-open = false; AgentSettingsUi.channel-chosen(index); }
+            }
+            Caption { text: I18n.t("modelSettings.provider"); color: Theme.fg-muted; }
+            Select { enabled: !AgentSettingsUi.busy;
+                options: AgentSettingsUi.provider-labels; current: AgentSettingsUi.provider-index;
+                changed(index) => { if index != AgentSettingsUi.provider-index { key-input.text = ""; root.advanced-open = false; AgentSettingsUi.provider-chosen(index); } }
+            }
         }
-        Caption { text: AgentSettingsUi.region-label; color: Theme.fg-muted; }
-        Caption { text: AgentSettingsUi.provider-help; color: Theme.fg-muted; }
-        Caption { text: I18n.t("modelSettings.connectionName"); }
-        Field {
-            value: AgentSettingsUi.draft.label; max-length: 80;
-            edited(text) => { AgentSettingsUi.draft.label = text; }
-        }
-        if !AgentSettingsUi.custom-provider: Button {
-            label: root.advanced-open ? I18n.t("modelSettings.hideAdvanced") : I18n.t("modelSettings.showAdvanced");
-            clicked => { root.advanced-open = !root.advanced-open; }
-        }
-        if root.advanced-open || AgentSettingsUi.custom-provider: VerticalLayout {
+        // New custom services must specify a connection before they can be saved.
+        if AgentSettingsUi.custom-provider && (!AgentSettingsUi.has-saved-channel || root.advanced-open): VerticalLayout {
             spacing: 8px;
-        Caption { text: I18n.t("modelSettings.protocol"); }
-        Select {
-            options: [I18n.t("modelSettings.chooseProtocol"), I18n.t("modelSettings.protocolChat"), I18n.t("modelSettings.protocolResponses"), I18n.t("modelSettings.protocolMessages"), I18n.t("modelSettings.protocolGoogle")];
-            current: AgentSettingsUi.draft.protocol; enabled: AgentSettingsUi.custom-provider;
-            changed(index) => { AgentSettingsUi.draft.protocol = index; }
-        }
-        Caption { text: I18n.t("modelSettings.endpoint"); }
-        if AgentSettingsUi.custom-provider: Field {
-            value: AgentSettingsUi.draft.endpoint; technical: true; max-length: 2048;
-            edited(text) => { key-input.text = ""; AgentSettingsUi.draft.endpoint = text; }
-        }
-        if !AgentSettingsUi.custom-provider: Caption { text: AgentSettingsUi.draft.endpoint; }
-        Caption { text: I18n.t("modelSettings.endpointScope"); color: Theme.fg-muted; }
-        Caption { text: I18n.t("modelSettings.timeout"); }
-        Field {
-            value: AgentSettingsUi.draft.timeout-seconds; technical: true; max-length: 7;
-            edited(text) => { AgentSettingsUi.draft.timeout-seconds = text; }
-        }
-        Caption { text: I18n.t("modelSettings.outputLimit"); }
-        Field {
-            value: AgentSettingsUi.draft.max-output-tokens; technical: true; max-length: 7;
-            edited(text) => { AgentSettingsUi.draft.max-output-tokens = text; }
-        }
-        Caption { text: I18n.t("modelSettings.outputNotBudget"); color: Theme.fg-muted; }
+            Caption { text: I18n.t("modelSettings.connectionName"); }
+            Field { enabled: !AgentSettingsUi.busy; value: AgentSettingsUi.draft.label; max-length: 80;
+                edited(text) => { AgentSettingsUi.draft.label = text; } }
+            Caption { text: I18n.t("modelSettings.protocol"); }
+            Select { enabled: !AgentSettingsUi.busy;
+                options: [I18n.t("modelSettings.chooseProtocol"), I18n.t("modelSettings.protocolChat"), I18n.t("modelSettings.protocolResponses"), I18n.t("modelSettings.protocolMessages"), I18n.t("modelSettings.protocolGoogle")];
+                current: AgentSettingsUi.draft.protocol;
+                changed(index) => { key-input.text = ""; AgentSettingsUi.draft.protocol = index; }
+            }
+            Caption { text: I18n.t("modelSettings.endpoint"); }
+            Field { enabled: !AgentSettingsUi.busy; value: AgentSettingsUi.draft.endpoint; technical: true; max-length: 2048;
+                edited(text) => { key-input.text = ""; AgentSettingsUi.draft.endpoint = text; } }
         }
         Caption { text: I18n.t("modelSettings.credential"); font-weight: Theme.weight-title; }
-        Caption { text: AgentSettingsUi.credential-status; color: Theme.fg-muted; }
-        Caption { text: I18n.t("modelSettings.secureOnly"); color: Theme.fg-muted; }
         Rectangle {
             min-height: 36px; max-height: 36px; background: Theme.field; border-radius: Theme.r;
             border-color: key-input.has-focus ? Theme.accent : Theme.line; border-width: 1px; clip: true;
@@ -141,60 +180,134 @@ export component AgentSettingsContent inherits VerticalLayout {
                 x: 10px; y: (parent.height - self.height) / 2; width: parent.width - 20px;
                 height: self.preferred-height; input-type: InputType.password; single-line: true;
                 color: Theme.fg; font-size: Theme.fs; selection-background-color: Theme.accent;
+                enabled: !AgentSettingsUi.busy;
                 accessible-label: I18n.t("modelSettings.credential");
             }
         }
-        Button {
-            label: I18n.t("modelSettings.saveLoad"); primary: true; large: true; block: root.phone;
+        Caption { text: AgentSettingsUi.credential-status; color: Theme.fg-muted; }
+        Button { enabled: !AgentSettingsUi.busy;
+            label: I18n.t("modelSettings.saveLoad"); primary: true; large: true; block: true; elide-label: true;
             clicked => { let entered = key-input.text; key-input.text = ""; AgentSettingsUi.save-load-requested(AgentSettingsUi.draft, entered); }
         }
-        Caption { text: I18n.t("modelSettings.credentialBlank"); color: Theme.fg-muted; }
-        Rectangle { height: 1px; background: Theme.line; }
-        Caption { text: I18n.t("modelSettings.models"); font-weight: Theme.weight-title; }
-        Caption { text: AgentSettingsUi.catalogue-status; color: Theme.fg-muted; }
-        Caption { text: AgentSettingsUi.refresh-status; color: Theme.fg-muted; }
-        if AgentSettingsUi.has-saved-channel: Button {
-            label: I18n.t("modelSettings.refreshModels");
-            clicked => { AgentSettingsUi.refresh-models-requested(AgentSettingsUi.draft); }
+        if AgentSettingsUi.busy || AgentSettingsUi.error != "" || AgentSettingsUi.message != "": Caption {
+            text: AgentSettingsUi.busy ? I18n.t("modelSettings.working")
+                : AgentSettingsUi.error != "" ? AgentSettingsUi.error : AgentSettingsUi.message;
+            color: !AgentSettingsUi.busy && AgentSettingsUi.error != "" ? Theme.danger : Theme.fg-muted;
         }
-        Field {
-            placeholder: I18n.t("modelSettings.searchModels"); max-length: 256;
-            edited(text) => { AgentSettingsUi.model-search-changed(text); }
+        if AgentSettingsUi.cancellable: Button {
+            label: I18n.t("modelSettings.cancelRequest"); ghost: true; block: true; elide-label: true;
+            clicked => { AgentSettingsUi.cancel-requested(); }
         }
-        Select {
-            options: AgentSettingsUi.model-labels; details: AgentSettingsUi.model-details;
-            current: AgentSettingsUi.model-index; placeholder: I18n.t("modelSettings.chooseModel");
-            stacked-details: true;
-            changed(index) => { AgentSettingsUi.model-chosen(index); }
+
+        if AgentSettingsUi.has-saved-channel: SettingsGroup {
+            HorizontalLayout {
+                spacing: 6px;
+                Text { text: I18n.t("modelSettings.models"); color: Theme.fg; font-size: Theme.fs; font-weight: Theme.weight-title; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                Button { enabled: !AgentSettingsUi.busy; label: I18n.t("modelSettings.refreshModels"); ghost: true; elide-label: true;
+                    clicked => { AgentSettingsUi.refresh-models-requested(AgentSettingsUi.draft); } }
+            }
+            Caption { text: AgentSettingsUi.catalogue-summary; color: Theme.fg-muted; font-size: Theme.fs-sm; }
+            if AgentSettingsUi.refresh-error != "": Caption { text: AgentSettingsUi.refresh-error; color: Theme.danger; font-size: Theme.fs-sm; }
+            if AgentSettingsUi.model-count > 8 || AgentSettingsUi.search-query != "": Field { enabled: !AgentSettingsUi.busy;
+                value: AgentSettingsUi.search-query;
+                placeholder: I18n.t("modelSettings.searchModels"); max-length: 256;
+                edited(text) => { AgentSettingsUi.model-search-changed(text); }
+            }
+            Select { enabled: !AgentSettingsUi.busy;
+                options: AgentSettingsUi.model-labels; details: AgentSettingsUi.model-details;
+                current: AgentSettingsUi.model-index; placeholder: I18n.t("modelSettings.chooseModel");
+                stacked-details: true;
+                changed(index) => { AgentSettingsUi.model-chosen(index); }
+            }
+            if AgentSettingsUi.model-count == 0 || root.advanced-open: VerticalLayout {
+                spacing: 4px;
+                Caption { text: I18n.t("modelSettings.manualModel"); }
+                Field { enabled: !AgentSettingsUi.busy; value: AgentSettingsUi.draft.model; technical: true; max-length: 256;
+                    edited(text) => { AgentSettingsUi.manual-model-changed(text); } }
+            }
         }
-        Caption { text: I18n.t("modelSettings.manualModel"); }
-        Field {
-            value: AgentSettingsUi.draft.model; technical: true; max-length: 256;
-            edited(text) => { AgentSettingsUi.manual-model-changed(text); }
+        if AgentSettingsUi.has-saved-channel && AgentSettingsUi.draft.model != "": SettingsGroup {
+            Button { enabled: !AgentSettingsUi.busy; label: I18n.t("modelSettings.setDefault"); block: true; elide-label: true;
+                clicked => { AgentSettingsUi.activate-requested(AgentSettingsUi.draft); } }
+            HorizontalLayout {
+                spacing: 6px;
+                Button { enabled: !AgentSettingsUi.busy; label: I18n.t("modelSettings.verifyInference"); block: true; elide-label: true;
+                    clicked => { AgentSettingsUi.verify-requested(AgentSettingsUi.draft, false); } }
+                Button { enabled: !AgentSettingsUi.busy; label: I18n.t("modelSettings.verifyTools"); block: true; elide-label: true;
+                    clicked => { AgentSettingsUi.verify-requested(AgentSettingsUi.draft, true); } }
+            }
+            ResultLine {
+                label: form.verification-current ? AgentSettingsUi.inference-summary : I18n.t("modelSettings.inference") + ": " + I18n.t("modelSettings.notVerified");
+                result: form.verification-current ? AgentSettingsUi.inference-result : 0;
+            }
+            ResultLine {
+                label: form.verification-current ? AgentSettingsUi.tools-summary : I18n.t("modelSettings.tools") + ": " + I18n.t("modelSettings.notVerified");
+                result: form.verification-current ? AgentSettingsUi.tools-result : 0;
+            }
+            Caption { text: I18n.t("modelSettings.verifyCostNotice"); color: Theme.fg-muted; font-size: Theme.fs-sm; }
         }
-        Caption { text: AgentSettingsUi.context-status; color: Theme.fg-muted; }
-        if AgentSettingsUi.has-saved-channel && (root.advanced-open || AgentSettingsUi.custom-provider): VerticalLayout {
+        Button { enabled: !AgentSettingsUi.busy;
+            label: root.advanced-open ? I18n.t("modelSettings.hideAdvanced") : I18n.t("modelSettings.showAdvanced");
+            glyph: root.advanced-open ? Glyph.chevron-down : Glyph.chevron-right;
+            align-left: true; block: true; elide-label: true;
+            clicked => { root.advanced-open = !root.advanced-open; }
+        }
+        if root.advanced-open: VerticalLayout {
             spacing: 8px;
-            Caption { text: I18n.t("modelSettings.conservativeCapacity"); color: Theme.fg-muted; }
-            Field { value: AgentSettingsUi.context-capacity; technical: true; max-length: 9;
-                edited(text) => { AgentSettingsUi.context-capacity = text; } }
-            Button { label: I18n.t("modelSettings.saveCapacity");
-                clicked => { AgentSettingsUi.context-save-requested(AgentSettingsUi.draft, AgentSettingsUi.context-capacity); } }
-        }
-        Button { label: I18n.t("modelSettings.saveConfiguration"); clicked => { AgentSettingsUi.save-requested(AgentSettingsUi.draft); } }
-        if AgentSettingsUi.has-saved-channel: VerticalLayout {
-            spacing: 10px;
-            Button { label: I18n.t("modelSettings.setDefault"); clicked => { AgentSettingsUi.activate-requested(AgentSettingsUi.draft); } }
-            Caption { text: I18n.t("modelSettings.defaultScope"); color: Theme.fg-muted; }
-            Rectangle { height: 1px; background: Theme.line; }
-            Caption { text: I18n.t("modelSettings.verification"); font-weight: Theme.weight-title; }
-            Caption { text: AgentSettingsUi.inference-status; }
-            Caption { text: AgentSettingsUi.tools-status; }
-            Caption { text: I18n.t("modelSettings.realCallNotice"); color: Theme.fg-muted; }
-            Button { label: I18n.t("modelSettings.verifyInference"); clicked => { AgentSettingsUi.verify-requested(AgentSettingsUi.draft, false); } }
-            Button { label: I18n.t("modelSettings.verifyTools"); clicked => { AgentSettingsUi.verify-requested(AgentSettingsUi.draft, true); } }
-            Button { label: I18n.t("modelSettings.deleteCredential"); danger: true; clicked => { key-input.text = ""; AgentSettingsUi.credential-delete-requested(AgentSettingsUi.draft); } }
-            Button { label: I18n.t("modelSettings.deleteConnection"); danger: true; clicked => { key-input.text = ""; AgentSettingsUi.delete-requested(AgentSettingsUi.draft); } }
+            Caption { text: AgentSettingsUi.region-label; color: Theme.fg-muted; }
+            Caption { text: AgentSettingsUi.provider-help; color: Theme.fg-muted; }
+            if !AgentSettingsUi.custom-provider: VerticalLayout {
+                spacing: 8px;
+                Caption { text: I18n.t("modelSettings.connectionName"); }
+                Field { enabled: !AgentSettingsUi.busy; value: AgentSettingsUi.draft.label; max-length: 80;
+                    edited(text) => { AgentSettingsUi.draft.label = text; } }
+                Caption { text: I18n.t("modelSettings.protocol"); }
+                Select {
+                    options: [I18n.t("modelSettings.chooseProtocol"), I18n.t("modelSettings.protocolChat"), I18n.t("modelSettings.protocolResponses"), I18n.t("modelSettings.protocolMessages"), I18n.t("modelSettings.protocolGoogle")];
+                    current: AgentSettingsUi.draft.protocol; enabled: false;
+                }
+                Caption { text: I18n.t("modelSettings.endpoint"); }
+                Caption { text: AgentSettingsUi.draft.endpoint; }
+            }
+            Caption { text: I18n.t("modelSettings.endpointScope"); color: Theme.fg-muted; }
+            Caption { text: I18n.t("modelSettings.timeout"); }
+            Field { enabled: !AgentSettingsUi.busy; value: AgentSettingsUi.draft.timeout-seconds; technical: true; max-length: 7;
+                edited(text) => { AgentSettingsUi.draft.timeout-seconds = text; } }
+            Caption { text: I18n.t("modelSettings.outputLimit"); }
+            Field { enabled: !AgentSettingsUi.busy; value: AgentSettingsUi.draft.max-output-tokens; technical: true; max-length: 7;
+                edited(text) => { AgentSettingsUi.draft.max-output-tokens = text; } }
+            Caption { text: I18n.t("modelSettings.outputNotBudget"); color: Theme.fg-muted; }
+            Caption { text: I18n.t("modelSettings.secureOnly"); color: Theme.fg-muted; }
+            Caption { text: I18n.t("modelSettings.credentialBlank"); color: Theme.fg-muted; }
+            Caption { text: I18n.t("modelSettings.configurationOnly"); color: Theme.fg-muted; }
+            if !AgentSettingsUi.has-saved-channel: VerticalLayout {
+                Caption { text: I18n.t("modelSettings.manualModel"); }
+                Field { enabled: !AgentSettingsUi.busy; value: AgentSettingsUi.draft.model; technical: true; max-length: 256;
+                    edited(text) => { AgentSettingsUi.manual-model-changed(text); } }
+            }
+            if AgentSettingsUi.has-saved-channel: VerticalLayout {
+                spacing: 8px;
+                Caption { text: AgentSettingsUi.catalogue-status; color: Theme.fg-muted; }
+                Caption { text: AgentSettingsUi.refresh-status; color: Theme.fg-muted; }
+                Caption { text: AgentSettingsUi.inference-status; color: Theme.fg-muted; }
+                Caption { text: AgentSettingsUi.tools-status; color: Theme.fg-muted; }
+                Caption { text: AgentSettingsUi.context-status; color: Theme.fg-muted; }
+                Caption { text: I18n.t("modelSettings.conservativeCapacity"); color: Theme.fg-muted; }
+                Field { enabled: !AgentSettingsUi.busy; value: AgentSettingsUi.context-capacity; technical: true; max-length: 9;
+                    edited(text) => { AgentSettingsUi.context-capacity = text; } }
+                Button { enabled: !AgentSettingsUi.busy; label: I18n.t("modelSettings.saveCapacity"); block: true; elide-label: true;
+                    clicked => { AgentSettingsUi.context-save-requested(AgentSettingsUi.draft, AgentSettingsUi.context-capacity); } }
+                Caption { text: I18n.t("modelSettings.defaultScope"); color: Theme.fg-muted; }
+                Caption { text: I18n.t("modelSettings.realCallNotice"); color: Theme.fg-muted; }
+                Button { enabled: !AgentSettingsUi.busy; label: I18n.t("modelSettings.deleteCredential"); danger: true; block: true; elide-label: true;
+                    clicked => { key-input.text = ""; AgentSettingsUi.credential-delete-requested(AgentSettingsUi.draft); } }
+                Button { enabled: !AgentSettingsUi.busy; label: I18n.t("modelSettings.deleteConnection"); danger: true; block: true; elide-label: true;
+                    clicked => { key-input.text = ""; AgentSettingsUi.delete-requested(AgentSettingsUi.draft); } }
+            }
+            Button { enabled: !AgentSettingsUi.busy; label: I18n.t("modelSettings.saveConfiguration"); block: true; elide-label: true;
+                clicked => { AgentSettingsUi.save-requested(AgentSettingsUi.draft); } }
+            Button { enabled: !AgentSettingsUi.busy; label: I18n.t("modelSettings.reload"); block: true; elide-label: true;
+                clicked => { AgentSettingsUi.reload-requested(); } }
         }
     }
 }

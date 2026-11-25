@@ -1401,6 +1401,7 @@
   "modelSettings.defaultScope": "Il predefinito dell'applicazione inizializza le conversazioni future. La scelta per la prossima attività della conversazione e il modello acquisito da un'attività in corso restano indipendenti.",
   "modelSettings.verification": "Risultati di verifica indipendenti",
   "modelSettings.realCallNotice": "Ogni pulsante di verifica effettua una richiesta reale al modello e può comportare costi del fornitore. Usa solo testo di prova fisso, senza contenuti del progetto. La verifica degli strumenti controlla una funzione innocua e non modifica il progetto.",
+  "modelSettings.verifyCostNotice": "La verifica invia richieste reali; il fornitore può applicare costi.",
   "modelSettings.verifyInference": "Verifica l'inferenza del modello",
   "modelSettings.verifyTools": "Verifica la capacità degli strumenti",
   "modelSettings.deleteCredential": "Elimina le credenziali di questa connessione",

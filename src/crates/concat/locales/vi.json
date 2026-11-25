@@ -1401,6 +1401,7 @@
   "modelSettings.defaultScope": "Mô hình mặc định dùng để khởi tạo các cuộc hội thoại sau này. Lựa chọn cho tác vụ tiếp theo của cuộc hội thoại và mô hình đã ghi nhận của tác vụ đang chạy được giữ độc lập.",
   "modelSettings.verification": "Kết quả xác minh riêng biệt",
   "modelSettings.realCallNotice": "Mỗi nút xác minh gửi một yêu cầu mô hình thực và có thể phát sinh phí từ nhà cung cấp. Chỉ văn bản kiểm tra cố định được gửi, không có tư liệu dự án. Xác minh công cụ kiểm tra một hàm vô hại và không chỉnh sửa dự án.",
+  "modelSettings.verifyCostNotice": "Xác minh gửi yêu cầu thực; nhà cung cấp có thể tính phí.",
   "modelSettings.verifyInference": "Xác minh suy luận của mô hình",
   "modelSettings.verifyTools": "Xác minh khả năng dùng công cụ",
   "modelSettings.deleteCredential": "Xóa thông tin xác thực của kết nối này",

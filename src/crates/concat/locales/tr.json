@@ -1401,6 +1401,7 @@
   "modelSettings.defaultScope": "Uygulama varsayılanı yeni sohbetleri başlatır. Sohbetin sonraki görev seçimi ve çalışan görevin sabitlenmiş modeli birbirinden bağımsızdır.",
   "modelSettings.verification": "Bağımsız doğrulama sonuçları",
   "modelSettings.realCallNotice": "Her doğrulama düğmesi gerçek bir model isteği yapar ve sağlayıcı ücreti doğurabilir. Yalnızca sabit test metni kullanılır; proje medyası kullanılmaz. Araç doğrulaması zararsız bir test işlevini denetler ve projeyi düzenlemez.",
+  "modelSettings.verifyCostNotice": "Doğrulama gerçek istekler gönderir; sağlayıcı ücret uygulayabilir.",
   "modelSettings.verifyInference": "Model çıkarımını doğrula",
   "modelSettings.verifyTools": "Araç yeteneğini doğrula",
   "modelSettings.deleteCredential": "Bu bağlantının kimlik bilgisini sil",

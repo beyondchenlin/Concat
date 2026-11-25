@@ -1401,6 +1401,7 @@
   "modelSettings.defaultScope": "ברירת המחדל של היישום מאתחלת שיחות עתידיות. בחירת המודל למשימה הבאה בשיחה והמודל שנשמר למשימה פעילה נשארים נפרדים.",
   "modelSettings.verification": "תוצאות אימות נפרדות",
   "modelSettings.realCallNotice": "כל כפתור אימות שולח בקשת מודל אמיתית שעלולה לחייב תשלום לספק. נעשה שימוש בטקסט בדיקה קבוע בלבד, ללא מדיה מהפרויקט. אימות הכלים בודק פונקציית ניסיון בלתי מזיקה ואינו עורך פרויקט.",
+  "modelSettings.verifyCostNotice": "האימות שולח בקשות אמיתיות; ייתכנו חיובים מהספק.",
   "modelSettings.verifyInference": "אימות הסקת המודל",
   "modelSettings.verifyTools": "אימות יכולת הכלים",
   "modelSettings.deleteCredential": "מחיקת פרטי ההזדהות של החיבור",
